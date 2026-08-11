@@ -102,6 +102,11 @@ def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
     GDAL 버전에 따라 geometry 컬럼(SHAPE)을 결과에서 빠뜨리는 경우가 있었다(로컬 Mac의
     최신 GDAL에서는 문제없었지만 Docker 이미지의 apt gdal-bin에서 실제로 재현됨).
     -select는 속성 필드를 고르면서 geometry는 항상 유지하도록 설계된 옵션이라 더 안전하다.
+
+    "-nlt CONVERT_TO_LINEAR": LION 세그먼트 중 일부(전체의 약 3.7%)는 곡선 도로라서
+    원본 geometry가 CIRCULARSTRING/COMPOUNDCURVE 같은 비선형 WKT로 나온다. shapely 등
+    일반적인 geometry 라이브러리는 이 타입을 못 읽어서(map_zone_segment 매핑 작업 중
+    실제로 겪음), 직선 근사(LINESTRING)로 강제 변환한다.
     """
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
@@ -113,6 +118,7 @@ def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
         "lion",
         "-select", ",".join(LION_COLUMNS),
         "-lco", "GEOMETRY=AS_WKT",
+        "-nlt", "CONVERT_TO_LINEAR",
     ]
     logger.info(f"[lion_silver] ogr2ogr 실행: {' '.join(cmd)}")
     result = subprocess.run(cmd, capture_output=True, text=True)
