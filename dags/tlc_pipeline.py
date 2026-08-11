@@ -1,6 +1,7 @@
 """
 TLC ETL Pipeline
 """
+from src.common.config import SILVER_DIR
 
 from airflow.decorators import dag
 
