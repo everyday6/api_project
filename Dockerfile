@@ -7,9 +7,10 @@ RUN apt-get update && \
     apt-get install -y default-jdk && \
     apt-get clean
 
+# 일반 사용자로 변경
+USER airflow
+
 # Python 패키지 설치
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 
-# 마지막에 일반 사용자로 변경
-USER airflow
