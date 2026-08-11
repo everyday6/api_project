@@ -1,16 +1,25 @@
 """
-공통 다운로드 모듈
+TLC 데이터 다운로드 모듈
 
-역할
-1. 다운로드 목록 생성
-2. 파일 다운로드
+TLC 데이터의 다운로드 대상 파일을 생성하고,
+각 파일을 실제로 다운로드하여 임시 저장소에 저장한다.
+
+주요 작업:
+1. 기간과 택시 종류를 기준으로 다운로드 파일 목록 생성
+2. TLC 서버에 파일이 존재하는지 확인
+3. 파일 다운로드
+4. 다운로드한 파일을 임시 디렉터리에 저장
+
+Airflow Task 간 데이터 전달은
+커스텀 객체가 아닌 dict를 사용한다.
 """
 
 from __future__ import annotations
 
+from datetime import datetime
+
 import requests
 from dateutil.relativedelta import relativedelta
-from datetime import datetime
 
 from airflow.decorators import task
 
@@ -18,9 +27,8 @@ from src.common.config import (
     BASE_URL,
     INITIAL_START_DATE,
     INITIAL_END_DATE,
-    BRONZE_DIR,
-    TAXI_TYPES,
     TMP_DIR,
+    TAXI_TYPES,
     HTTP_TIMEOUT,
     CHUNK_SIZE,
     USER_AGENT,
@@ -28,27 +36,42 @@ from src.common.config import (
 
 from src.common.logger import get_logger
 
-from src.common.models import (
-    DownloadFile,
-    DownloadResult,
-)
 
-# Logger 생성
+# =========================================================
+# Logger
+# =========================================================
+
 logger = get_logger(__name__)
 
-# HTTP Session 생성
+
+# =========================================================
+# HTTP Session
+# =========================================================
+
+# 여러 파일을 다운로드할 때 HTTP 연결을 재사용하기 위해
+# 하나의 Session을 사용한다.
 session = requests.Session()
 
-# 공통 Header 설정
+# TLC 서버에 요청할 때 사용할 공통 Header
 session.headers.update(USER_AGENT)
 
+
+# =========================================================
+# 파일명 생성
+# =========================================================
 
 def build_filename(
     taxi_type: str,
     year: int,
     month: int,
 ) -> str:
-    """다운로드 파일명 생성"""
+    """
+    TLC 데이터 파일명을 생성한다.
+
+    예:
+    yellow + 2022 + 09
+    → yellow_tripdata_2022-09.parquet
+    """
 
     return (
         f"{taxi_type}_tripdata_"
@@ -56,87 +79,147 @@ def build_filename(
     )
 
 
-def build_url(filename: str) -> str:
-    """다운로드 URL 생성"""
+# =========================================================
+# URL 생성
+# =========================================================
+
+def build_url(
+    filename: str,
+) -> str:
+    """
+    생성된 파일명을 이용하여
+    TLC 데이터 다운로드 URL을 만든다.
+    """
 
     return f"{BASE_URL}/{filename}"
 
 
-def check_file_exists(url: str) -> bool:
-    """파일 존재 여부 확인"""
+# =========================================================
+# 파일 존재 여부 확인
+# =========================================================
+
+def check_file_exists(
+    url: str,
+) -> bool:
+    """
+    TLC 서버에 해당 파일이 존재하는지 확인한다.
+
+    반환값:
+    - 200 → True
+    - 404 → False
+    - 그 외 → 오류 발생
+    """
 
     try:
 
+        # 파일 자체를 다운로드하지 않고
+        # HEAD 요청으로 존재 여부만 확인한다.
         response = session.head(
             url=url,
             timeout=HTTP_TIMEOUT,
         )
 
-        # 파일 존재
+        # 파일이 존재함
         if response.status_code == 200:
             return True
 
-        # 파일 없음
+        # 파일이 존재하지 않음
         if response.status_code == 404:
             return False
 
+        # 예상하지 못한 응답
         raise RuntimeError(
-            f"HEAD Request Failed ({response.status_code}) : {url}"
+            f"HEAD Request Failed "
+            f"({response.status_code}) : {url}"
         )
 
     except requests.RequestException as error:
 
         logger.error(
-            f"HEAD Request Failed : {url} ({error})"
+            f"HEAD Request Failed : "
+            f"{url} ({error})"
         )
 
         raise
 
 
+# =========================================================
+# 다운로드 목록 생성
+# =========================================================
+
 @task
-def generate_download_list() -> list[DownloadFile]:
-    """다운로드 대상 목록 생성"""
+def generate_download_list() -> list[dict]:
+    """
+    지정된 기간 동안 존재하는 TLC 데이터의
+    다운로드 목록을 생성한다.
 
-    download_list: list[DownloadFile] = []
+    Airflow XCom으로 전달하기 위해
+    DownloadFile 객체 대신 dict를 반환한다.
+    """
 
+    # 다운로드 대상 파일 목록
+    download_list: list[dict] = []
+
+    # 시작 날짜
     current = INITIAL_START_DATE
 
+    # 설정된 종료 날짜까지 월 단위로 반복
     while current <= INITIAL_END_DATE:
 
         year = current.year
         month = current.month
 
+        # Yellow / Green / FHV / FHVHV 순회
         for taxi_type in TAXI_TYPES:
 
-            # 파일명 생성
+            # -------------------------------------------------
+            # 1. 파일명 생성
+            # -------------------------------------------------
+
             filename = build_filename(
-                taxi_type,
-                year,
-                month,
+                taxi_type=taxi_type,
+                year=year,
+                month=month,
             )
 
-            # URL 생성
-            url = build_url(filename)
+            # -------------------------------------------------
+            # 2. 다운로드 URL 생성
+            # -------------------------------------------------
 
-            # 파일 존재 여부 확인
+            url = build_url(
+                filename=filename,
+            )
+
+            # -------------------------------------------------
+            # 3. 파일 존재 여부 확인
+            # -------------------------------------------------
+
             if check_file_exists(url):
 
-                logger.info(f"Found : {filename}")
+                logger.info(
+                    f"Found : {filename}"
+                )
 
+                # 커스텀 객체 대신 dict 사용
+                # → Airflow XCom에서 안전하게 전달 가능
                 download_list.append(
-                    DownloadFile(
-                        taxi_type=taxi_type,
-                        filename=filename,
-                        url=url,
-                    )
+                    {
+                        "taxi_type": taxi_type,
+                        "filename": filename,
+                        "url": url,
+                    }
                 )
 
             else:
 
-                logger.warning(f"Skip : {filename}")
+                logger.warning(
+                    f"Skip : {filename}"
+                )
 
-        # 다음 달
-        current += relativedelta(months=1)
+        # 다음 달로 이동
+        current += relativedelta(
+            months=1
+        )
 
     logger.info(
         f"Total Files : {len(download_list)}"
@@ -145,38 +228,77 @@ def generate_download_list() -> list[DownloadFile]:
     return download_list
 
 
+# =========================================================
+# 파일 다운로드
+# =========================================================
+
 @task
 def download_file(
-    file_info: DownloadFile,
-) -> DownloadResult:
-    """파일 다운로드"""
+    file_info: dict,
+) -> dict:
+    """
+    다운로드 목록에 있는 파일 하나를 다운로드한다.
 
-    # tmp 폴더 생성
+    입력:
+        file_info
+        {
+            "taxi_type": "...",
+            "filename": "...",
+            "url": "..."
+        }
+
+    반환:
+        {
+            "taxi_type": "...",
+            "filename": "...",
+            "tmp_path": "..."
+        }
+    """
+
+    # -------------------------------------------------
+    # 1. 임시 디렉터리 생성
+    # -------------------------------------------------
+
     TMP_DIR.mkdir(
         parents=True,
         exist_ok=True,
     )
 
-    # 저장 경로
-    save_path = TMP_DIR / file_info.filename
+    # -------------------------------------------------
+    # 2. 임시 저장 경로 생성
+    # -------------------------------------------------
+
+    filename = file_info["filename"]
+
+    save_path = TMP_DIR / filename
 
     try:
 
         logger.info(
-            f"Download Start : {file_info.filename}"
+            f"Download Start : {filename}"
         )
 
-        # 파일 다운로드
+        # -------------------------------------------------
+        # 3. 파일 다운로드
+        # -------------------------------------------------
+
         response = session.get(
-            url=file_info.url,
+            url=file_info["url"],
             timeout=HTTP_TIMEOUT,
             stream=True,
         )
 
+        # HTTP 오류가 발생하면 예외 발생
         response.raise_for_status()
 
-        # 파일 저장
-        with open(save_path, "wb") as file:
+        # -------------------------------------------------
+        # 4. 파일 저장
+        # -------------------------------------------------
+
+        with open(
+            save_path,
+            "wb",
+        ) as file:
 
             for chunk in response.iter_content(
                 chunk_size=CHUNK_SIZE
@@ -186,23 +308,30 @@ def download_file(
                     file.write(chunk)
 
         logger.info(
-            f"Download Complete : {file_info.filename}"
+            f"Download Complete : {filename}"
         )
 
-        return DownloadResult(
-            taxi_type=file_info.taxi_type,
-            filename=file_info.filename,
-            tmp_path=save_path,
-        )
+        # -------------------------------------------------
+        # 5. 다음 Task로 결과 전달
+        # -------------------------------------------------
+        #
+        # DownloadResult 객체가 아니라 dict를 반환한다.
+        #
+
+        return {
+            "taxi_type": file_info["taxi_type"],
+            "filename": filename,
+            "tmp_path": str(save_path),
+        }
 
     except requests.RequestException as error:
 
         logger.error(
             f"Download Failed : "
-            f"{file_info.filename} ({error})"
+            f"{filename} ({error})"
         )
 
-        # 실패 파일 삭제
+        # 다운로드 실패한 파일 삭제
         if save_path.exists():
             save_path.unlink()
 
@@ -212,14 +341,24 @@ def download_file(
 
         logger.error(
             f"Unexpected Error : "
-            f"{file_info.filename} ({error})"
+            f"{filename} ({error})"
         )
 
-        # 실패 파일 삭제
+        # 예상하지 못한 오류가 발생한 경우에도
+        # 불완전하게 저장된 파일을 삭제한다.
         if save_path.exists():
             save_path.unlink()
 
         raise
 
+
+# =========================================================
+# 시작 날짜 반환
+# =========================================================
+
 def get_start_date() -> datetime:
-    """다운로드 시작 월 반환"""
+    """
+    다운로드 시작 날짜를 반환한다.
+    """
+
+    return INITIAL_START_DATE
