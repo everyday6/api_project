@@ -26,7 +26,7 @@ TAXI_TYPES = [
     "yellow",
     "green",
     "fhv",
-    "hvfhv",
+    "fhvhv",
 ]
 
 # ==========================
@@ -40,6 +40,7 @@ DATA_DIR = PROJECT_ROOT / "data"
 TMP_DIR = DATA_DIR / "tmp"
 
 BRONZE_DIR = DATA_DIR / "bronze"
+SILVER_DIR = DATA_DIR / "silver"
 
 # ==========================
 # HTTP 설정
