@@ -26,14 +26,13 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from common.config import BRONZE_DIR, SILVER_DIR
+from common.config import BRONZE_DIR, SILVER_DIR, BOROUGH_EVENT
 from common.utils import save_parquet
 from common.logger import get_logger
 
 logger = get_logger(__name__)
 
 SOURCE = "event"
-BOROUGH = "Manhattan"
 
 # 보도만 막아 차량 통행에는 영향이 없는 유형
 SIDEWALK_ONLY = [
@@ -128,7 +127,7 @@ def transform(df, run_date):
 
     # 1. 맨해튼만
     df = df[
-        df["event_borough"] == BOROUGH
+        df["event_borough"] == BOROUGH_EVENT
     ].copy()
 
     # 2. 날짜/시간 변환
