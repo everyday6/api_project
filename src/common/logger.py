@@ -5,6 +5,7 @@
 from __future__ import annotations
 
 import logging
+import sys
 from pathlib import Path
 
 LOG_DIR = Path("logs")
@@ -34,7 +35,7 @@ def get_logger(name: str, log_to_file: bool = False, log_file_stem: str | None =
         "[%(asctime)s] %(levelname)s - %(message)s"
     )
 
-    stream_handler = logging.StreamHandler()
+    stream_handler = logging.StreamHandler(sys.stdout)
     stream_handler.setFormatter(formatter)
     logger.addHandler(stream_handler)
 
