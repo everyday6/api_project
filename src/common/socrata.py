@@ -30,7 +30,7 @@ from requests.exceptions import (
 from urllib3.util.retry import Retry
 
 from common.config import (
-    REQUEST_TIMEOUT,
+    HTTP_TIMEOUT,
     SOCRATA_PAGE_SIZE,
 )
 
@@ -83,7 +83,7 @@ def _get_page(
             res = session.get(
                 url,
                 params=params,
-                timeout=REQUEST_TIMEOUT,
+                timeout=HTTP_TIMEOUT,
             )
 
             res.raise_for_status()
