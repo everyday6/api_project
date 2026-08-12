@@ -28,7 +28,7 @@ sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from common.config import (
     BRONZE_DIR,
-    REQUEST_TIMEOUT,
+    HTTP_TIMEOUT,
     TICKETMASTER_API_KEY,
     TICKETMASTER_URL,
     TICKETMASTER_CITY,
@@ -69,7 +69,7 @@ def request_page(
     res = session.get(
         TICKETMASTER_URL,
         params=params,
-        timeout=REQUEST_TIMEOUT,
+        timeout=HTTP_TIMEOUT,
     )
 
     res.raise_for_status()

@@ -28,6 +28,8 @@ x-airflow-env: &airflow-env
 
   AIRFLOW_UID: ${AIRFLOW_UID}
 
+  TICKETMASTER_API_KEY: ${TICKETMASTER_API_KEY}
+
   PYTHONPATH: /opt/airflow
 
 x-airflow-volumes: &airflow-volumes
