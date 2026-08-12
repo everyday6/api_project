@@ -16,7 +16,7 @@ Airflow Task 간 데이터 전달은
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import requests
 from dateutil.relativedelta import relativedelta
@@ -232,7 +232,10 @@ def generate_download_list() -> list[dict]:
 # 파일 다운로드
 # =========================================================
 
-@task
+@task(
+    retries=3,
+    retry_delay=timedelta(minutes=1),
+)
 def download_file(
     file_info: dict,
 ) -> dict:
