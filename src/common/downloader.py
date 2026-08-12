@@ -16,6 +16,7 @@ Airflow Task 간 데이터 전달은
 
 from __future__ import annotations
 
+import time
 from datetime import datetime, timedelta
 
 import requests
@@ -100,6 +101,7 @@ def build_url(
 
 def check_file_exists(
     url: str,
+    max_attempts: int = 3,
 ) -> bool:
     """
     TLC 서버에 해당 파일이 존재하는지 확인한다.
@@ -107,47 +109,58 @@ def check_file_exists(
     반환값:
     - 200 → True
     - 404 → False
-    - 그 외 → 오류 발생
+    - 그 외 → CloudFront 쪽의 일시적인 오류/제한일 수 있으므로
+      잠깐 대기 후 재시도, 그래도 계속 실패하면 오류 발생
     """
 
-    try:
+    for attempt in range(1, max_attempts + 1):
 
-        # 파일 자체를 다운로드하지 않고
-        # HEAD 요청으로 존재 여부만 확인한다.
-        response = session.head(
-            url=url,
-            timeout=HTTP_TIMEOUT,
-        )
+        try:
 
-        # 파일이 존재함
-        if response.status_code == 200:
-            return True
+            # 파일 자체를 다운로드하지 않고
+            # HEAD 요청으로 존재 여부만 확인한다.
+            response = session.head(
+                url=url,
+                timeout=HTTP_TIMEOUT,
+            )
 
-        # 파일이 존재하지 않음
-        if response.status_code == 404:
-            return False
+            # 파일이 존재함
+            if response.status_code == 200:
+                return True
 
-        # 예상하지 못한 응답
-        raise RuntimeError(
-            f"HEAD Request Failed "
-            f"({response.status_code}) : {url}"
-        )
+            # 파일이 존재하지 않음
+            if response.status_code == 404:
+                return False
 
-    except requests.RequestException as error:
+            logger.warning(
+                f"HEAD Request Unexpected Status "
+                f"({response.status_code}, attempt {attempt}/{max_attempts}) : {url}"
+            )
 
-        logger.error(
-            f"HEAD Request Failed : "
-            f"{url} ({error})"
-        )
+        except requests.RequestException as error:
 
-        raise
+            logger.warning(
+                f"HEAD Request Failed "
+                f"(attempt {attempt}/{max_attempts}) : {url} ({error})"
+            )
+
+        # 마지막 시도가 아니면 잠깐 대기 후 재시도
+        if attempt < max_attempts:
+            time.sleep(2 ** (attempt - 1))
+
+    raise RuntimeError(
+        f"HEAD Request Failed after {max_attempts} attempts : {url}"
+    )
 
 
 # =========================================================
 # 다운로드 목록 생성
 # =========================================================
 
-@task
+@task(
+    retries=2,
+    retry_delay=timedelta(minutes=1),
+)
 def generate_download_list() -> list[dict]:
     """
     지정된 기간 동안 존재하는 TLC 데이터의
@@ -235,6 +248,9 @@ def generate_download_list() -> list[dict]:
 @task(
     retries=3,
     retry_delay=timedelta(minutes=1),
+    # 동시 다운로드 개수를 4개로 제한해서 대용량 파일(fhvhv 등)이
+    # 네트워크 대역폭을 너무 잘게 나눠쓰지 않게 함
+    pool="downloads",
 )
 def download_file(
     file_info: dict,
