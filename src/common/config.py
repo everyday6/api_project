@@ -52,7 +52,7 @@ SILVER_DIR = DATA_DIR / "silver"
 # ==========================
 
 # HEAD / GET Timeout
-HTTP_TIMEOUT = 30
+HTTP_TIMEOUT = 60
 
 # 다운로드 Chunk 크기
 CHUNK_SIZE = 8192
