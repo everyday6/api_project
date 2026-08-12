@@ -1,0 +1,32 @@
+# traffic_score 계산에 쓰이는 컴포넌트/가중치 설정.
+#
+# 조원이 새 요소(TLC 수요, 이벤트, 공사 등)를 추가할 때 코드를 고치지 않고
+# 이 파일에 줄만 추가 + enabled: true로 바꾸면 반영되도록 만들어졌다.
+#
+# 각 컴포넌트는 src/scoring/traffic_score.py의 COMPONENT_SOURCES에서
+# "실제 데이터가 어느 컬럼에서 오는지"와 매핑된다. enabled: true인데
+# COMPONENT_SOURCES에 매핑이 없으면(아직 다른 요소가 구현 전이면)
+# get_traffic_score()가 바로 에러를 내서 "설정만 켜고 데이터는 안 붙임" 같은
+# 실수를 조용히 넘어가지 않게 한다.
+#
+# demand/capacity 각각 enabled인 항목들의 (weight * value) 합으로 계산한다.
+# traffic_score = demand 합계 / capacity 합계.
+
+components:
+  demand:
+    centrality:
+      weight: 1.0
+      enabled: true          # dim_segment_traffic_score_v0.demand_raw (매개중심성 percentile)
+    tlc_volume:
+      weight: 1.0
+      enabled: false         # TODO: TLC 통행량 기반 수요 (다른 조원 작업)
+    event_boost:
+      weight: 0.3
+      enabled: false         # TODO: 행사로 인한 수요 가산 (다른 조원 작업)
+  capacity:
+    base_capacity:
+      weight: 1.0
+      enabled: true          # dim_segment_traffic_score_v0.capacity_per_hour
+    closure_penalty:
+      weight: 1.0
+      enabled: false         # TODO: 공사/도로통제로 인한 용량 감소 (다른 조원 작업)
