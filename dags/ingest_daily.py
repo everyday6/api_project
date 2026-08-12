@@ -1,5 +1,5 @@
 """
-daily_disruption — 공사 · 행사 · TicketMaster 일일 파이프라인
+ingest_daily — 공사 · 행사 · TicketMaster 일일 파이프라인
 
 세 소스는 매일 갱신한다.
 
@@ -54,7 +54,7 @@ default_args = {
 
 
 @dag(
-    dag_id="daily_disruption",
+    dag_id="ingest_daily",
     description="공사 · 행사 · TicketMaster Bronze/Silver 일일 파이프라인",
 
     # 매일 New York 시간 기준 오전 4시 실행
@@ -81,7 +81,7 @@ default_args = {
         "silver",
     ],
 )
-def daily_disruption():
+def ingest_daily():
 
     # ───────────────────────────
     # Construction
@@ -89,7 +89,7 @@ def daily_disruption():
 
     @task(task_id="construction_bronze")
     def construction_bronze():
-        from scripts.construction.bronze import main
+        from src.construction.bronze import main
 
         context = get_current_context()
 
@@ -101,7 +101,7 @@ def daily_disruption():
 
     @task(task_id="construction_silver")
     def construction_silver():
-        from scripts.construction.silver import main
+        from src.construction.silver import main
 
         context = get_current_context()
         os.environ["RUN_DATE"] = context["ds"]
@@ -115,13 +115,13 @@ def daily_disruption():
 
     @task(task_id="event_bronze")
     def event_bronze(**context):
-        from scripts.event.bronze import main
+        from src.event.bronze import main
         main(run_date=context["ds"])
 
 
     @task(task_id="event_silver")
     def event_silver(**context):
-        from scripts.event.silver import main
+        from src.event.silver import main
         main(run_date=context["ds"])
 
 
@@ -131,7 +131,7 @@ def daily_disruption():
 
     @task(task_id="ticketmaster_bronze")
     def ticketmaster_bronze():
-        from scripts.ticketmaster.bronze import main
+        from src.ticketmaster.bronze import main
 
         context = get_current_context()
         os.environ["RUN_DATE"] = context["ds"]
@@ -141,7 +141,7 @@ def daily_disruption():
 
     @task(task_id="ticketmaster_silver")
     def ticketmaster_silver():
-        from scripts.ticketmaster.silver import main
+        from src.ticketmaster.silver import main
 
         context = get_current_context()
         os.environ["RUN_DATE"] = context["ds"]
@@ -173,4 +173,4 @@ def daily_disruption():
     ticketmaster_b >> ticketmaster_s
 
 
-daily_disruption()
+ingest_daily()
