@@ -118,7 +118,8 @@ services:
       --lastname User
       --role Admin
       --email ${AIRFLOW_ADMIN_EMAIL}
-      || true
+      || true &&
+      airflow pools set downloads 16 'TLC 파일 다운로드 동시 실행 제한 (네트워크 대역폭 보호용)'
       "
 
 
@@ -252,7 +253,11 @@ services:
 
     volumes:
       - ./src:/opt/spark/src
-      - ./data:/opt/spark/data
+      # Airflow 컨테이너와 동일한 절대 경로로 마운트.
+      # Spark executor가 파일을 읽을 때 driver(airflow-worker)가 넘긴
+      # 절대 경로(/opt/airflow/data/...)를 그대로 열어야 하기 때문에
+      # 경로가 양쪽에서 반드시 같아야 함.
+      - ./data:/opt/airflow/data
 
     networks:
       - spark-network
@@ -279,7 +284,11 @@ services:
 
     volumes:
       - ./src:/opt/spark/src
-      - ./data:/opt/spark/data
+      # Airflow 컨테이너와 동일한 절대 경로로 마운트.
+      # Spark executor가 파일을 읽을 때 driver(airflow-worker)가 넘긴
+      # 절대 경로(/opt/airflow/data/...)를 그대로 열어야 하기 때문에
+      # 경로가 양쪽에서 반드시 같아야 함.
+      - ./data:/opt/airflow/data
 
     networks:
       - spark-network
