@@ -38,6 +38,7 @@ x-airflow-volumes: &airflow-volumes
   - ./data:/opt/airflow/data
   - ./logs:/opt/airflow/logs
   - ./plugins:/opt/airflow/plugins
+  - ./config:/opt/airflow/config
 
 
 services:
@@ -233,6 +234,44 @@ services:
       - spark-network
 
     command: celery worker
+
+
+  # =========================================================
+  # Traffic Score API + Dashboard
+  #
+  # Airflow 컴포넌트가 아니라 별도 서비스다 (postgres/redis/celery 불필요).
+  # src/scoring/traffic_score.py의 get_traffic_score()/get_map_data()를
+  # FastAPI로 감싸서 대시보드(dashboard/index.html)에 서빙한다.
+  # =========================================================
+  traffic-score-api:
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: traffic-score-api
+
+    environment:
+      PYTHONPATH: /opt/airflow
+
+    volumes:
+      - ./src:/opt/airflow/src
+      - ./data:/opt/airflow/data
+      - ./config:/opt/airflow/config
+      - ./dashboard:/opt/airflow/dashboard
+
+    working_dir: /opt/airflow
+
+    ports:
+      - "8000:8000"
+
+    # apache/airflow 베이스 이미지의 기본 entrypoint(/entrypoint)가 명령을
+    # airflow CLI 인자로 해석해버려서, 이 서비스는 그걸 우회해야 uvicorn이 뜬다.
+    entrypoint: []
+    command: >
+      uvicorn src.scoring.api:app --host 0.0.0.0 --port 8000
+
+    networks:
+      - airflow-network
 
 
   # =========================================================

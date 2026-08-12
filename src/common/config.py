@@ -41,6 +41,7 @@ TAXI_TYPES = [
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DATA_DIR = PROJECT_ROOT / "data"
+CONFIG_DIR = PROJECT_ROOT / "config"
 
 TMP_DIR = DATA_DIR / "tmp"
 
