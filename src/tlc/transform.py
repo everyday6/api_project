@@ -39,7 +39,7 @@ from pyspark.sql.types import (
 from src.common.logger import get_logger
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver")
 
 
 # =========================================================

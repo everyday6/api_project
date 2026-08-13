@@ -29,10 +29,13 @@ from src.common.config import (
     INITIAL_START_DATE,
     INITIAL_END_DATE,
     TMP_DIR,
+    BRONZE_DIR,
     TAXI_TYPES,
     HTTP_TIMEOUT,
     CHUNK_SIZE,
     USER_AGENT,
+    TLC_PUBLISH_LAG_MONTHS,
+    RECENT_MONTHS_WINDOW,
 )
 
 from src.common.logger import get_logger
@@ -42,7 +45,7 @@ from src.common.logger import get_logger
 # Logger
 # =========================================================
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_bronze")
 
 
 # =========================================================
@@ -102,14 +105,26 @@ def build_url(
 def check_file_exists(
     url: str,
     max_attempts: int = 3,
+    treat_403_as_missing: bool = False,
 ) -> bool:
     """
     TLC 서버에 해당 파일이 존재하는지 확인한다.
 
+    이 버킷은 공개 목록 조회(ListBucket) 권한이 없어서,
+    파일이 없을 때 404가 아니라 403(Access Denied)을 준다.
+    근데 실제로 존재하는 파일에서도 CloudFront 쪽 일시적인
+    오류/제한으로 403이 뜰 때가 있어서, 둘을 구분해야 한다.
+
     반환값:
     - 200 → True
     - 404 → False
-    - 그 외 → CloudFront 쪽의 일시적인 오류/제한일 수 있으므로
+    - 403 →
+        treat_403_as_missing=True면 "그냥 아직 없는 파일"로 보고
+        바로 False (예: 매일 신규 데이터 확인할 때 사용).
+        False(기본값)면 이미 존재해야 하는 파일인데 403이 뜬 것으로
+        보고, 일시적인 오류일 수 있으니 재시도 후에도 계속 403이면
+        오류 발생 (예: 존재를 이미 알고 있는 과거 데이터 백필용).
+    - 그 외(5xx 등) → CloudFront 쪽의 일시적인 오류일 수 있으므로
       잠깐 대기 후 재시도, 그래도 계속 실패하면 오류 발생
     """
 
@@ -132,16 +147,21 @@ def check_file_exists(
             if response.status_code == 404:
                 return False
 
+            # 아직 안 올라온 파일을 확인하는 상황이면
+            # 403도 "없음"으로 바로 처리한다.
+            if response.status_code == 403 and treat_403_as_missing:
+                return False
+
             logger.warning(
-                f"HEAD Request Unexpected Status "
-                f"({response.status_code}, attempt {attempt}/{max_attempts}) : {url}"
+                f"HEAD 요청 응답 이상 "
+                f"(상태 코드 {response.status_code}, {attempt}/{max_attempts}번째 시도) : {url}"
             )
 
         except requests.RequestException as error:
 
             logger.warning(
-                f"HEAD Request Failed "
-                f"(attempt {attempt}/{max_attempts}) : {url} ({error})"
+                f"HEAD 요청 실패 "
+                f"({attempt}/{max_attempts}번째 시도) : {url} ({error})"
             )
 
         # 마지막 시도가 아니면 잠깐 대기 후 재시도
@@ -149,7 +169,7 @@ def check_file_exists(
             time.sleep(2 ** (attempt - 1))
 
     raise RuntimeError(
-        f"HEAD Request Failed after {max_attempts} attempts : {url}"
+        f"HEAD 요청이 {max_attempts}번 시도 후에도 계속 실패했습니다 : {url}"
     )
 
 
@@ -210,7 +230,7 @@ def generate_download_list() -> list[dict]:
             if check_file_exists(url):
 
                 logger.info(
-                    f"Found : {filename}"
+                    f"파일 확인됨 : {filename}"
                 )
 
                 # 커스텀 객체 대신 dict 사용
@@ -226,7 +246,7 @@ def generate_download_list() -> list[dict]:
             else:
 
                 logger.warning(
-                    f"Skip : {filename}"
+                    f"건너뜀 : {filename}"
                 )
 
         # 다음 달로 이동
@@ -235,7 +255,80 @@ def generate_download_list() -> list[dict]:
         )
 
     logger.info(
-        f"Total Files : {len(download_list)}"
+        f"전체 파일 수 : {len(download_list)}"
+    )
+
+    return download_list
+
+
+# =========================================================
+# 신규 데이터 확인 (운영 중 매일 실행)
+# =========================================================
+
+@task(
+    retries=2,
+    retry_delay=timedelta(minutes=1),
+)
+def generate_incremental_download_list() -> list[dict]:
+    """
+    오늘 날짜 기준으로 새로 올라왔을 만한 TLC 데이터를 확인한다.
+
+    TLC는 보통 TLC_PUBLISH_LAG_MONTHS만큼 지연을 두고 데이터를 올리므로,
+    그 기준 달부터 RECENT_MONTHS_WINDOW개월치를 매일 다시 확인한다.
+
+    이미 Bronze에 저장된 파일은 로컬에 존재하는지만 확인해서 건너뛰고
+    (서버에 다시 물어보지 않음), 아직 없는 파일만 서버에 존재 여부를 확인한다.
+    """
+
+    download_list: list[dict] = []
+
+    today = datetime.now()
+
+    for offset in range(
+        TLC_PUBLISH_LAG_MONTHS,
+        TLC_PUBLISH_LAG_MONTHS + RECENT_MONTHS_WINDOW,
+    ):
+
+        target = today - relativedelta(months=offset)
+
+        for taxi_type in TAXI_TYPES:
+
+            filename = build_filename(
+                taxi_type=taxi_type,
+                year=target.year,
+                month=target.month,
+            )
+
+            # 이미 Bronze에 있으면 서버에 물어볼 필요 없이 건너뛴다.
+            if (BRONZE_DIR / filename).exists():
+                continue
+
+            url = build_url(
+                filename=filename,
+            )
+
+            if check_file_exists(url, treat_403_as_missing=True):
+
+                logger.info(
+                    f"신규 파일 확인됨 : {filename}"
+                )
+
+                download_list.append(
+                    {
+                        "taxi_type": taxi_type,
+                        "filename": filename,
+                        "url": url,
+                    }
+                )
+
+            else:
+
+                logger.info(
+                    f"아직 올라오지 않음 : {filename}"
+                )
+
+    logger.info(
+        f"신규 다운로드 대상 파일 수 : {len(download_list)}"
     )
 
     return download_list
@@ -294,7 +387,7 @@ def download_file(
     try:
 
         logger.info(
-            f"Download Start : {filename}"
+            f"다운로드 시작 : {filename}"
         )
 
         # -------------------------------------------------
@@ -327,7 +420,7 @@ def download_file(
                     file.write(chunk)
 
         logger.info(
-            f"Download Complete : {filename}"
+            f"다운로드 완료 : {filename}"
         )
 
         # -------------------------------------------------
@@ -346,7 +439,7 @@ def download_file(
     except requests.RequestException as error:
 
         logger.error(
-            f"Download Failed : "
+            f"다운로드 실패 : "
             f"{filename} ({error})"
         )
 
@@ -359,7 +452,7 @@ def download_file(
     except Exception as error:
 
         logger.error(
-            f"Unexpected Error : "
+            f"예상치 못한 오류 : "
             f"{filename} ({error})"
         )
 

@@ -15,7 +15,7 @@ from src.common.logger import get_logger
 
 
 # Logger 생성
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_bronze")
 
 
 @task
