@@ -22,7 +22,10 @@ road_control_events_silver 이후에는 closure_penalty(traffic_score의 용량 
   road_control_events_silver
     -> map_road_control_segment (construction, 도로명 기반 매핑)
     -> map_road_closure_segment (other_road_control, 공간 조인 기반 매핑)
-    -> closure_penalty (둘을 합쳐서 graph_segment_adjacency로 3홉 감쇠 확산)
+    -> closure_penalty (둘을 합쳐서 graph_segment_adjacency로 3홉 감쇠 확산,
+       segment_id x hour(0~23) 단위로 계산 — construction_work_hours에서 뽑은
+       work_start_hour/work_end_hour/work_days_code가 있으면 그 시간대에만
+       반영되고, 없으면(road_closures 전부 포함) 항상 활성으로 취급)
 
 실패 시 최대 3회 자동 재시도하며,
 동일 RUN_DATE 재실행 시 동일 날짜 파티션을 사용한다.
@@ -209,8 +212,9 @@ def ingest_daily():
     def closure_penalty():
         """
         construction + road_closures 진앙 segment을 합쳐서 graph_segment_adjacency로
-        3홉까지 감쇠 확산시킨 뒤, segment별 용량 감소량(closure_capacity_reduction)을
-        계산한다. traffic_score의 closure_penalty 컴포넌트가 이 결과를 참조한다.
+        3홉까지 감쇠 확산시킨 뒤, segment_id x hour(0~23) 단위로 용량 감소량
+        (closure_capacity_reduction)을 계산한다. traffic_score의 closure_penalty
+        컴포넌트가 이 결과를 ts_hour 기준으로 조회한다.
         """
         from src.scoring.closure_penalty import main
 
