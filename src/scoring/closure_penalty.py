@@ -155,6 +155,133 @@ def _day_mask(weekday: int, codes: pd.Series) -> pd.Series:
     return mask
 
 
+# segment 기준 홉 거리를 "홉" 대신 사용자에게 보여줄 쉬운 표현으로 바꾼 것 —
+# 대시보드 "현재 영향받는 공사" 목록용. 정확히 "블록"과 일치하진 않지만(도로
+# 그래프상 인접 segment 기준이라) 사용자에게 익숙한 감각적 표현으로 근사했다.
+HOP_LABELS = {
+    0: "바로 이 구간",
+    1: "한 블록 거리",
+    2: "두 블록 거리",
+    3: "세 블록 거리",
+}
+
+
+def load_ground_zero_details(run_date: str) -> pd.DataFrame:
+    """
+    load_ground_zero_records()는 집계(intensity 계산)에 필요한 컬럼만 남기지만,
+    여기서는 대시보드 "현재 영향받는 공사" 상세 목록에 보여줄 on_street/
+    from_street/to_street/work_start_ts/work_end_ts/purpose까지 전부 보존한다.
+    """
+    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={run_date}" / "data.parquet"
+    construction = pd.read_parquet(
+        construction_path,
+        columns=[
+            "permit_id", "segment_id", "on_street", "from_street", "to_street",
+            "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
+        ],
+    )
+    construction = construction[construction["segment_id"].notna()]
+    construction = construction.drop_duplicates(subset=["permit_id", "segment_id"])
+    construction = construction.copy()
+    construction["source"] = "construction"
+    construction["purpose"] = pd.Series(None, index=construction.index, dtype="object")
+
+    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={run_date}" / "data.parquet"
+    closures = pd.read_parquet(
+        closure_path,
+        columns=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id", "purpose"],
+    )
+    closures = closures[closures["segment_id"].notna()]
+    closures = closures.drop_duplicates(
+        subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
+    )
+    closures = closures.copy()
+    closures["permit_id"] = pd.Series(None, index=closures.index, dtype="object")
+    closures["work_start_hour"] = pd.Series(float("nan"), index=closures.index, dtype="float64")
+    closures["work_end_hour"] = pd.Series(float("nan"), index=closures.index, dtype="float64")
+    closures["work_days_code"] = pd.Series(None, index=closures.index, dtype="object")
+    closures["source"] = "road_closure"
+
+    cols = [
+        "segment_id", "source", "permit_id", "on_street", "from_street", "to_street",
+        "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code", "purpose",
+    ]
+    return pd.concat([construction[cols], closures[cols]], ignore_index=True)
+
+
+def _segments_within_hops(segment_id: str, adjacency: dict, max_hops: int = MAX_HOPS) -> dict[str, int]:
+    """segment_id 자신(0홉)부터 max_hops까지 BFS로 도달 가능한 segment별 최소 홉 수."""
+    hops = {segment_id: 0}
+    frontier = {segment_id}
+    for hop in range(1, max_hops + 1):
+        next_frontier = set()
+        for s in frontier:
+            for nb in adjacency.get(s, []):
+                if nb in hops:
+                    continue
+                hops[nb] = hop
+                next_frontier.add(nb)
+        frontier = next_frontier
+        if not frontier:
+            break
+    return hops
+
+
+def get_nearby_closures(
+    segment_id: str,
+    run_date: str,
+    hour: int,
+    weekday: int,
+    adjacency: dict,
+    max_hops: int = MAX_HOPS,
+) -> list[dict]:
+    """
+    segment_id 기준 max_hops 이내에서, (hour, weekday) 시점에 실제로 활성인
+    공사/통제를 홉 거리와 함께 반환한다 — 대시보드 "현재 영향받는 공사" 목록용.
+    가까운 순(홉 오름차순, 그다음 시작일순)으로 정렬해서 반환한다.
+    """
+    hops_by_segment = _segments_within_hops(segment_id, adjacency, max_hops)
+
+    details = load_ground_zero_details(run_date)
+    nearby = details[details["segment_id"].isin(hops_by_segment.keys())]
+    if nearby.empty:
+        return []
+
+    active = nearby[
+        _hour_mask(hour, nearby["work_start_hour"], nearby["work_end_hour"])
+        & _day_mask(weekday, nearby["work_days_code"])
+    ]
+    if active.empty:
+        return []
+
+    # 같은 구간의 같은 도로/기간을 permit_id만 다르게(하나의 공사가 여러 개
+    # 허가 번호로 쪼개진 경우) 여러 번 들고 있는 경우가 있다 — UI엔 permit_id를
+    # 안 보여주므로 이대로 두면 사용자에게 완전히 동일해 보이는 항목이 여러 번
+    # 뜬다. 표시 기준(구간/도로/기간)으로 중복 제거해서 하나만 보여준다.
+    active = active.drop_duplicates(
+        subset=["segment_id", "on_street", "from_street", "to_street", "work_start_ts", "work_end_ts"]
+    )
+
+    rows = []
+    for row in active.itertuples(index=False):
+        hop = hops_by_segment[row.segment_id]
+        rows.append({
+            "segment_id": row.segment_id,
+            "hop": hop,
+            "hop_label": HOP_LABELS.get(hop, f"{hop}블록 거리"),
+            "source": row.source,
+            "on_street": row.on_street,
+            "from_street": row.from_street,
+            "to_street": row.to_street,
+            "work_start_ts": None if pd.isna(row.work_start_ts) else str(row.work_start_ts),
+            "work_end_ts": None if pd.isna(row.work_end_ts) else str(row.work_end_ts),
+            "purpose": None if row.purpose is None or pd.isna(row.purpose) else row.purpose,
+        })
+
+    rows.sort(key=lambda r: (r["hop"], r["work_start_ts"] or ""))
+    return rows
+
+
 def load_adjacency() -> dict:
     graph = pd.read_parquet(GRAPH_SEGMENT_ADJACENCY_PATH, columns=["segment_id", "neighbor_segment_id"])
     return graph.groupby("segment_id")["neighbor_segment_id"].apply(list).to_dict()
