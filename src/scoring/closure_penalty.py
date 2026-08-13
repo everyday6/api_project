@@ -310,6 +310,51 @@ def get_nearby_closures(
     return rows
 
 
+def get_active_closures(mapping_dt: str, query_date: str, hour: int) -> list[dict]:
+    """
+    (query_date, hour) 시점에 실제로 활성인 공사/통제 전체 목록 — get_nearby_closures()
+    와 달리 특정 segment 인접 여부와 무관하게 맨해튼 전체를 대상으로 한다.
+    대시보드 "이 날짜에 활성인 공사" 목록(검색/클릭해서 지도 이동)용이라, 하나의
+    permit이 여러 segment_id에 매핑된 경우 대표 segment_id 하나만 남긴다
+    (지도 이동/선택 앵커로 아무 세그먼트나 하나면 충분하므로).
+    시작일 오름차순으로 정렬해서 반환한다.
+    """
+    weekday = date.fromisoformat(query_date).weekday()
+    details = load_ground_zero_details(mapping_dt)
+
+    active = details[
+        _date_mask(query_date, details["work_start_ts"], details["work_end_ts"])
+        & _hour_mask(hour, details["work_start_hour"], details["work_end_hour"])
+        & _day_mask(weekday, details["work_days_code"])
+    ]
+    if active.empty:
+        return []
+
+    # 같은 공사가 여러 segment_id에 매핑된 경우 대표 하나만 남긴다(정렬 후
+    # groupby().first() — segment_id 오름차순 중 가장 앞선 것을 대표로 고정).
+    active = active.sort_values("segment_id")
+    representative = active.groupby(
+        ["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "source"],
+        as_index=False,
+    ).first()
+
+    rows = []
+    for row in representative.itertuples(index=False):
+        rows.append({
+            "segment_id": row.segment_id,
+            "source": row.source,
+            "on_street": row.on_street,
+            "from_street": row.from_street,
+            "to_street": row.to_street,
+            "work_start_ts": None if pd.isna(row.work_start_ts) else str(row.work_start_ts),
+            "work_end_ts": None if pd.isna(row.work_end_ts) else str(row.work_end_ts),
+            "purpose": None if row.purpose is None or pd.isna(row.purpose) else row.purpose,
+        })
+
+    rows.sort(key=lambda r: r["work_start_ts"] or "")
+    return rows
+
+
 def get_data_date_range(mapping_dt: str) -> tuple[str, str]:
     """mapping_dt= 파티션에 있는 permit들의 work_start_ts~work_end_ts 전체 범위
     (날짜 문자열) — 대시보드 날짜 선택기에서 "이 범위를 벗어나면 봐도 영향 없는
