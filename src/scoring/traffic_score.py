@@ -41,10 +41,10 @@ LOCAL_TZ = ZoneInfo("America/New_York")  # ingest_daily DAG와 동일 기준 시
 WEIGHTS_CONFIG_PATH = CONFIG_DIR / "traffic_score_weights.yaml"
 
 # 컴포넌트 이름 -> 실제 데이터가 있는 컬럼명 매핑.
-# 아직 구현 안 된 컴포넌트(tlc_volume, event_boost, closure_penalty)는 값이
-# None이다 — 누군가 yaml에서 enabled: true로 켰는데 여기 매핑이 없으면
-# _validate_weights()가 바로 에러를 낸다(조용히 무시하고 넘어가지 않음).
-# 다른 조원이 새 컴포넌트를 구현하면 여기에 한 줄만 추가하면 된다.
+# 아직 구현 안 된 컴포넌트(tlc_volume, event_boost)는 값이 None이다 — 누군가
+# yaml에서 enabled: true로 켰는데 여기 매핑이 없으면 load_weights()가 바로
+# 에러를 낸다(조용히 무시하고 넘어가지 않음). 다른 조원이 새 컴포넌트를
+# 구현하면 여기에 한 줄만 추가하면 된다.
 COMPONENT_SOURCES: dict[str, str | None] = {
     "centrality": "demand_raw",
     "tlc_volume": None,
@@ -53,17 +53,30 @@ COMPONENT_SOURCES: dict[str, str | None] = {
     "closure_penalty": "closure_capacity_reduction",
 }
 
+# 시간대(hour)별로 값이 달라지는 컴포넌트 목록 — value는 그 컴포넌트의 Silver/Gold
+# 산출물이 저장된 SILVER_DIR 밑 디렉터리 이름이다(dt= 파티션을 스스로 찾아서
+# 읽는다, closure_penalty.py의 OUT_SOURCE와 동일 패턴). 여기 없는 컴포넌트는
+# _load_base_data()의 정적 테이블(분기 1회 갱신)에서 값을 가져온다고 간주한다.
+#
+# 새 시간대별 컴포넌트(예: TLC 통행량)를 추가할 때 할 일은 딱 두 가지뿐이다 —
+# ① COMPONENT_SOURCES에 컬럼명 추가, ② 여기에 "그 컴포넌트 이름: Silver 출력
+# 디렉터리 이름" 한 줄 추가. get_traffic_score()/get_map_data() 코드는 안 건드려도
+# 된다 — segment_id x hour 스키마(컬럼: segment_id, hour, <값 컬럼>)로 저장하는
+# 것만 맞추면 자동으로 시간대별 조회에 포함된다.
+HOURLY_COMPONENT_SOURCES: dict[str, str] = {
+    "closure_penalty": CLOSURE_PENALTY_SOURCE,
+}
+
 _cache: dict[str, Any] = {}
 
 
-def _latest_closure_penalty_path() -> Path | None:
-    """dim_segment_closure_penalty의 dt= 파티션 중 가장 최근 것을 찾는다.
+def _latest_partition_path(source_dir_name: str) -> Path | None:
+    """<source_dir_name>의 dt= 파티션 중 가장 최근 것을 찾는다.
 
-    ingest_daily가 매일 새로 만드는 테이블이라(construction 허가는 dt=today
-    기준이라 매번 계산됨) dim_segment_traffic_score_v0(분기 1회)처럼 고정
-    경로가 아니라 그날그날 파티션을 스스로 찾아야 한다.
+    ingest_daily가 매일 새로 만드는 시간대별 테이블들은 dim_segment_traffic_score_v0
+    (분기 1회)처럼 고정 경로가 아니라 그날그날 파티션을 스스로 찾아야 한다.
     """
-    partitions = sorted((SILVER_DIR / CLOSURE_PENALTY_SOURCE).glob("dt=*/data.parquet"))
+    partitions = sorted((SILVER_DIR / source_dir_name).glob("dt=*/data.parquet"))
     return partitions[-1] if partitions else None
 
 
@@ -111,36 +124,41 @@ def _load_base_data() -> pd.DataFrame:
     return df
 
 
-def _load_closure_penalty_hourly() -> pd.DataFrame:
-    """dim_segment_closure_penalty(segment_id x hour)의 최신 dt= 파티션.
+def _load_hourly_table(component_name: str) -> pd.DataFrame:
+    """HOURLY_COMPONENT_SOURCES에 등록된 컴포넌트의 (segment_id, hour, value) 테이블.
 
     아직 한 번도 안 만들어졌으면(파티션 없음) 빈 테이블 — 이 경우 모든 조회가
-    closure_penalty=0(감소 없음)으로 처리된다.
+    이 컴포넌트=0(영향 없음)으로 처리된다.
     """
-    if "closure_hourly_df" in _cache:
-        return _cache["closure_hourly_df"]
+    cache_key = f"hourly_df::{component_name}"
+    if cache_key in _cache:
+        return _cache[cache_key]
 
-    closure_path = _latest_closure_penalty_path()
-    if closure_path is not None:
-        df = pd.read_parquet(closure_path, columns=["segment_id", "hour", "closure_capacity_reduction"])
+    value_col = COMPONENT_SOURCES[component_name]
+    source_dir = HOURLY_COMPONENT_SOURCES[component_name]
+    path = _latest_partition_path(source_dir)
+    if path is not None:
+        df = pd.read_parquet(path, columns=["segment_id", "hour", value_col])
     else:
-        df = pd.DataFrame(columns=["segment_id", "hour", "closure_capacity_reduction"])
+        df = pd.DataFrame(columns=["segment_id", "hour", value_col])
 
-    _cache["closure_hourly_df"] = df
+    _cache[cache_key] = df
     return df
 
 
-def _closure_reduction_lookup() -> dict[tuple[str, int], float]:
-    """(segment_id, hour) -> closure_capacity_reduction 딕셔너리. 단건 조회(get_traffic_score)용."""
-    if "closure_lookup" in _cache:
-        return _cache["closure_lookup"]
+def _hourly_lookup(component_name: str) -> dict[tuple[str, int], float]:
+    """(segment_id, hour) -> 값 딕셔너리. 단건 조회(get_traffic_score)용."""
+    cache_key = f"hourly_lookup::{component_name}"
+    if cache_key in _cache:
+        return _cache[cache_key]
 
-    df = _load_closure_penalty_hourly()
+    value_col = COMPONENT_SOURCES[component_name]
+    df = _load_hourly_table(component_name)
     lookup = {
         (seg, int(hour)): value
-        for seg, hour, value in zip(df["segment_id"], df["hour"], df["closure_capacity_reduction"])
+        for seg, hour, value in zip(df["segment_id"], df["hour"], df[value_col])
     }
-    _cache["closure_lookup"] = lookup
+    _cache[cache_key] = lookup
     return lookup
 
 
@@ -178,7 +196,12 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
     if segment_id not in df.index:
         raise KeyError(f"segment_id를 찾을 수 없습니다: {segment_id}")
     row = df.loc[segment_id].to_dict()
-    row["closure_capacity_reduction"] = _closure_reduction_lookup().get((segment_id, ts_hour), 0.0)
+
+    # 시간대별 컴포넌트는 전부 여기서 일괄 채운다 — HOURLY_COMPONENT_SOURCES에
+    # 등록된 것만큼 자동으로 반영되고, 값이 없으면(그 시간엔 영향 없음) 0.0.
+    for name, source_dir in HOURLY_COMPONENT_SOURCES.items():
+        column = COMPONENT_SOURCES[name]
+        row[column] = _hourly_lookup(name).get((segment_id, ts_hour), 0.0)
 
     demand_items = _enabled_items(weights["components"]["demand"], row)
     capacity_items = _enabled_items(weights["components"]["capacity"], row)
@@ -196,6 +219,19 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
             "capacity": {"value": capacity_value, "items": capacity_items},
         },
     }
+
+
+def get_traffic_score_hourly(segment_id: str) -> list[dict]:
+    """segment_id 하나의 0~23시 전체 프로파일 — get_traffic_score()를 24번 재사용한다.
+
+    대시보드의 "하루 전체 막대 그래프"용. _load_base_data()/_hourly_lookup()이
+    이미 캐싱돼 있어서 24번 호출해도 실제로는 가벼운 딕셔너리 조회 24번일 뿐이다
+    (매번 parquet을 다시 읽지 않음).
+
+    Raises:
+        KeyError: segment_id가 dim_segment(+score)에 없을 때.
+    """
+    return [get_traffic_score(segment_id, ts_hour=h) for h in range(24)]
 
 
 # LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
@@ -220,14 +256,15 @@ def get_map_data(ts_hour: int | None = None) -> pd.DataFrame:
     df = _load_base_data()
     df = df[df["borough_code"] == DASHBOARD_BOROUGH_CODE].reset_index(drop=True)
 
-    # closure_penalty는 segment_id x hour라 이 ts_hour 한 시간대분만 골라서 병합.
-    # 매칭 안 되는(그 시간엔 활성 공사/통제가 없는) segment는 0(감소 없음)으로 채운다.
-    closure_hourly = _load_closure_penalty_hourly()
-    closure_this_hour = closure_hourly.loc[
-        closure_hourly["hour"] == ts_hour, ["segment_id", "closure_capacity_reduction"]
-    ]
-    df = df.merge(closure_this_hour, on="segment_id", how="left")
-    df["closure_capacity_reduction"] = df["closure_capacity_reduction"].fillna(0.0)
+    # 시간대별 컴포넌트는 전부 여기서 일괄 병합한다 — HOURLY_COMPONENT_SOURCES에
+    # 등록된 것만큼 자동으로 반영된다. 이 ts_hour 한 시간대분만 골라서 병합하고,
+    # 매칭 안 되는(그 시간엔 영향 없는) segment는 0으로 채운다.
+    for name, source_dir in HOURLY_COMPONENT_SOURCES.items():
+        column = COMPONENT_SOURCES[name]
+        hourly = _load_hourly_table(name)
+        this_hour = hourly.loc[hourly["hour"] == ts_hour, ["segment_id", column]]
+        df = df.merge(this_hour, on="segment_id", how="left")
+        df[column] = df[column].fillna(0.0)
 
     demand_cols = [
         COMPONENT_SOURCES[name]
