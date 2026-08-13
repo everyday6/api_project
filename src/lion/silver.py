@@ -40,6 +40,7 @@ import pandas as pd
 
 from src.common.config import BRONZE_DIR, SILVER_DIR
 from src.common.logger import get_logger
+from src.common.utils import clean_street
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
@@ -182,6 +183,9 @@ def build_dim_segment(
     df["Number_Travel_Lanes"] = pd.to_numeric(df["Number_Travel_Lanes"].str.strip(), errors="coerce")
     df["SHAPE_Length"] = pd.to_numeric(df["SHAPE_Length"], errors="coerce")
 
+    # 도로명 정제
+    df["Street"] = df["Street"].apply(clean_street)
+
     # SegmentID 중복(약 10%) 제거 — 실제로는 geometry/속성까지 완전히 동일한 순수 중복이라
     # 병합 없이 첫 행만 남긴다.
     before = len(df)
@@ -200,13 +204,14 @@ def build_dim_segment(
     dim_segment = df.rename(
         columns={
             "SegmentID": "segment_id",
+            "Street": "street_name",
             "LBoro": "borough_code",
             "SHAPE": "geometry",
             "SHAPE_Length": "length_ft",
             "Number_Travel_Lanes": "lanes_total",
         }
     )[[
-        "segment_id", "borough_code", "geometry", "length_ft", "road_class",
+        "segment_id", "street_name", "borough_code", "geometry", "length_ft", "road_class",
         "is_two_way", "lanes_total", "lane_miles", "base_capacity_per_lane",
         "capacity_per_hour", "is_routable",
     ]]
