@@ -162,7 +162,12 @@ def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
     assert row["dropoff_count"] == 2  # yellow 1건 + green 1건
 
 
-from src.tlc.gold import build_dim_segment_tlc_volume, validate_dim_segment_tlc_volume, _neighbor_hop_distances
+from src.tlc.gold import (
+    build_dim_segment_tlc_volume,
+    validate_dim_segment_tlc_volume,
+    _neighbor_hop_distances,
+    get_tlc_traffic_score_for_construction,
+)
 
 
 def test_neighbor_hop_distances_walks_graph():
@@ -257,3 +262,54 @@ def test_validate_dim_segment_tlc_volume_rejects_duplicate_rows(tmp_path):
 
     with pytest.raises(AssertionError):
         validate_dim_segment_tlc_volume(str(bad_path), map_zone_segment_path=map_zone_segment_path)
+
+
+@pytest.fixture
+def gold_and_adjacency_paths(tmp_path):
+    gold_path = tmp_path / "dim_segment_tlc_volume.parquet"
+    pd.DataFrame({
+        "segment_id":        ["A", "A", "B", "B", "C", "C"],
+        "hour":               [8,   9,   8,   9,   8,   9],
+        "dropoff_count_raw": [10,  20,   5,   5,   1,   1],
+        "tlc_volume":        [0.9, 0.95, 0.5, 0.5, 0.1, 0.1],
+    }).to_parquet(gold_path, index=False)
+
+    adjacency_path = tmp_path / "graph_segment_adjacency.parquet"
+    pd.DataFrame({
+        "segment_id":          ["A", "B"],
+        "neighbor_segment_id": ["B", "A"],
+    }).to_parquet(adjacency_path, index=False)
+
+    return gold_path, adjacency_path
+
+
+def test_get_tlc_traffic_score_for_construction_returns_self_and_neighbors(gold_and_adjacency_paths):
+    gold_path, adjacency_path = gold_and_adjacency_paths
+
+    result = get_tlc_traffic_score_for_construction(
+        "A", hour=8, hops=3, gold_path=gold_path, adjacency_path=adjacency_path,
+    )
+
+    by_segment = {r["segment_id"]: r for r in result}
+    assert by_segment["A"] == {"segment_id": "A", "hop_distance": 0, "hour": 8, "traffic_score": 0.9}
+    assert by_segment["B"] == {"segment_id": "B", "hop_distance": 1, "hour": 8, "traffic_score": 0.5}
+    assert "C" not in by_segment  # A와 인접하지 않음
+    assert [r["segment_id"] for r in result] == ["A", "B"]  # hop_distance 오름차순
+
+
+def test_get_tlc_traffic_score_for_construction_missing_segment_raises(gold_and_adjacency_paths):
+    gold_path, adjacency_path = gold_and_adjacency_paths
+
+    with pytest.raises(KeyError):
+        get_tlc_traffic_score_for_construction(
+            "Z", hour=8, gold_path=gold_path, adjacency_path=adjacency_path,
+        )
+
+
+def test_get_tlc_traffic_score_for_construction_invalid_hour_raises(gold_and_adjacency_paths):
+    gold_path, adjacency_path = gold_and_adjacency_paths
+
+    with pytest.raises(ValueError):
+        get_tlc_traffic_score_for_construction(
+            "A", hour=24, gold_path=gold_path, adjacency_path=adjacency_path,
+        )
