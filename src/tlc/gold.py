@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pandas as pd
 from pyspark.sql import SparkSession
+from pyspark.sql.functions import col, dayofweek, hour as hour_of_day
 
 from src.common.config import SILVER_DIR, TAXI_TYPES
 from src.common.logger import get_logger
@@ -27,6 +28,51 @@ DIM_SEGMENT_TLC_VOLUME_PATH = SILVER_DIR / "dim_segment_tlc_volume.parquet"
 
 HOURS = list(range(24))
 DEFAULT_HOPS = 3
+
+
+def _read_zone_hour_counts(
+    spark: SparkSession,
+    silver_dir: Path = SILVER_DIR,
+    taxi_types: list[str] = TAXI_TYPES,
+) -> pd.DataFrame:
+    """TLC silver 파일 전부를 읽어 평일(월~금) 기준 zone x hour 하차수를 센다.
+
+    매번 그 시점에 존재하는 파일 전부를 다시 읽어 처음부터 계산한다(전체
+    재계산, 증분 아님). group by count는 파티션별 부분 집계 후 작은 결과만
+    합치는 구조라 원본 규모(3년치, 약 140개 파일)와 무관하게 메모리 사용량이
+    작다.
+    """
+
+    paths = [
+        str(path)
+        for taxi_type in taxi_types
+        for path in sorted(silver_dir.glob(f"{taxi_type}_tripdata_*"))
+    ]
+    if not paths:
+        raise FileNotFoundError(f"TLC silver 파일을 찾을 수 없습니다: {silver_dir}")
+
+    logger.info(f"[tlc_gold] TLC silver 파일 {len(paths)}개 읽기 시작")
+
+    df = spark.read.parquet(*paths).select("dropoff_datetime", "dropoff_location_id")
+
+    # Spark의 dayofweek: 일요일=1 ~ 토요일=7. 평일(월~금) = 2~6.
+    weekday = df.filter(dayofweek(col("dropoff_datetime")).between(2, 6))
+
+    counted = (
+        weekday
+        .withColumn("hour", hour_of_day(col("dropoff_datetime")))
+        .groupBy(col("dropoff_location_id").alias("zone_id"), "hour")
+        .count()
+        .withColumnRenamed("count", "dropoff_count")
+    )
+
+    result = counted.toPandas()
+    result["zone_id"] = result["zone_id"].astype("int64")
+    result["hour"] = result["hour"].astype("int64")
+    result["dropoff_count"] = result["dropoff_count"].astype("int64")
+
+    logger.info(f"[tlc_gold] zone x hour 집계 완료: {len(result)}행")
+    return result
 
 
 def _expand_zone_to_segment_hour(

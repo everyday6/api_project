@@ -1,6 +1,35 @@
-import pandas as pd
+from datetime import datetime
 
-from src.tlc.gold import _expand_zone_to_segment_hour, _normalize_tlc_volume
+import pandas as pd
+import pytest
+from pyspark.sql import SparkSession
+
+from src.tlc.gold import _expand_zone_to_segment_hour, _normalize_tlc_volume, _read_zone_hour_counts
+
+
+@pytest.fixture(scope="module")
+def spark():
+    session = SparkSession.builder.master("local[1]").appName("tlc_gold_test").getOrCreate()
+    yield session
+    session.stop()
+
+
+def _write_tlc_silver_fixture(base_dir, taxi_type, month, rows):
+    """base_dir/{taxi_type}_tripdata_{month}/data.parquet 형태로 TLC silver 픽스처를 만든다.
+
+    coerce_timestamps="us"는 이 테스트 환경의 pyarrow(21.x)가 pandas
+    datetime64[ns] 컬럼을 기본값으로 Parquet TIMESTAMP(NANOS)로 쓰기 때문에
+    필요하다. 실제 운영 TLC silver 파일은 Spark 자체가 마이크로초 단위로
+    쓰므로 이 문제가 없다 — 이 fixture 헬퍼에만 해당하는 환경 특이사항.
+    """
+    out_dir = base_dir / f"{taxi_type}_tripdata_{month}"
+    out_dir.mkdir(parents=True)
+    pd.DataFrame(rows).to_parquet(
+        out_dir / "data.parquet",
+        index=False,
+        coerce_timestamps="us",
+        allow_truncated_timestamps=True,
+    )
 
 
 def test_expand_zone_to_segment_hour_fills_missing_with_zero():
@@ -65,3 +94,69 @@ def test_normalize_tlc_volume_keeps_original_columns():
     result = _normalize_tlc_volume(df)
 
     assert list(result.columns) == ["segment_id", "hour", "dropoff_count_raw", "tlc_volume"]
+
+
+def test_read_zone_hour_counts_filters_weekday_and_counts(tmp_path, spark):
+    # 2024-01-01(월)은 포함, 2024-01-06(토)은 제외되어야 한다.
+    rows = [
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+            "pickup_location_id": 10,
+            "dropoff_location_id": 5,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 8, 10),
+            "dropoff_datetime": datetime(2024, 1, 1, 8, 45),
+            "pickup_location_id": 10,
+            "dropoff_location_id": 5,
+            "passenger_count": 1.0,
+            "trip_distance": 2.0,
+        },
+        {
+            "pickup_datetime": datetime(2024, 1, 6, 8, 0),
+            "dropoff_datetime": datetime(2024, 1, 6, 8, 30),
+            "pickup_location_id": 10,
+            "dropoff_location_id": 5,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+    ]
+    _write_tlc_silver_fixture(tmp_path, "yellow", "2024-01", rows)
+
+    result = _read_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow"])
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["zone_id"] == 5
+    assert row["hour"] == 8
+    assert row["dropoff_count"] == 2  # 월요일 2건만 카운트, 토요일 제외
+
+
+def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
+    _write_tlc_silver_fixture(tmp_path, "yellow", "2024-01", [{
+        "pickup_datetime": datetime(2024, 1, 2, 9, 0),
+        "dropoff_datetime": datetime(2024, 1, 2, 9, 15),
+        "pickup_location_id": 1,
+        "dropoff_location_id": 7,
+        "passenger_count": 1.0,
+        "trip_distance": 1.0,
+    }])
+    _write_tlc_silver_fixture(tmp_path, "green", "2024-01", [{
+        "pickup_datetime": datetime(2024, 1, 2, 9, 5),
+        "dropoff_datetime": datetime(2024, 1, 2, 9, 20),
+        "pickup_location_id": 2,
+        "dropoff_location_id": 7,
+        "passenger_count": 1.0,
+        "trip_distance": 1.0,
+    }])
+
+    result = _read_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow", "green"])
+
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["zone_id"] == 7
+    assert row["hour"] == 9
+    assert row["dropoff_count"] == 2  # yellow 1건 + green 1건
