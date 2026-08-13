@@ -22,7 +22,7 @@
   body {
     background: var(--bg); color: var(--ink);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    display: grid; grid-template-columns: 1fr 340px; grid-template-rows: minmax(0, 1fr) auto;
+    display: grid; grid-template-columns: 1fr 340px; grid-template-rows: 1fr;
     height: 100vh; overflow: hidden;
   }
   .map-pane { position: relative; }
@@ -35,15 +35,6 @@
   }
   .side-section { padding: 16px; border-bottom: 1px solid var(--rule); }
   .side h1 { font-size: 14px; font-weight: 700; margin: 0 0 12px; }
-
-  .time-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
-  .time-row label { font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
-  .time-row label b { color: var(--ink); font-variant-numeric: tabular-nums; }
-  .time-row input[type="range"] { flex: 1; accent-color: var(--accent); }
-  .time-row button {
-    background: var(--panel-2); color: var(--ink); border: 1px solid var(--rule);
-    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
-  }
 
   .search-row { display: flex; gap: 6px; }
   .search-row input {
@@ -65,11 +56,13 @@
     font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 6px 0 2px;
   }
   .detail .score-label { font-size: 11px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; }
-  .detail .ts-hour {
-    display: inline-block; margin-top: 8px; font-size: 11px; padding: 3px 8px;
+  .detail .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+  .detail .ts-hour, .detail .lanes {
+    display: inline-block; font-size: 11px; padding: 3px 8px;
     border-radius: 999px; background: var(--panel-2); color: var(--ink-muted);
     border: 1px solid var(--rule);
   }
+  .detail .lanes b { color: var(--ink); font-variant-numeric: tabular-nums; }
 
   .comp-group { margin-top: 16px; }
   .comp-group .cap { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-muted); margin-bottom: 6px; font-weight: 600; }
@@ -84,35 +77,41 @@
   .legend .row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
   .legend .swatch { width: 20px; height: 4px; border-radius: 2px; flex: none; }
 
-  .hourly-panel {
-    grid-column: 1 / 3;
-    background: var(--panel); border-top: 1px solid var(--rule);
-    padding: 14px 20px 16px; display: none;
-  }
+  .hourly-panel { display: none; }
   .hourly-panel.visible { display: block; }
-  .hourly-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 16px; margin-bottom: 10px; }
-  .hourly-title { font-size: 13px; font-weight: 700; }
-  .hourly-title span { font-family: ui-monospace, "SF Mono", monospace; color: var(--accent); font-weight: 600; }
-  .hourly-desc { font-size: 11px; color: var(--ink-muted); margin-top: 3px; max-width: 60ch; }
-  .hourly-badges { display: flex; gap: 22px; flex: none; }
+  .hourly-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
+  .hourly-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-muted); font-weight: 600; }
+  .hourly-desc { font-size: 11px; color: var(--ink-muted); margin-top: 4px; }
+  .hourly-badges { display: flex; gap: 14px; flex: none; }
   .badge { text-align: center; }
-  .badge-label { display: block; font-size: 10px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .07em; margin-bottom: 2px; }
-  .badge-value { display: block; font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+  .badge-label { display: block; font-size: 9px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
+  .badge-value { display: block; font-size: 15px; font-weight: 700; font-variant-numeric: tabular-nums; }
   .badge.good .badge-value { color: var(--good); }
   .badge.bad .badge-value { color: var(--r4); }
 
   .hourly-bars {
-    display: grid; grid-template-columns: repeat(24, 1fr); gap: 3px;
-    height: 90px; align-items: end;
+    display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;
+    height: 70px; align-items: end;
   }
   .hourly-bar { background: var(--accent); border-radius: 2px 2px 0 0; min-height: 3px; }
   .hourly-bar.good { background: var(--good); }
   .hourly-bar.bad { background: var(--r4); }
   .hourly-axis {
     display: grid; grid-template-columns: repeat(24, 1fr);
-    font-size: 10px; color: var(--ink-muted); margin-top: 5px; font-variant-numeric: tabular-nums;
+    font-size: 8.5px; color: var(--ink-muted); margin-top: 4px; font-variant-numeric: tabular-nums;
   }
   .hourly-axis span { text-align: center; }
+
+  .nearby-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+  .nearby-item {
+    background: var(--panel-2); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px;
+  }
+  .nearby-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
+  .nearby-item .street { font-size: 12.5px; font-weight: 600; }
+  .nearby-item .hop { font-size: 10px; color: var(--accent); white-space: nowrap; flex: none; }
+  .nearby-item .range { font-size: 11px; color: var(--ink-muted); margin-top: 3px; }
+  .nearby-item .cross { font-size: 11px; color: var(--ink-muted); margin-top: 2px; }
+  .nearby-more { font-size: 11px; color: var(--ink-muted); text-align: center; padding-top: 2px; }
 
   .zoomhint {
     position: absolute; top: 12px; right: 12px; font-size: 10.5px; color: var(--ink-muted);
@@ -134,38 +133,38 @@
   <div class="side">
     <div class="side-section">
       <h1>Traffic Score Dashboard</h1>
-      <div class="time-row">
-        <label>조회 시각 <b id="hour-label">--</b>시</label>
-        <input type="range" id="hour-slider" min="0" max="23" step="1">
-        <button id="now-btn">지금</button>
-      </div>
       <div class="search-row">
         <input id="search-input" type="text" placeholder="segment_id 입력 (예: 0102186)">
         <button id="search-btn">조회</button>
       </div>
-      <div class="hint">지도에서 세그먼트를 클릭해도 됩니다. closure_penalty는 시간대별로 값이 달라집니다(centrality/base_capacity는 분기 1회 정적값이라 안 바뀝니다).</div>
+      <div class="hint">지도에서 세그먼트를 클릭해도 됩니다. 조회 시각은 현재 시각(America/New_York) 기준으로 자동 적용됩니다. closure_penalty는 시간대별로 값이 달라집니다(centrality/base_capacity는 분기 1회 정적값이라 안 바뀝니다).</div>
     </div>
 
     <div class="side-section detail" id="detail">
       <div class="empty">세그먼트를 검색하거나 지도에서 클릭하세요.</div>
     </div>
 
-    <div class="side-section legend" id="legend"></div>
-  </div>
-
-  <div class="hourly-panel" id="hourly-panel">
-    <div class="hourly-top">
-      <div>
-        <div class="hourly-title">시간대별 traffic_score — <span id="hourly-segid"></span></div>
-        <div class="hourly-desc">0~23시 전체. 막대 하나가 시각 하나입니다. centrality/base_capacity는 정적값이라 변화는 전부 closure_penalty(활성 공사/통제) 때문입니다.</div>
+    <div class="side-section hourly-panel" id="hourly-panel">
+      <div class="hourly-top">
+        <div>
+          <div class="hourly-title">시간대별 traffic_score</div>
+          <div class="hourly-desc">막대 하나가 시각 하나입니다(0~23시).</div>
+        </div>
+        <div class="hourly-badges">
+          <div class="badge good"><span class="badge-label">권장</span><span class="badge-value" id="best-hour">--:00</span></div>
+          <div class="badge bad"><span class="badge-label">회피</span><span class="badge-value" id="worst-hour">--:00</span></div>
+        </div>
       </div>
-      <div class="hourly-badges">
-        <div class="badge good"><span class="badge-label">권장</span><span class="badge-value" id="best-hour">--:00</span></div>
-        <div class="badge bad"><span class="badge-label">회피</span><span class="badge-value" id="worst-hour">--:00</span></div>
-      </div>
+      <div class="hourly-bars" id="hourly-bars"></div>
+      <div class="hourly-axis" id="hourly-axis"></div>
     </div>
-    <div class="hourly-bars" id="hourly-bars"></div>
-    <div class="hourly-axis" id="hourly-axis"></div>
+
+    <div class="side-section" id="nearby-panel" style="display:none;">
+      <div class="cap" style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); font-weight:600; margin-bottom:8px;">현재 영향받는 공사 (<span id="nearby-count">0</span>건)</div>
+      <div class="nearby-list" id="nearby-list"></div>
+    </div>
+
+    <div class="side-section legend" id="legend"></div>
   </div>
 
 <script>
@@ -334,11 +333,15 @@ function renderDetail(data) {
   if (!data) { el.innerHTML = '<div class="empty">세그먼트를 찾을 수 없습니다.</div>'; return; }
 
   const scoreText = data.traffic_score === null ? "—" : data.traffic_score.toFixed(6);
+  const lanesText = data.lanes_total === null || data.lanes_total === undefined ? "—" : `${data.lanes_total}개`;
   let html = `
     <div class="seg-id">${data.segment_id}</div>
     <div class="score-label">traffic_score_v0</div>
     <div class="score">${scoreText}</div>
-    <span class="ts-hour">ts_hour: ${data.ts_hour ?? "static"}</span>
+    <div class="badges">
+      <span class="ts-hour">ts_hour: ${data.ts_hour ?? "static"}</span>
+      <span class="lanes">차선 수: <b>${lanesText}</b></span>
+    </div>
   `;
 
   for (const [group, groupLabel] of [["demand","Demand"], ["capacity","Capacity"]]) {
@@ -356,16 +359,18 @@ function renderDetail(data) {
 async function selectSegment(segmentId) {
   try {
     const res = await fetch(`/api/traffic_score/${segmentId}${hourQuery()}`);
-    if (!res.ok) { renderDetail(null); hideHourlyPanel(); return; }
+    if (!res.ok) { renderDetail(null); hideHourlyPanel(); hideNearbyPanel(); return; }
     const data = await res.json();
     renderDetail(data);
     selectedSegmentId = segmentId;
     selectedIndex = idToIndex[segmentId] ?? -1;
     draw();
     loadHourlyProfile(segmentId);
+    loadNearbyClosures(segmentId);
   } catch (e) {
     renderDetail(null);
     hideHourlyPanel();
+    hideNearbyPanel();
   }
 }
 
@@ -379,12 +384,7 @@ for (let h = 0; h < 24; h++) {
 }
 
 function hideHourlyPanel() {
-  const wasVisible = hourlyPanel.classList.contains("visible");
   hourlyPanel.classList.remove("visible");
-  // 패널이 없어지면 지도 영역(.map-pane)의 실제 높이가 늘어나는데, 캔버스는
-  // 창 크기 변경(window resize) 때만 다시 맞춰지므로 여기서도 명시적으로
-  // resize()를 불러줘야 캔버스가 새 높이에 맞게 다시 그려진다.
-  if (wasVisible) resize();
 }
 
 async function loadHourlyProfile(segmentId) {
@@ -412,7 +412,6 @@ function renderHourlyPanel(segmentId, data) {
   }
   const maxScore = data[worstIdx].traffic_score;
 
-  document.getElementById("hourly-segid").textContent = segmentId;
   document.getElementById("best-hour").textContent = `${String(bestIdx).padStart(2, "0")}:00`;
   document.getElementById("worst-hour").textContent = `${String(worstIdx).padStart(2, "0")}:00`;
 
@@ -431,12 +430,61 @@ function renderHourlyPanel(segmentId, data) {
     barsEl.appendChild(bar);
   }
 
-  const wasVisible = hourlyPanel.classList.contains("visible");
   hourlyPanel.classList.add("visible");
-  // 패널이 처음 나타나는 순간(.map-pane 높이가 줄어듦)엔 캔버스가 창 크기
-  // 변경 이벤트 없이는 안 맞춰지므로 명시적으로 다시 그린다. 이미 보이던
-  // 상태에서 다른 세그먼트로 갱신될 때는 높이 변화가 없어서 안 불러도 된다.
-  if (!wasVisible) resize();
+}
+
+// ---------- 현재 영향받는 공사(인접 최대 3칸 이내, 현재 활성인 것) ----------
+function hideNearbyPanel() {
+  document.getElementById("nearby-panel").style.display = "none";
+}
+
+const NEARBY_DISPLAY_LIMIT = 15;
+
+async function loadNearbyClosures(segmentId) {
+  try {
+    const res = await fetch(`/api/traffic_score/${segmentId}/nearby_closures${hourQuery()}`);
+    if (!res.ok) { hideNearbyPanel(); return; }
+    const data = await res.json();
+    renderNearbyClosures(data);
+  } catch (e) {
+    hideNearbyPanel();
+  }
+}
+
+function formatDate(ts) {
+  if (!ts) return "?";
+  return ts.slice(0, 10); // "YYYY-MM-DD HH:MM:SS" -> "YYYY-MM-DD"
+}
+
+function renderNearbyClosures(items) {
+  const panel = document.getElementById("nearby-panel");
+  const list = document.getElementById("nearby-list");
+  document.getElementById("nearby-count").textContent = items.length.toLocaleString();
+
+  if (items.length === 0) {
+    list.innerHTML = '<div class="empty" style="font-size:12px; color:var(--ink-muted);">현재 활성인 공사/통제가 없습니다.</div>';
+    panel.style.display = "block";
+    return;
+  }
+
+  list.innerHTML = "";
+  for (const item of items.slice(0, NEARBY_DISPLAY_LIMIT)) {
+    const div = document.createElement("div");
+    div.className = "nearby-item";
+    div.innerHTML = `
+      <div class="row1"><span class="street">${item.on_street}</span><span class="hop">${item.hop_label}</span></div>
+      <div class="cross">${item.from_street} ~ ${item.to_street}</div>
+      <div class="range">${formatDate(item.work_start_ts)} ~ ${formatDate(item.work_end_ts)}${item.purpose ? " · " + item.purpose : ""}</div>
+    `;
+    list.appendChild(div);
+  }
+  if (items.length > NEARBY_DISPLAY_LIMIT) {
+    const more = document.createElement("div");
+    more.className = "nearby-more";
+    more.textContent = `외 ${(items.length - NEARBY_DISPLAY_LIMIT).toLocaleString()}건 더`;
+    list.appendChild(more);
+  }
+  panel.style.display = "block";
 }
 
 document.getElementById("search-btn").addEventListener("click", () => {
@@ -445,39 +493,6 @@ document.getElementById("search-btn").addEventListener("click", () => {
 });
 document.getElementById("search-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("search-btn").click();
-});
-
-// ---------- 시간대 선택 ----------
-const hourSlider = document.getElementById("hour-slider");
-const hourLabel = document.getElementById("hour-label");
-
-function setHourLabel() {
-  hourLabel.textContent = String(selectedHour).padStart(2, "0");
-}
-
-async function applyHourChange() {
-  setHourLabel();
-  await loadMapData();
-  // 지도 색상이 시간대별로 바뀐 걸 다시 그림. 선택돼 있던 세그먼트가 있으면
-  // 그 시간대 기준으로 상세 패널도 다시 조회한다(같은 segment_id, 새 ts_hour).
-  if (selectedSegmentId) {
-    await selectSegment(selectedSegmentId);
-  } else {
-    draw();
-  }
-}
-
-hourSlider.value = selectedHour;
-setHourLabel();
-hourSlider.addEventListener("input", () => {
-  selectedHour = parseInt(hourSlider.value, 10);
-  applyHourChange();
-});
-
-document.getElementById("now-btn").addEventListener("click", () => {
-  selectedHour = nyHourNow();
-  hourSlider.value = selectedHour;
-  applyHourChange();
 });
 
 // ---------- 팬/줌/클릭 ----------

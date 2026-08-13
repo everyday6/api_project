@@ -20,7 +20,12 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from shapely import wkt
 
-from src.scoring.traffic_score import get_map_data, get_traffic_score, get_traffic_score_hourly
+from src.scoring.traffic_score import (
+    get_map_data,
+    get_nearby_closures,
+    get_traffic_score,
+    get_traffic_score_hourly,
+)
 
 app = FastAPI(title="Traffic Score API")
 
@@ -53,6 +58,18 @@ def api_get_traffic_score_hourly(segment_id: str):
     """
     try:
         return get_traffic_score_hourly(segment_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
+
+
+@app.get("/api/traffic_score/{segment_id}/nearby_closures")
+def api_get_nearby_closures(segment_id: str, ts_hour: Optional[int] = None):
+    """
+    segment_id 기준 인접 구간(최대 3홉)에서 현재 활성인 공사/통제 목록 —
+    대시보드 "현재 영향받는 공사" 상세 패널용.
+    """
+    try:
+        return get_nearby_closures(segment_id, ts_hour=ts_hour)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
 
