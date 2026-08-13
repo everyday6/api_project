@@ -19,7 +19,8 @@ components:
       enabled: true          # dim_segment_traffic_score_v0.demand_raw (매개중심성 percentile)
     tlc_volume:
       weight: 1.0
-      enabled: false         # TODO: TLC 통행량 기반 수요 (다른 조원 작업)
+      enabled: true          # dim_segment_tlc_volume.tlc_volume (평일 하차량 percentile, src/tlc/gold.py)
+                              # dags/tlc_gold_volume.py를 아직 안 돌렸으면 0으로 처리됨(src/scoring/traffic_score.py 참고)
     event_boost:
       weight: 0.3
       enabled: false         # TODO: 행사로 인한 수요 가산 (다른 조원 작업)
