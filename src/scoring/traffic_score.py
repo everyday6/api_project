@@ -161,10 +161,23 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
     }
 
 
+# LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
+# 5=Staten Island (NYC 공식 자치구 코드, WEST 81 STREET/ARDEN STREET 등 알려진
+# 맨해튼 도로로 실측 대조해서 확인함). 지금 프로젝트 범위가 맨해튼뿐이라
+# 대시보드 지도에만 적용 — get_traffic_score()는 segment_id 단건 조회라 다른
+# 자치구 segment_id가 들어와도 그대로 조회는 되게 두고, "지도에 뭘 그릴지"만
+# 여기서 좁힌다. Bronze/Silver 자체는 필터링하지 않는다(요청에 따름).
+DASHBOARD_BOROUGH_CODE = "1"
+
+
 def get_map_data() -> pd.DataFrame:
-    """지도 렌더링용 벌크 데이터 — segment_id, geometry, road_class, traffic_score."""
+    """지도 렌더링용 벌크 데이터 — segment_id, geometry, road_class, traffic_score.
+
+    맨해튼(DASHBOARD_BOROUGH_CODE)만 반환한다 — 프로젝트 범위 자체가 맨해튼이라.
+    """
     weights = load_weights()
     df = _load_base_data()
+    df = df[df["borough_code"] == DASHBOARD_BOROUGH_CODE]
 
     demand_cols = [
         COMPONENT_SOURCES[name]
