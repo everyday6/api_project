@@ -21,6 +21,7 @@ from fastapi.responses import FileResponse
 from shapely import wkt
 
 from src.scoring.traffic_score import (
+    get_active_closures,
     get_closure_data_date_range,
     get_map_data,
     get_nearby_closures,
@@ -74,6 +75,16 @@ def api_get_nearby_closures(segment_id: str, ts_hour: Optional[int] = None, ts_d
         return get_nearby_closures(segment_id, ts_hour=ts_hour, ts_date=ts_date)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
+
+
+@app.get("/api/active_closures")
+def api_get_active_closures(ts_hour: Optional[int] = None, ts_date: Optional[str] = None):
+    """
+    (ts_date, ts_hour) 시점에 맨해튼 전체에서 활성인 공사/통제 목록 —
+    get_nearby_closures()와 달리 특정 segment에 anchor되지 않는다. 대시보드
+    "이 날짜에 활성인 공사" 목록(클릭하면 그 segment로 지도 이동+점수 조회)용.
+    """
+    return get_active_closures(ts_hour=ts_hour, ts_date=ts_date)
 
 
 @app.get("/api/closure_data_range")
