@@ -153,6 +153,23 @@ def ingest_daily():
         main()
 
 
+    @task(task_id="road_control_events_silver")
+    def road_control_events_silver():
+        """
+        construction_work_hours + road_closures(가장 최근 주간 스냅샷)를 도로명
+        구간(on/from/to_street) + 기간 겹침으로 대조해서 합친다. road_closures는
+        ingest_weekly(별도 DAG)에서 갱신되는 소스라 여기서는 그 시점 기준 가장
+        최근 파일을 그냥 읽는다 — cross-DAG 의존 없이, construction 쪽만 매일
+        최신으로 반영된다.
+        """
+        from src.road_closures.silver import main
+
+        context = get_current_context()
+        os.environ["RUN_DATE"] = context["ds"]
+
+        main()
+
+
     # ───────────────────────────
     # NYC Event
     # ───────────────────────────
@@ -202,6 +219,7 @@ def ingest_daily():
 
     construction_stipulations_b = construction_stipulations_bronze()
     construction_work_hours_s = construction_work_hours_silver()
+    road_control_events_s = road_control_events_silver()
 
     event_b = event_bronze()
     event_s = event_silver()
@@ -223,6 +241,11 @@ def ingest_daily():
     # 증분)가 둘 다 끝난 뒤 실행 — 매일 도는 조인이라 매번 최신 construction을
     # 반영하고, stipulations 쪽은 그 시점까지 누적된 전체 이력을 읽는다.
     [construction_s, construction_stipulations_b] >> construction_work_hours_s
+
+    # road_closures는 별도 DAG(ingest_weekly)에서 갱신되므로 여기선 의존관계를
+    # 안 걸고, construction_work_hours만 끝나면 바로 실행(그 시점 road_closures
+    # 최신 스냅샷을 그냥 읽음).
+    construction_work_hours_s >> road_control_events_s
 
 
 ingest_daily()
