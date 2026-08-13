@@ -1,14 +1,16 @@
 """
 ingest_daily — 공사 · 행사 · TicketMaster 일일 파이프라인
 
-세 소스는 매일 갱신한다.
+네 소스는 매일 갱신한다.
 
 - construction: 공사 허가 전체 최신 스냅샷 수집
+- construction_stipulations: 공사 허가 스티퓰레이션(조건/유의사항) 증분 수집
+  (createdon 기준 실행일 하루치만, Bronze만, Silver는 아직 없음)
 - event: NYC Permitted Event 최신 상태 수집
 - ticketmaster: 앞으로 120일 이벤트 수집
 
 각 소스의 Bronze → Silver는 순차 실행하고,
-세 소스끼리는 서로 독립적으로 병렬 실행한다.
+소스끼리는 서로 독립적으로 병렬 실행한다.
 
 실패 시 최대 3회 자동 재시도하며,
 동일 RUN_DATE 재실행 시 동일 날짜 파티션을 사용한다.
@@ -110,6 +112,22 @@ def ingest_daily():
 
 
     # ───────────────────────────
+    # Construction Stipulations
+    # ───────────────────────────
+
+    @task(task_id="construction_stipulations_bronze")
+    def construction_stipulations_bronze():
+        from src.construction_stipulations.bronze import main
+
+        context = get_current_context()
+
+        # Airflow 논리 실행일을 각 스크립트에 전달
+        os.environ["RUN_DATE"] = context["ds"]
+
+        main()
+
+
+    # ───────────────────────────
     # NYC Event
     # ───────────────────────────
 
@@ -155,6 +173,8 @@ def ingest_daily():
 
     construction_b = construction_bronze()
     construction_s = construction_silver()
+
+    construction_stipulations_b = construction_stipulations_bronze()
 
     event_b = event_bronze()
     event_s = event_silver()
