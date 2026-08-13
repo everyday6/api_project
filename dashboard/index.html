@@ -36,6 +36,19 @@
   .side-section { padding: 16px; border-bottom: 1px solid var(--rule); }
   .side h1 { font-size: 14px; font-weight: 700; margin: 0 0 12px; }
 
+  .date-row { display: flex; align-items: center; gap: 8px; margin-bottom: 10px; }
+  .date-row label { font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
+  .date-row input[type="date"] {
+    flex: 1; background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink);
+    border-radius: 6px; padding: 7px 8px; font: inherit; font-size: 13px; color-scheme: dark;
+  }
+  .date-row button {
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 7px 10px; font-size: 12px; cursor: pointer; white-space: nowrap;
+  }
+  .date-loading { display: none; font-size: 11px; color: var(--accent); margin-bottom: 10px; }
+  .date-loading.active { display: block; }
+
   .search-row { display: flex; gap: 6px; }
   .search-row input {
     flex: 1; background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink);
@@ -133,11 +146,17 @@
   <div class="side">
     <div class="side-section">
       <h1>Traffic Score Dashboard</h1>
+      <div class="date-row">
+        <label for="date-input">조회 날짜</label>
+        <input type="date" id="date-input">
+        <button id="today-btn">오늘</button>
+      </div>
+      <div class="date-loading" id="date-loading">날짜 변경 반영 중...</div>
       <div class="search-row">
         <input id="search-input" type="text" placeholder="segment_id 입력 (예: 0102186)">
         <button id="search-btn">조회</button>
       </div>
-      <div class="hint">지도에서 세그먼트를 클릭해도 됩니다. 조회 시각은 현재 시각(America/New_York) 기준으로 자동 적용됩니다. closure_penalty는 시간대별로 값이 달라집니다(centrality/base_capacity는 분기 1회 정적값이라 안 바뀝니다).</div>
+      <div class="hint" id="date-hint">지도에서 세그먼트를 클릭해도 됩니다. 조회 시각은 현재 시각(America/New_York) 기준으로 자동 적용됩니다. closure_penalty는 선택한 날짜/시각에 실제로 활성인 공사·통제만 반영합니다.</div>
     </div>
 
     <div class="side-section detail" id="detail">
@@ -177,21 +196,25 @@ let buckets = [[],[],[],[],[]];
 let missing = [];
 let selectedSegmentId = null;
 
-// closure_penalty가 segment_id x hour라 시간대별로 traffic_score가 달라진다
-// (centrality/base_capacity는 분기 1회 정적값이라 시간과 무관). America/New_York
-// 기준으로 계산 — 백엔드(get_traffic_score/get_map_data)가 ts_hour=None일 때
-// 자동으로 대체하는 시간대와 동일 기준.
+// closure_penalty가 segment_id x hour x 날짜라 시간대/날짜별로 traffic_score가
+// 달라진다(centrality/base_capacity는 분기 1회 정적값이라 무관). America/New_York
+// 기준으로 계산 — 백엔드(get_traffic_score/get_map_data)가 ts_hour/ts_date=None일
+// 때 자동으로 대체하는 기준과 동일.
 function nyHourNow() {
   const parts = new Intl.DateTimeFormat("en-US", {
     timeZone: "America/New_York", hour: "numeric", hour12: false,
   }).format(new Date());
   return parseInt(parts, 10) % 24;
 }
+function nyDateToday() {
+  return new Intl.DateTimeFormat("en-CA", { timeZone: "America/New_York" }).format(new Date()); // "YYYY-MM-DD"
+}
 
 let selectedHour = nyHourNow();
+let selectedDate = nyDateToday();
 
 function hourQuery() {
-  return `?ts_hour=${selectedHour}`;
+  return `?ts_hour=${selectedHour}&ts_date=${selectedDate}`;
 }
 
 async function loadMapData() {
@@ -339,7 +362,7 @@ function renderDetail(data) {
     <div class="score-label">traffic_score_v0</div>
     <div class="score">${scoreText}</div>
     <div class="badges">
-      <span class="ts-hour">ts_hour: ${data.ts_hour ?? "static"}</span>
+      <span class="ts-hour">${data.ts_date ?? "?"} ${String(data.ts_hour ?? "?").padStart(2, "0")}:00</span>
       <span class="lanes">차선 수: <b>${lanesText}</b></span>
     </div>
   `;
@@ -389,7 +412,7 @@ function hideHourlyPanel() {
 
 async function loadHourlyProfile(segmentId) {
   try {
-    const res = await fetch(`/api/traffic_score/${segmentId}/hourly`);
+    const res = await fetch(`/api/traffic_score/${segmentId}/hourly?ts_date=${selectedDate}`);
     if (!res.ok) { hideHourlyPanel(); return; }
     const data = await res.json();
     renderHourlyPanel(segmentId, data);
@@ -495,6 +518,55 @@ document.getElementById("search-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("search-btn").click();
 });
 
+// ---------- 날짜 선택 ----------
+// closure_penalty는 permit의 실제 공사 기간(work_start_ts~work_end_ts)과 요일에
+// 따라 활성 여부가 갈리므로, 날짜를 바꿔가며 "그 날짜엔 어떤 공사가 영향을
+// 주는지"를 볼 수 있어야 한다. 매 날짜 변경마다 온디맨드로 다시 계산하므로
+// (약 2~5초) 로딩 표시를 띄운다.
+const dateInput = document.getElementById("date-input");
+const dateLoading = document.getElementById("date-loading");
+
+async function applyDateChange() {
+  dateLoading.classList.add("active");
+  try {
+    await loadMapData();
+    if (selectedSegmentId) {
+      await selectSegment(selectedSegmentId);
+    } else {
+      draw();
+    }
+  } finally {
+    dateLoading.classList.remove("active");
+  }
+}
+
+dateInput.value = selectedDate;
+dateInput.addEventListener("change", () => {
+  if (!dateInput.value) return;
+  selectedDate = dateInput.value;
+  applyDateChange();
+});
+
+document.getElementById("today-btn").addEventListener("click", () => {
+  selectedDate = nyDateToday();
+  dateInput.value = selectedDate;
+  applyDateChange();
+});
+
+async function loadDateRangeHint() {
+  try {
+    const res = await fetch("/api/closure_data_range");
+    if (!res.ok) return;
+    const { min_date, max_date } = await res.json();
+    dateInput.min = min_date;
+    dateInput.max = max_date;
+    document.getElementById("date-hint").textContent =
+      `공사/통제 데이터 범위: ${min_date} ~ ${max_date}. 이 범위 밖 날짜는 영향받는 공사가 없는 것으로 나옵니다.`;
+  } catch (e) {
+    // 힌트는 부가 정보라 실패해도 조회 자체엔 지장 없음 — 조용히 무시.
+  }
+}
+
 // ---------- 팬/줌/클릭 ----------
 let dragging=false, moved=false, lastX=0, lastY=0;
 canvas.addEventListener("pointerdown",(e)=>{dragging=true;moved=false;lastX=e.clientX;lastY=e.clientY;canvas.classList.add("grabbing");canvas.setPointerCapture(e.pointerId);});
@@ -543,6 +615,7 @@ function handleClick(e) {
 }
 
 (async function init() {
+  loadDateRangeHint();
   await loadMapData();
   computeBounds();
   resize();

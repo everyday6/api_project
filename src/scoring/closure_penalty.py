@@ -16,14 +16,25 @@ closure_penalty(용량 감소량)를 계산한다 -> dim_segment_closure_penalty
      시간대 제약 자체가 원본에 없어서 work_start_hour 등은 전부 비어있다(=항상
      활성으로 취급).
 
-2. run_date의 요일(weekday)과 0~23시 각 시간에 대해, 그 시각에 "활성"인
-   레코드만 골라서 segment별 개수(intensity)를 센다. 활성 여부 판단:
+2. query_date(그 날짜 자체)와 요일, 0~23시 각 시간에 대해, "활성"인 레코드만
+   골라서 segment별 개수(intensity)를 센다. 활성 여부 판단:
+   - 먼저 query_date가 [work_start_ts, work_end_ts] 날짜 범위 안에 있는지
+     확인한다(_date_mask) — 허가 자체의 공사 기간을 벗어난 날짜는 애초에
+     대상이 아니다. 이 permit 전체 날짜 범위는 항상 존재하는 값이라(bronze
+     원본 permit의 핵심 필드) 결측 처리가 필요 없다.
    - work_start_hour/work_end_hour가 있으면 [start, end) 구간 안에 있는지
      확인(자정을 넘기는 야간 구간, 예: 22시~6시도 처리).
    - work_days_code(WEEKDAY/WEEKEND/SATURDAY/SUNDAY/DAILY/EXCEPT_SUNDAY)가
-     있으면 run_date의 요일과 맞는지 확인. OTHER(파싱 실패, 차선 문구가 섞여
+     있으면 query_date의 요일과 맞는지 확인. OTHER(파싱 실패, 차선 문구가 섞여
      복잡한 경우)나 None(애초에 시간대 문구가 없거나 매칭 안 됨)은 "항상
      활성"으로 간주한다 — 모르면 안전하게(더 넓게) 잡는 쪽.
+
+   mapping_dt(어느 dt= 파티션을 읽을지 — map_road_control_segment/
+   map_road_closure_segment 매핑 스냅샷)와 query_date(그 permit들 중 어느 게
+   "이 날짜"에 활성인지 판단하는 기준 날짜)는 서로 다른 개념이다. main()처럼
+   "오늘 갱신된 데이터로 오늘 상태를 본다"는 두 값이 같지만, 대시보드에서
+   과거/미래 날짜를 넘겨보는 경우는 mapping_dt(최신 매핑 스냅샷 고정)는 그대로
+   두고 query_date만 바뀐다.
 
 3. graph_segment_adjacency로 각 시간대의 진앙에서 최대 MAX_HOPS까지 퍼뜨린다.
    홉이 멀수록 영향이 줄어들도록 HOP_DECAY로 가중치를 곱한다 — 0홉(진앙 자신)
@@ -94,22 +105,29 @@ DAY_CODE_ACTIVE = {
 }
 
 
-def load_ground_zero_records(run_date: str) -> pd.DataFrame:
+def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     """
-    segment_id x work_start_hour x work_end_hour x work_days_code 레코드 —
-    한 행이 "활성 공사/통제 1건이 이 segment에 걸려있다"는 뜻. 같은 segment에
-    여러 행이 있으면(공사가 여러 개) intensity 집계 시 그만큼 카운트된다.
+    mapping_dt= 파티션의 "진앙 후보" 레코드 전체 — segment_id x work_start_ts x
+    work_end_ts x work_start_hour x work_end_hour x work_days_code. 특정
+    query_date에 실제로 활성인지는 여기서 거르지 않는다(compute_hourly_penalty
+    에서 처리) — 후보 목록 자체는 날짜와 무관하게 한 번만 로드해서 여러
+    query_date에 재사용할 수 있게 하기 위함.
     """
-    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={run_date}" / "data.parquet"
+    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
     construction = pd.read_parquet(
         construction_path,
-        columns=["permit_id", "segment_id", "work_start_hour", "work_end_hour", "work_days_code"],
+        columns=[
+            "permit_id", "segment_id", "work_start_ts", "work_end_ts",
+            "work_start_hour", "work_end_hour", "work_days_code",
+        ],
     )
     construction = construction[construction["segment_id"].notna()]
     construction = construction.drop_duplicates(subset=["permit_id", "segment_id"])
-    construction = construction[["segment_id", "work_start_hour", "work_end_hour", "work_days_code"]]
+    construction = construction[
+        ["segment_id", "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
+    ]
 
-    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={run_date}" / "data.parquet"
+    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
     closures = pd.read_parquet(
         closure_path,
         columns=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"],
@@ -118,7 +136,7 @@ def load_ground_zero_records(run_date: str) -> pd.DataFrame:
     closures = closures.drop_duplicates(
         subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
     )
-    closures = closures[["segment_id"]].copy()
+    closures = closures[["segment_id", "work_start_ts", "work_end_ts"]].copy()
     # road_closures 원본엔 시간대 제약 자체가 없다 — NaN으로 두면 아래
     # _hour_mask/_day_mask에서 "항상 활성"으로 처리된다. construction 쪽과
     # 동일한 dtype으로 명시해서 concat 시 전부-NA 컬럼 dtype 추론 경고를 피한다.
@@ -132,6 +150,14 @@ def load_ground_zero_records(run_date: str) -> pd.DataFrame:
         len(construction), len(closures), len(combined), combined["segment_id"].nunique(),
     )
     return combined
+
+
+def _date_mask(query_date: str, start: pd.Series, end: pd.Series) -> pd.Series:
+    """query_date가 [work_start_ts, work_end_ts] 날짜 범위(시각은 무시하고 날짜만) 안에
+    있는지 확인 — 이게 없으면 이미 끝난 과거 공사나 아직 시작 안 한 미래 공사까지
+    전부 그 permit이 매핑에 존재한다는 이유만으로 "활성"으로 잘못 집계된다."""
+    ts = pd.Timestamp(query_date)
+    return (start.dt.normalize() <= ts) & (ts <= end.dt.normalize())
 
 
 def _hour_mask(hour: int, start: pd.Series, end: pd.Series) -> pd.Series:
@@ -166,13 +192,13 @@ HOP_LABELS = {
 }
 
 
-def load_ground_zero_details(run_date: str) -> pd.DataFrame:
+def load_ground_zero_details(mapping_dt: str) -> pd.DataFrame:
     """
     load_ground_zero_records()는 집계(intensity 계산)에 필요한 컬럼만 남기지만,
     여기서는 대시보드 "현재 영향받는 공사" 상세 목록에 보여줄 on_street/
     from_street/to_street/work_start_ts/work_end_ts/purpose까지 전부 보존한다.
     """
-    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={run_date}" / "data.parquet"
+    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
     construction = pd.read_parquet(
         construction_path,
         columns=[
@@ -186,7 +212,7 @@ def load_ground_zero_details(run_date: str) -> pd.DataFrame:
     construction["source"] = "construction"
     construction["purpose"] = pd.Series(None, index=construction.index, dtype="object")
 
-    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={run_date}" / "data.parquet"
+    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
     closures = pd.read_parquet(
         closure_path,
         columns=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id", "purpose"],
@@ -229,26 +255,28 @@ def _segments_within_hops(segment_id: str, adjacency: dict, max_hops: int = MAX_
 
 def get_nearby_closures(
     segment_id: str,
-    run_date: str,
+    mapping_dt: str,
+    query_date: str,
     hour: int,
-    weekday: int,
     adjacency: dict,
     max_hops: int = MAX_HOPS,
 ) -> list[dict]:
     """
-    segment_id 기준 max_hops 이내에서, (hour, weekday) 시점에 실제로 활성인
+    segment_id 기준 max_hops 이내에서, (query_date, hour) 시점에 실제로 활성인
     공사/통제를 홉 거리와 함께 반환한다 — 대시보드 "현재 영향받는 공사" 목록용.
     가까운 순(홉 오름차순, 그다음 시작일순)으로 정렬해서 반환한다.
     """
+    weekday = date.fromisoformat(query_date).weekday()
     hops_by_segment = _segments_within_hops(segment_id, adjacency, max_hops)
 
-    details = load_ground_zero_details(run_date)
+    details = load_ground_zero_details(mapping_dt)
     nearby = details[details["segment_id"].isin(hops_by_segment.keys())]
     if nearby.empty:
         return []
 
     active = nearby[
-        _hour_mask(hour, nearby["work_start_hour"], nearby["work_end_hour"])
+        _date_mask(query_date, nearby["work_start_ts"], nearby["work_end_ts"])
+        & _hour_mask(hour, nearby["work_start_hour"], nearby["work_end_hour"])
         & _day_mask(weekday, nearby["work_days_code"])
     ]
     if active.empty:
@@ -280,6 +308,14 @@ def get_nearby_closures(
 
     rows.sort(key=lambda r: (r["hop"], r["work_start_ts"] or ""))
     return rows
+
+
+def get_data_date_range(mapping_dt: str) -> tuple[str, str]:
+    """mapping_dt= 파티션에 있는 permit들의 work_start_ts~work_end_ts 전체 범위
+    (날짜 문자열) — 대시보드 날짜 선택기에서 "이 범위를 벗어나면 봐도 영향 없는
+    날짜다"를 안내하는 min/max 힌트용."""
+    records = load_ground_zero_records(mapping_dt)
+    return records["work_start_ts"].min().date().isoformat(), records["work_end_ts"].max().date().isoformat()
 
 
 def load_adjacency() -> dict:
@@ -344,17 +380,21 @@ def to_capacity_reduction(
 
 def compute_hourly_penalty(
     records: pd.DataFrame,
-    weekday: int,
+    query_date: str,
     adjacency: dict,
     capacity_by_segment: dict,
 ) -> pd.DataFrame:
-    """0~23시 각각에 대해 그 시각 기준 활성인 레코드만으로 감쇠/합산/용량감소를 계산한다."""
+    """query_date 기준 날짜 범위로 먼저 걸러낸 뒤, 0~23시 각각에 대해 그 시각
+    기준 활성인 레코드만으로 감쇠/합산/용량감소를 계산한다."""
+    weekday = date.fromisoformat(query_date).weekday()
+    in_range = records[_date_mask(query_date, records["work_start_ts"], records["work_end_ts"])]
+
     frames = []
 
     for hour in range(24):
-        active = records[
-            _hour_mask(hour, records["work_start_hour"], records["work_end_hour"])
-            & _day_mask(weekday, records["work_days_code"])
+        active = in_range[
+            _hour_mask(hour, in_range["work_start_hour"], in_range["work_end_hour"])
+            & _day_mask(weekday, in_range["work_days_code"])
         ]
         if active.empty:
             continue
@@ -393,18 +433,19 @@ def validate(df: pd.DataFrame) -> None:
 
 
 def main(run_date: str | None = None) -> str:
+    """일 배치용 진입점 — run_date 하루치를 mapping_dt(어느 매핑 스냅샷을 읽을지)
+    이자 query_date(그 permit들 중 어느 게 이 날짜에 활성인지)로 동일하게 쓴다
+    ("오늘 갱신된 데이터로 오늘 상태를 본다"는 배치 시나리오라 둘이 항상 같음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
-    weekday = date.fromisoformat(run_date).weekday()  # 0=월 ... 6=일
-
-    logger.info("closure_penalty 계산 시작: run_date=%s weekday=%d", run_date, weekday)
+    logger.info("closure_penalty 계산 시작: run_date=%s", run_date)
 
     records = load_ground_zero_records(run_date)
     adjacency = load_adjacency()
     capacity_by_segment = load_capacity_by_segment()
 
-    df = compute_hourly_penalty(records, weekday, adjacency, capacity_by_segment)
+    df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment)
     validate(df)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
