@@ -91,6 +91,7 @@ SOCRATA_PAGE_SIZE = 50000
 # NYC Open Data API URL
 DATASETS = {
     "construction": "https://data.cityofnewyork.us/resource/tqtj-sjs8.json",
+    "construction_stipulations": "https://data.cityofnewyork.us/resource/gsgx-6efw.json",
     "closure": "https://data.cityofnewyork.us/resource/ezy6-djsf.json",
     "event": "https://nycopendata.socrata.com/resource/tvpp-9vvx.json",
     "parks": "https://data.cityofnewyork.us/resource/enfh-gkve.json",
@@ -126,3 +127,20 @@ TICKETMASTER_SLEEP = 0.25
 TICKETMASTER_LOOKAHEAD_DAYS = 120
 
 TICKETMASTER_CHUNK_DAYS = 7
+
+# ==========================
+# Ticketmaster - LION 매핑 설정
+# ==========================
+
+# Ticketmaster 위경도 좌표계
+TICKETMASTER_CRS = "EPSG:4326"
+
+# NYC LION 좌표계
+LION_CRS = "EPSG:2263"
+
+# venue 주변 도로 매핑 반경 (feet)
+TICKETMASTER_LION_BUFFER_FT = 200
+
+# fallback nearest 매핑 품질 기준
+TICKETMASTER_LION_WARN_DISTANCE_FT = 500
+TICKETMASTER_LION_FAIL_DISTANCE_FT = 3000

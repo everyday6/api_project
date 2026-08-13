@@ -40,6 +40,7 @@ import pandas as pd
 
 from src.common.config import BRONZE_DIR, SILVER_DIR
 from src.common.logger import get_logger
+from src.common.utils import clean_street
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
@@ -50,7 +51,7 @@ DIM_SEGMENT_PATH = SILVER_DIR / "dim_segment.parquet"
 LION_COLUMNS = [
     "SegmentID", "Street", "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir",
     "FeatureTyp", "Number_Travel_Lanes", "Number_Total_Lanes",
-    "StreetWidth_Min", "StreetWidth_Max", "SHAPE_Length", "LBoro",
+    "StreetWidth_Min", "StreetWidth_Max", "SHAPE_Length", "LBoro","NodeIDFrom", "NodeIDTo",
 ]
 
 # RW_TYPE(도로유형 코드, 공식 정의) -> road_class 1차 분류
@@ -182,6 +183,9 @@ def build_dim_segment(
     df["Number_Travel_Lanes"] = pd.to_numeric(df["Number_Travel_Lanes"].str.strip(), errors="coerce")
     df["SHAPE_Length"] = pd.to_numeric(df["SHAPE_Length"], errors="coerce")
 
+    # 도로명 정제
+    df["Street"] = df["Street"].apply(clean_street)
+
     # SegmentID 중복(약 10%) 제거 — 실제로는 geometry/속성까지 완전히 동일한 순수 중복이라
     # 병합 없이 첫 행만 남긴다.
     before = len(df)
@@ -197,18 +201,26 @@ def build_dim_segment(
     df["capacity_per_hour"] = df["Number_Travel_Lanes"] * df["base_capacity_per_lane"] * direction_factor
     df["lane_miles"] = (df["SHAPE_Length"] * df["Number_Travel_Lanes"]) / 5280.0
 
+    # construction/road_closures 등 다른 소스와 동일한 규칙으로 정규화 — 도로명은
+    # 공유하지만 교차로(from/to street)는 LION 세그먼트 자체엔 없어서, 이 값만으로는
+    # "어느 도로인지"까지만 좁혀지고 "어느 블록인지"는 아직 못 좁힌다.
+    df["street_name"] = df["Street"].map(clean_street)
+
     dim_segment = df.rename(
         columns={
             "SegmentID": "segment_id",
+            "Street": "street_name",
             "LBoro": "borough_code",
             "SHAPE": "geometry",
             "SHAPE_Length": "length_ft",
             "Number_Travel_Lanes": "lanes_total",
+            "NodeIDFrom": "node_from",
+            "NodeIDTo": "node_to",
         }
     )[[
-        "segment_id", "borough_code", "geometry", "length_ft", "road_class",
+        "segment_id", "street_name", "borough_code", "geometry", "length_ft", "road_class",
         "is_two_way", "lanes_total", "lane_miles", "base_capacity_per_lane",
-        "capacity_per_hour", "is_routable",
+        "capacity_per_hour", "is_routable", "node_from", "node_to",
     ]]
 
     dim_segment_path = silver_root / "dim_segment.parquet"

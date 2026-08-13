@@ -27,7 +27,7 @@ import pandas as pd
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
 from common.config import BRONZE_DIR, SILVER_DIR, BOROUGH_EVENT
-from common.utils import save_parquet
+from common.utils import save_parquet, clean_street
 from common.logger import get_logger
 
 logger = get_logger(__name__)
@@ -81,17 +81,64 @@ def load_bronze(run_date):
     )
 
 
-def clean_street(value):
-    """도로명 공백/대소문자 정리."""
+def normalize_event_street(value):
+    """
+    Event 도로명을 LION street_name 형식에 최대한 맞춘다.
+    """
+    value = clean_street(value)
 
-    if not isinstance(value, str):
+    if not value:
         return None
 
-    return re.sub(
-        r"\s+",
-        " ",
+    # 방향 약어
+    value = re.sub(r"^W\.?\s+", "WEST ", value)
+    value = re.sub(r"^E\.?\s+", "EAST ", value)
+
+    # 서수 제거: 34TH -> 34, 32ND -> 32
+    value = re.sub(
+        r"\b(\d+)(ST|ND|RD|TH)\b",
+        r"\1",
         value,
-    ).strip().upper()
+    )
+
+    # 도로명 표기 통일
+    replacements = {
+        "FIRST AVENUE": "1 AVENUE",
+        "SECOND AVENUE": "2 AVENUE",
+        "THIRD AVENUE": "3 AVENUE",
+        "FT WASHINGTON AVENUE": "FORT WASHINGTON AVENUE",
+        "GANSEVOORT ST": "GANSEVOORT STREET",
+        "FREDRICK DOUGLAS BOULEVARD":
+            "FREDERICK DOUGLASS BOULEVARD",
+        "ADAM CLAYTON POWELL BOULEVARD":
+            "ADAM CLAYTON POWELL JR BOULEVARD",
+        "MACDOUGAL STREET":
+            "MAC DOUGAL STREET",
+        "6 AVENUE": "AVENUE OF THE AMERICAS",
+    }
+
+    value = replacements.get(
+        value,
+        value,
+    )
+
+    # Plaza 이름에서 실제 도로명 추출
+    if ":" in value:
+
+        if value.endswith(" BROADWAY"):
+            return "BROADWAY"
+
+        if value.endswith(" 9 AVENUE"):
+            return "9 AVENUE"
+
+        # Pershing Square의 실제 on street
+        if value.startswith(
+            "PERSHING SQUARE PLAZA:"
+        ):
+            return "PARK AVENUE"
+
+    return value
+
 
 
 def parse_location(raw):
@@ -111,13 +158,13 @@ def parse_location(raw):
 
     if match:
         return {
-            "on_street": clean_street(match.group(1)),
-            "from_street": clean_street(match.group(2)),
-            "to_street": clean_street(match.group(3)),
+            "on_street": normalize_event_street(match.group(1)),
+            "from_street": normalize_event_street(match.group(2)),
+            "to_street": normalize_event_street(match.group(3)),
         }
 
     return {
-        "on_street": clean_street(first),
+        "on_street": normalize_event_street(first),
         "from_street": None,
         "to_street": None,
     }
