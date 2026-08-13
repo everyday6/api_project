@@ -162,7 +162,42 @@ def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
     assert row["dropoff_count"] == 2  # yellow 1건 + green 1건
 
 
-from src.tlc.gold import build_dim_segment_tlc_volume, validate_dim_segment_tlc_volume
+from src.tlc.gold import build_dim_segment_tlc_volume, validate_dim_segment_tlc_volume, _neighbor_hop_distances
+
+
+def test_neighbor_hop_distances_walks_graph():
+    # 양방향 그래프: A-B, A-C, B-D
+    adjacency = pd.DataFrame({
+        "segment_id":          ["A", "B", "A", "C", "B", "D"],
+        "neighbor_segment_id": ["B", "A", "C", "A", "D", "B"],
+    })
+
+    result = _neighbor_hop_distances("A", adjacency, hops=3)
+
+    assert result == {"A": 0, "B": 1, "C": 1, "D": 2}
+
+
+def test_neighbor_hop_distances_respects_hop_limit():
+    # A-B-C 체인
+    adjacency = pd.DataFrame({
+        "segment_id":          ["A", "B", "B", "C"],
+        "neighbor_segment_id": ["B", "A", "C", "B"],
+    })
+
+    result = _neighbor_hop_distances("A", adjacency, hops=1)
+
+    assert result == {"A": 0, "B": 1}  # C는 2단계라 hops=1이면 제외
+
+
+def test_neighbor_hop_distances_isolated_segment():
+    adjacency = pd.DataFrame({
+        "segment_id": ["X", "Y"],
+        "neighbor_segment_id": ["Y", "X"],
+    })
+
+    result = _neighbor_hop_distances("A", adjacency, hops=3)  # A는 그래프에 없음
+
+    assert result == {"A": 0}
 
 
 def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
