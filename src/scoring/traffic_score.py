@@ -20,7 +20,7 @@ Traffic Score 조회 계층 — segment_id x ts_hour 기준 단일 조회 인터
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -32,6 +32,7 @@ from src.common.config import CONFIG_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.lion.silver import DIM_SEGMENT_PATH
 from src.lion.traffic_score import DIM_SEGMENT_TRAFFIC_SCORE_PATH
+from src.scoring import closure_penalty
 from src.scoring.closure_penalty import OUT_SOURCE as CLOSURE_PENALTY_SOURCE
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
@@ -114,7 +115,7 @@ def _load_base_data() -> pd.DataFrame:
 
     dim = pd.read_parquet(
         DIM_SEGMENT_PATH,
-        columns=["segment_id", "geometry", "road_class", "borough_code", "is_routable"],
+        columns=["segment_id", "geometry", "road_class", "borough_code", "is_routable", "lanes_total"],
     )
     score = pd.read_parquet(DIM_SEGMENT_TRAFFIC_SCORE_PATH)
 
@@ -210,10 +211,14 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
     capacity_value = sum(i["contribution"] for i in capacity_items)
     traffic_score = (demand_value / capacity_value) if capacity_value else None
 
+    lanes_total = row.get("lanes_total")
+    lanes_total = None if lanes_total is None or pd.isna(lanes_total) else int(lanes_total)
+
     return {
         "segment_id": segment_id,
         "ts_hour": ts_hour,
         "traffic_score": traffic_score,
+        "lanes_total": lanes_total,
         "components": {
             "demand": {"value": demand_value, "items": demand_items},
             "capacity": {"value": capacity_value, "items": capacity_items},
@@ -232,6 +237,49 @@ def get_traffic_score_hourly(segment_id: str) -> list[dict]:
         KeyError: segment_id가 dim_segment(+score)에 없을 때.
     """
     return [get_traffic_score(segment_id, ts_hour=h) for h in range(24)]
+
+
+def _latest_run_date(source_dir_name: str) -> str | None:
+    """<source_dir_name>의 dt= 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13")."""
+    path = _latest_partition_path(source_dir_name)
+    if path is None:
+        return None
+    return path.parent.name.split("=", 1)[1]
+
+
+def _load_adjacency() -> dict:
+    """segment_id -> 인접 segment_id 목록. 요청마다 다시 읽지 않도록 캐싱한다."""
+    if "adjacency" not in _cache:
+        _cache["adjacency"] = closure_penalty.load_adjacency()
+    return _cache["adjacency"]
+
+
+def get_nearby_closures(segment_id: str, ts_hour: int | None = None) -> list[dict]:
+    """
+    segment_id 기준 MAX_HOPS 이내에서 현재(ts_hour) 활성인 공사/통제 목록 —
+    대시보드 "현재 영향받는 공사" 상세 패널용. closure_penalty를 만들 때 쓴
+    것과 같은(최신) run_date 파티션 기준으로 계산해야 집계 점수와 앞뒤가
+    맞으므로, closure_penalty의 최신 dt= 파티션 날짜를 그대로 재사용한다.
+
+    Raises:
+        KeyError: segment_id가 dim_segment(+score)에 없을 때.
+    """
+    if segment_id not in _load_base_data().index:
+        raise KeyError(f"segment_id를 찾을 수 없습니다: {segment_id}")
+
+    if ts_hour is None:
+        ts_hour = _current_hour()
+
+    run_date = _latest_run_date(CLOSURE_PENALTY_SOURCE)
+    if run_date is None:
+        return []
+
+    weekday = date.fromisoformat(run_date).weekday()
+    adjacency = _load_adjacency()
+
+    return closure_penalty.get_nearby_closures(
+        segment_id, run_date=run_date, hour=ts_hour, weekday=weekday, adjacency=adjacency,
+    )
 
 
 # LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
