@@ -26,6 +26,11 @@
 Gold 테이블을 만들고, 공사 허가 신청서의 특정 세그먼트(및 인접 세그먼트)에 대해 이 값을
 조회할 수 있는 인터페이스를 제공한다.
 
+**대상 지역은 맨해튼으로 한정한다** (공사 허가 신청 자체가 맨해튼 대상). `map_zone_segment`의
+`borough` 컬럼으로 필터링하며, `src/tlc/transform.py`(TLC silver, 팀 공용 코드) 자체는
+건드리지 않는다 — 그 파일은 도시 전체를 다루는 공용 자산이라, 맨해튼 한정은 이 설계의
+Gold 단계에서만 적용한다.
+
 ## 범위
 
 **포함**
@@ -60,7 +65,7 @@ zone_id x hour 하차수 집계  (최대 263 zone x 24시간 = 6,312행)
         │
         ▼  map_zone_segment.parquet과 join (zone 총합을 그 zone의 모든 세그먼트에 동일 복사)
         ▼  routable 세그먼트 x 0~23시 풀 그리드에 left join, 미매치는 0으로 채움
-segment_id x hour 하차수  (routable 세그먼트 수 x 24행)
+segment_id x hour 하차수  (맨해튼 세그먼트 수 x 24행)
         │
         ▼  전체 기준 global percentile rank (0~1)
 dim_segment_tlc_volume.parquet
@@ -82,7 +87,7 @@ zone 단위로 먼저 집계한 뒤 세그먼트로 펼친다. 반대 순서(트
 | `tlc_volume` | double (0~1) | `dropoff_count_raw`를 전체 (segment_id, hour) 조합 기준 global percentile rank로 정규화한 값 |
 
 세그먼트 하나당 정확히 24행(트립이 0건인 시간대도 0으로 채워 행을 유지). 전체 행 수 =
-routable 세그먼트 수 x 24.
+맨해튼 세그먼트 수(약 19,574개) x 24 ≈ 469,776행.
 
 ## 계산 로직
 
@@ -102,9 +107,10 @@ routable 세그먼트 수 x 24.
 3. **평일 필터**: `dropoff_datetime`의 요일이 월~금인 행만 남긴다.
 4. **시간 추출**: `dropoff_datetime`에서 `hour`(0~23)를 뽑는다.
 5. **zone 단위 집계**: `(dropoff_location_id, hour)` 기준 group by count → 작은 중간 결과.
-6. **zone → segment 펼치기**: `map_zone_segment.parquet`(`segment_id`, `zone_id`)과
-   `dropoff_location_id == zone_id`로 join한다. 하나의 zone에 여러 세그먼트가 속하면,
-   zone의 하차수 총합을 그 세그먼트 전부에 동일하게 복사한다(세그먼트 수로 나누지 않음).
+6. **zone → segment 펼치기**: `map_zone_segment.parquet`(`segment_id`, `zone_id`, `borough`)에서
+   먼저 `borough == "Manhattan"`인 세그먼트만 남긴 뒤, `dropoff_location_id == zone_id`로
+   join한다. 하나의 zone에 여러 세그먼트가 속하면, zone의 하차수 총합을 그 세그먼트
+   전부에 동일하게 복사한다(세그먼트 수로 나누지 않음).
 7. **빈 시간대 채우기**: routable 세그먼트 전체 x 0~23시 풀 그리드를 만들고 6번 결과를
    left join, 매치 안 된 칸은 `dropoff_count_raw = 0`으로 채운다.
 8. **정규화**: `dropoff_count_raw`를 전체 (segment_id, hour) 조합(약 377만 행) 기준으로
@@ -120,8 +126,9 @@ routable 세그먼트 수 x 24.
    가진다. (반대로 capacity 쪽은 물리적 단위를 그대로 쓰는 게 맞고, 이 설계에서 바꾸지
    않는다.)
 9. **제외 대상**:
+   - 맨해튼이 아닌 세그먼트(다른 4개 자치구)는 제외
    - routable이 아니거나 `map_zone_segment`에 없는 세그먼트는 처음부터 제외
-     (`dim_segment_traffic_score_v0`와 동일한 대상 범위).
+     (`dim_segment_traffic_score_v0`와 동일한 대상 범위)
    - TLC의 특수 zone 코드(264 "N/V" 등 미상, 265 NYC 밖 등)는 zone_id 1~263 범위 밖이라
      join에서 자연히 빠진다. 몇 건이 빠졌는지만 로그로 남긴다.
 
@@ -133,7 +140,7 @@ routable 세그먼트 수 x 24.
 - 세그먼트마다 정확히 24행 (0~23시 전부 존재)
 - `tlc_volume`은 0~1 범위
 - `dropoff_count_raw`는 0 이상
-- 전체 행 수가 예상 범위(routable 세그먼트 수 x 24) 안에 있음
+- 전체 행 수가 예상 범위(맨해튼 세그먼트 수 x 24) 안에 있음
 
 ## 조회 함수
 
