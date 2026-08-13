@@ -17,6 +17,13 @@ construction_stipulations Bronze(조건 텍스트에서 뽑은 작업 시간대 
 결과라 두 소스가 모두 끝난 뒤에 실행된다. 매일 도는 조인이라 construction은 항상
 그날 최신, stipulations는 그 시점까지 누적된 전체 이력을 반영한다.
 
+road_control_events_silver 이후에는 closure_penalty(traffic_score의 용량 감소
+컴포넌트)를 만드는 체인이 이어진다:
+  road_control_events_silver
+    -> map_road_control_segment (construction, 도로명 기반 매핑)
+    -> map_road_closure_segment (other_road_control, 공간 조인 기반 매핑)
+    -> closure_penalty (둘을 합쳐서 graph_segment_adjacency로 3홉 감쇠 확산)
+
 실패 시 최대 3회 자동 재시도하며,
 동일 RUN_DATE 재실행 시 동일 날짜 파티션을 사용한다.
 """
@@ -170,6 +177,49 @@ def ingest_daily():
         main()
 
 
+    @task(task_id="map_road_control_segment")
+    def map_road_control_segment():
+        """
+        road_control_events의 construction 쪽(geometry 없음)을 도로명 +
+        graph_segment_adjacency 기반 매칭으로 segment_id에 매핑한다.
+        """
+        from src.mapping.road_control_segment import main
+
+        context = get_current_context()
+        os.environ["RUN_DATE"] = context["ds"]
+
+        main()
+
+
+    @task(task_id="map_road_closure_segment")
+    def map_road_closure_segment():
+        """
+        road_control_events의 other_road_control 쪽(geometry 99.99% 있음)을
+        공간 조인(가장 가까운 세그먼트)으로 segment_id에 매핑한다.
+        """
+        from src.mapping.road_closure_segment import main
+
+        context = get_current_context()
+        os.environ["RUN_DATE"] = context["ds"]
+
+        main()
+
+
+    @task(task_id="closure_penalty")
+    def closure_penalty():
+        """
+        construction + road_closures 진앙 segment을 합쳐서 graph_segment_adjacency로
+        3홉까지 감쇠 확산시킨 뒤, segment별 용량 감소량(closure_capacity_reduction)을
+        계산한다. traffic_score의 closure_penalty 컴포넌트가 이 결과를 참조한다.
+        """
+        from src.scoring.closure_penalty import main
+
+        context = get_current_context()
+        os.environ["RUN_DATE"] = context["ds"]
+
+        main()
+
+
     # ───────────────────────────
     # NYC Event
     # ───────────────────────────
@@ -220,6 +270,9 @@ def ingest_daily():
     construction_stipulations_b = construction_stipulations_bronze()
     construction_work_hours_s = construction_work_hours_silver()
     road_control_events_s = road_control_events_silver()
+    map_road_control_segment_t = map_road_control_segment()
+    map_road_closure_segment_t = map_road_closure_segment()
+    closure_penalty_t = closure_penalty()
 
     event_b = event_bronze()
     event_s = event_silver()
@@ -246,6 +299,13 @@ def ingest_daily():
     # 안 걸고, construction_work_hours만 끝나면 바로 실행(그 시점 road_closures
     # 최신 스냅샷을 그냥 읽음).
     construction_work_hours_s >> road_control_events_s
+
+    # road_control_events(construction/other_road_control 둘 다)를 각각 다른
+    # 방식(도로명 / 공간 조인)으로 segment_id에 매핑한 뒤, 둘을 합쳐서
+    # closure_penalty를 계산한다.
+    road_control_events_s >> map_road_control_segment_t
+    road_control_events_s >> map_road_closure_segment_t
+    [map_road_control_segment_t, map_road_closure_segment_t] >> closure_penalty_t
 
 
 ingest_daily()
