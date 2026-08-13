@@ -108,9 +108,10 @@
     display: grid; grid-template-columns: repeat(24, 1fr); gap: 2px;
     height: 70px; align-items: end;
   }
-  .hourly-bar { background: var(--accent); border-radius: 2px 2px 0 0; min-height: 3px; }
+  .hourly-bar { background: var(--accent); border-radius: 2px 2px 0 0; min-height: 3px; cursor: pointer; }
   .hourly-bar.good { background: var(--good); }
   .hourly-bar.bad { background: var(--r4); }
+  .hourly-bar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
   .hourly-axis {
     display: grid; grid-template-columns: repeat(24, 1fr);
     font-size: 8.5px; color: var(--ink-muted); margin-top: 4px; font-variant-numeric: tabular-nums;
@@ -137,7 +138,7 @@
     background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 6px 10px;
   }
   .hover-tooltip {
-    position: absolute; display: none; pointer-events: none; z-index: 5;
+    position: fixed; display: none; pointer-events: none; z-index: 50;
     font-size: 11.5px; line-height: 1.5; color: var(--ink);
     background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
     padding: 6px 9px; box-shadow: 0 4px 14px rgba(0,0,0,.35);
@@ -199,6 +200,16 @@
 
 <script>
 const RAMP = ["--r0","--r1","--r2","--r3","--r4"];
+
+// 컴포넌트 이름 -> 표시용 한글 라벨. 여기 없는(새로 추가된) 컴포넌트는
+// 이름을 그대로 보여준다(누락돼도 깨지지 않게).
+const COMPONENT_LABELS = {
+  centrality: "중심성 점수",
+  tlc_volume: "택시 통행량 점수",
+  event_boost: "이벤트 영향 점수",
+  base_capacity: "기본 용량 점수",
+  closure_penalty: "공사/통제 감소 점수",
+};
 function cssVar(name) { return getComputedStyle(document.documentElement).getPropertyValue(name).trim(); }
 
 let SEGMENTS = [];      // [{segment_id, road_class, traffic_score, coords:[x1,y1,x2,y2,...]}, ...]
@@ -399,7 +410,8 @@ function renderDetail(data) {
     const g = data.components[group];
     html += `<div class="comp-group"><div class="cap">${groupLabel}</div>`;
     for (const item of g.items) {
-      html += `<div class="comp-row"><span>${item.name} (×${item.weight})</span><span class="v">${item.value.toFixed(4)}</span></div>`;
+      const label = COMPONENT_LABELS[item.name] || item.name;
+      html += `<div class="comp-row"><span>${label}</span><span class="v">${item.value.toFixed(4)}</span></div>`;
     }
     html += `<div class="comp-total"><span>합계</span><span class="v">${g.value.toFixed(4)}</span></div></div>`;
   }
@@ -434,8 +446,11 @@ for (let h = 0; h < 24; h++) {
   hourlyAxis.appendChild(span);
 }
 
+let currentHourlyData = null; // 선택된 세그먼트의 0~23시 전체 조회 결과 — 막대 클릭 시 재조회 없이 그대로 씀
+
 function hideHourlyPanel() {
   hourlyPanel.classList.remove("visible");
+  currentHourlyData = null;
 }
 
 async function loadHourlyProfile(segmentId) {
@@ -450,6 +465,7 @@ async function loadHourlyProfile(segmentId) {
 }
 
 function renderHourlyPanel(segmentId, data) {
+  currentHourlyData = data;
   const validIdx = [];
   for (let h = 0; h < 24; h++) {
     if (data[h].traffic_score !== null) validIdx.push(h);
@@ -477,7 +493,22 @@ function renderHourlyPanel(segmentId, data) {
     const score = data[h].traffic_score;
     const pct = (score !== null && maxScore > 0) ? Math.max(4, (score / maxScore) * 100) : 4;
     bar.style.height = `${pct}%`;
-    bar.title = `${String(h).padStart(2, "0")}:00 — ${score !== null ? score.toFixed(6) : "결측"}`;
+
+    // 막대에 마우스를 올리면 그 시각의 정규화 점수를 툴팁으로 보여준다(현재
+    // 값과 무관하게 그 시각 데이터를 그대로 보여줌). 클릭하면 스코어 패널
+    // 자체를 그 시각 데이터로 고정 표시한다(재조회 없이 currentHourlyData 재사용).
+    bar.addEventListener("pointermove", (e) => {
+      const hourPct = percentileScore(score);
+      const scoreText = hourPct === null ? "결측" : `${Math.round(hourPct)} / 100`;
+      showHoverTooltip(e, `<b>${String(h).padStart(2, "0")}:00</b><br>traffic score: <b>${scoreText}</b>`);
+    });
+    bar.addEventListener("pointerleave", hideHoverTooltip);
+    bar.addEventListener("click", () => {
+      barsEl.querySelectorAll(".hourly-bar.pinned").forEach(b => b.classList.remove("pinned"));
+      bar.classList.add("pinned");
+      renderDetail(currentHourlyData[h]);
+    });
+
     barsEl.appendChild(bar);
   }
 
@@ -654,6 +685,12 @@ function handleClick(e) {
 
 const hoverTooltip = document.getElementById("hover-tooltip");
 function hideHoverTooltip() { hoverTooltip.style.display = "none"; }
+function showHoverTooltip(e, html) {
+  hoverTooltip.innerHTML = html;
+  hoverTooltip.style.left = `${e.clientX + 14}px`;
+  hoverTooltip.style.top = `${e.clientY + 14}px`;
+  hoverTooltip.style.display = "block";
+}
 
 function handleHover(e) {
   const seg = pickSegmentAt(e);
@@ -661,12 +698,7 @@ function handleHover(e) {
 
   const pct = percentileScore(seg.traffic_score);
   const scoreText = pct === null ? "결측" : `${Math.round(pct)} / 100`;
-  hoverTooltip.innerHTML = `<b>${seg.segment_id}</b><br>traffic score: <b>${scoreText}</b>`;
-
-  const rect = canvas.getBoundingClientRect();
-  hoverTooltip.style.left = `${e.clientX - rect.left + 14}px`;
-  hoverTooltip.style.top = `${e.clientY - rect.top + 14}px`;
-  hoverTooltip.style.display = "block";
+  showHoverTooltip(e, `<b>${seg.segment_id}</b><br>traffic score: <b>${scoreText}</b>`);
 }
 
 (async function init() {

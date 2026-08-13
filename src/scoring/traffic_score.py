@@ -38,7 +38,7 @@ from src.common.config import CONFIG_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.lion.silver import DIM_SEGMENT_PATH
 from src.lion.traffic_score import DIM_SEGMENT_TRAFFIC_SCORE_PATH
-from src.scoring import closure_penalty
+from src.scoring import closure_penalty, event_boost
 from src.tlc.gold import DIM_SEGMENT_TLC_VOLUME_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
@@ -55,7 +55,7 @@ WEIGHTS_CONFIG_PATH = CONFIG_DIR / "traffic_score_weights.yaml"
 COMPONENT_SOURCES: dict[str, str | None] = {
     "centrality": "demand_raw",
     "tlc_volume": "tlc_volume",
-    "event_boost": None,
+    "event_boost": "event_boost",
     "base_capacity": "capacity_per_hour",
     "closure_penalty": "closure_capacity_reduction",
 }
@@ -77,6 +77,7 @@ HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
         _load_capacity_by_segment(),
     ),
     "tlc_volume": lambda ts_date: _load_tlc_volume_table(),
+    "event_boost": lambda ts_date: _event_boost_table_for_date(ts_date),
 }
 
 _cache: dict[str, Any] = {}
@@ -119,6 +120,23 @@ def _load_capacity_by_segment() -> dict:
     if "capacity_by_segment" not in _cache:
         _cache["capacity_by_segment"] = closure_penalty.load_capacity_by_segment()
     return _cache["capacity_by_segment"]
+
+
+def _event_boost_table_for_date(ts_date: str) -> pd.DataFrame:
+    """event_lion/ticketmaster_lion 매핑이 아직 한 번도 안 돌았으면(둘 다
+    수동 트리거 DAG라 그럴 수 있음) 빈 테이블 — 이 경우 event_boost는 0(영향
+    없음)으로 처리된다."""
+    event_dt = _latest_run_date(str(event_boost.MAP_EVENT_LION_DIR.relative_to(SILVER_DIR)))
+    ticketmaster_dt = _latest_run_date(str(event_boost.MAP_TICKETMASTER_LION_DIR.relative_to(SILVER_DIR)))
+    if event_dt is None or ticketmaster_dt is None:
+        logger.warning(
+            "[scoring] event_lion/ticketmaster_lion 매핑이 없습니다 — event_boost를 0으로 처리합니다. "
+            "dags/join_lion.py를 실행하면 반영됩니다."
+        )
+        return pd.DataFrame(columns=["segment_id", "hour", "event_boost"])
+
+    records = event_boost.load_ground_zero_records(event_dt, ticketmaster_dt)
+    return event_boost.compute_hourly_boost(records, ts_date, _load_adjacency())
 
 
 def _load_tlc_volume_table() -> pd.DataFrame:
