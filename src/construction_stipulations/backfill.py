@@ -7,7 +7,15 @@ bronze.py의 main()은 RUN_DATE 하루치만 받는 증분 함수라서, 과거 
 
 - 이미 받아둔 날짜는 건너뛴다 (재실행해도 중복 호출 안 함 = resumable)
 - API에 짧은 시간에 너무 많은 요청이 몰리지 않게 요청 사이 딜레이를 둔다
-- 중간에 실패해도 나머지 날짜는 계속 진행하고, 끝나고 실패 목록을 보여준다
+- 중간에 실패해도 나머지 날짜는 계속 진행하고, 끝에 실패한 날짜가 있으면 예외를 던진다
+
+용도가 두 가지다:
+1. 사람이 한 번 수동 실행 — 과거 전체 구간을 채움 (기본값 그대로 실행)
+2. ingest_daily DAG의 construction_stipulations_bronze 태스크 — 매일
+   end=(그날의 ds)로 호출한다. 이미 받은 날짜는 스킵하니 평소엔 오늘 하루치만
+   새로 받는 것과 비용이 같지만, DAG가 하루라도 안 돌았으면 다음 실행에서
+   자동으로 빠진 날짜까지 같이 채운다 — construction(매일 전체 범위를 다시
+   받아서 항상 최신 상태 보장)과 동일한 효과를 증분 방식 비용으로 얻는다.
 
 주의: 신규 건수 0건인 날은 bronze.py의 main()이 output 파일을 만들지 않는다
 (정상 케이스로 취급하기 때문). 그래서 그런 날짜는 재실행할 때마다 매번 다시
@@ -84,6 +92,14 @@ def backfill_construction_stipulations(start: date = START, end: date | None = N
         logger.warning("실패한 날짜 (재실행 시 자동으로 이 날짜만 다시 시도됨):")
         for d in failed_dates:
             logger.warning(f"  - {d}")
+
+        # DAG 태스크로 쓰일 때 실패를 조용히 삼키면 Airflow가 "성공"으로 보고
+        # 자동 재시도가 안 걸린다 — 실패한 날짜가 있으면 예외를 던져서 Airflow의
+        # retry(default_args)가 정상적으로 작동하게 한다. 나머지 날짜는 이미
+        # 다 처리된 뒤라 재시도해도 skip되고 실패한 날짜만 다시 시도된다.
+        raise RuntimeError(
+            f"{len(failed_dates)}개 날짜 수집 실패: {', '.join(failed_dates)}"
+        )
 
 
 if __name__ == "__main__":
