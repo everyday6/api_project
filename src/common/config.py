@@ -78,6 +78,7 @@ SOCRATA_PAGE_SIZE = 50000
 # NYC Open Data API URL
 DATASETS = {
     "construction": "https://data.cityofnewyork.us/resource/tqtj-sjs8.json",
+    "construction_stipulations": "https://data.cityofnewyork.us/resource/gsgx-6efw.json",
     "closure": "https://data.cityofnewyork.us/resource/ezy6-djsf.json",
     "event": "https://nycopendata.socrata.com/resource/tvpp-9vvx.json",
     "parks": "https://data.cityofnewyork.us/resource/enfh-gkve.json",
