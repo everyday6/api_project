@@ -197,3 +197,43 @@ def _neighbor_hop_distances(
         frontier = next_frontier
 
     return distances
+
+
+def get_tlc_traffic_score_for_construction(
+    segment_id: str,
+    hour: int,
+    hops: int = DEFAULT_HOPS,
+    gold_path: Path = DIM_SEGMENT_TLC_VOLUME_PATH,
+    adjacency_path: Path = GRAPH_SEGMENT_ADJACENCY_PATH,
+) -> list[dict]:
+    """공사 위치 segment_id + 인접 hops단계 이내 세그먼트들의 TLC 기반 점수.
+
+    지금은 tlc_volume 하나만 반영한 임시 점수다. 나중에 팀 공용
+    scoring/traffic_score.py가 다른 요인(중심성, capacity, event, closure)과
+    합칠 때 이 값을 가져다 쓸 수 있다.
+    """
+
+    if not 0 <= hour <= 23:
+        raise ValueError(f"hour는 0~23 범위여야 합니다: {hour}")
+
+    gold = pd.read_parquet(gold_path)
+    if segment_id not in gold["segment_id"].values:
+        raise KeyError(f"segment_id를 찾을 수 없습니다: {segment_id}")
+
+    adjacency = pd.read_parquet(adjacency_path, columns=["segment_id", "neighbor_segment_id"])
+    hop_distances = _neighbor_hop_distances(segment_id, adjacency, hops=hops)
+
+    hour_scores = gold[gold["hour"] == hour].set_index("segment_id")["tlc_volume"]
+
+    results = [
+        {
+            "segment_id": seg,
+            "hop_distance": dist,
+            "hour": hour,
+            "traffic_score": float(hour_scores.loc[seg]),
+        }
+        for seg, dist in hop_distances.items()
+        if seg in hour_scores.index
+    ]
+
+    return sorted(results, key=lambda r: r["hop_distance"])
