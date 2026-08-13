@@ -40,6 +40,7 @@ import pandas as pd
 
 from src.common.config import BRONZE_DIR, SILVER_DIR
 from src.common.logger import get_logger
+from src.common.utils import clean_street
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
@@ -197,6 +198,11 @@ def build_dim_segment(
     df["capacity_per_hour"] = df["Number_Travel_Lanes"] * df["base_capacity_per_lane"] * direction_factor
     df["lane_miles"] = (df["SHAPE_Length"] * df["Number_Travel_Lanes"]) / 5280.0
 
+    # construction/road_closures 등 다른 소스와 동일한 규칙으로 정규화 — 도로명은
+    # 공유하지만 교차로(from/to street)는 LION 세그먼트 자체엔 없어서, 이 값만으로는
+    # "어느 도로인지"까지만 좁혀지고 "어느 블록인지"는 아직 못 좁힌다.
+    df["street_name"] = df["Street"].map(clean_street)
+
     dim_segment = df.rename(
         columns={
             "SegmentID": "segment_id",
@@ -208,7 +214,7 @@ def build_dim_segment(
     )[[
         "segment_id", "borough_code", "geometry", "length_ft", "road_class",
         "is_two_way", "lanes_total", "lane_miles", "base_capacity_per_lane",
-        "capacity_per_hour", "is_routable",
+        "capacity_per_hour", "is_routable", "street_name",
     ]]
 
     dim_segment_path = silver_root / "dim_segment.parquet"
