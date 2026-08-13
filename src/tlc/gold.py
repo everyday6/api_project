@@ -17,7 +17,7 @@ import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, dayofweek, hour as hour_of_day
 
-from src.common.config import SILVER_DIR, TAXI_TYPES
+from src.common.config import BOROUGH_EVENT, SILVER_DIR, TAXI_TYPES
 from src.common.logger import get_logger
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.mapping.zone_segment import MAP_ZONE_SEGMENT_PATH
@@ -113,3 +113,59 @@ def _normalize_tlc_volume(df: pd.DataFrame) -> pd.DataFrame:
     result = df.copy()
     result["tlc_volume"] = result["dropoff_count_raw"].rank(pct=True, method="average")
     return result
+
+
+def build_dim_segment_tlc_volume(
+    spark: SparkSession,
+    map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
+    silver_dir: Path = SILVER_DIR,
+    taxi_types: list[str] = TAXI_TYPES,
+    borough: str = BOROUGH_EVENT,
+) -> str:
+    """dim_segment_tlc_volume.parquet을 처음부터 다시 계산해서 저장한다.
+
+    공사 허가 신청이 맨해튼 한정이라, map_zone_segment의 borough 컬럼으로
+    맨해튼 세그먼트만 걸러서 쓴다. TLC silver 자체(팀 공용 코드)는 도시 전체를
+    유지하고, 이 Gold 단계에서만 필터링한다.
+    """
+
+    zone_hour_counts = _read_zone_hour_counts(spark, silver_dir=silver_dir, taxi_types=taxi_types)
+
+    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
+    map_zone_segment = map_zone_segment.loc[map_zone_segment["borough"] == borough, ["segment_id", "zone_id"]]
+
+    expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
+    result = _normalize_tlc_volume(expanded)
+
+    out_path = silver_dir / "dim_segment_tlc_volume.parquet"
+    silver_dir.mkdir(parents=True, exist_ok=True)
+    result.to_parquet(out_path, index=False)
+
+    logger.info(f"[tlc_gold] dim_segment_tlc_volume 저장 완료: {len(result)}행 -> {out_path}")
+    return str(out_path)
+
+
+def validate_dim_segment_tlc_volume(
+    path: str,
+    map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
+    borough: str = BOROUGH_EVENT,
+) -> str:
+    """dim_segment_tlc_volume.parquet의 최소 불변식을 확인한다."""
+
+    df = pd.read_parquet(path)
+
+    assert not df.duplicated(subset=["segment_id", "hour"]).any(), "(segment_id, hour) 중복 발견"
+    assert df["hour"].between(0, 23).all(), "hour가 0~23 범위를 벗어남"
+    assert df["tlc_volume"].between(0, 1).all(), "tlc_volume이 0~1 범위를 벗어남"
+    assert (df["dropoff_count_raw"] >= 0).all(), "dropoff_count_raw에 음수 있음"
+
+    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "borough"])
+    segment_count = map_zone_segment.loc[map_zone_segment["borough"] == borough, "segment_id"].nunique()
+    expected_rows = segment_count * len(HOURS)
+    assert len(df) == expected_rows, f"행 수가 예상과 다릅니다: {len(df)} != {expected_rows}"
+
+    hours_per_segment = df.groupby("segment_id")["hour"].nunique()
+    assert (hours_per_segment == len(HOURS)).all(), "일부 세그먼트에 24개 시간대가 다 없음"
+
+    logger.info(f"[tlc_gold] 검증 통과 ({len(df)}행)")
+    return path

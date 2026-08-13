@@ -160,3 +160,65 @@ def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
     assert row["zone_id"] == 7
     assert row["hour"] == 9
     assert row["dropoff_count"] == 2  # yellow 1건 + green 1건
+
+
+from src.tlc.gold import build_dim_segment_tlc_volume, validate_dim_segment_tlc_volume
+
+
+def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
+    # 세그먼트 A,B는 zone 1(맨해튼), 세그먼트 C는 zone 2(맨해튼).
+    # 세그먼트 D는 zone 1이지만 브루클린이라 결과에서 제외되어야 한다.
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B", "C", "D"],
+        "zone_id": [1, 1, 2, 1],
+        "borough": ["Manhattan", "Manhattan", "Manhattan", "Brooklyn"],
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    silver_dir = tmp_path / "silver"
+    _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", [{
+        "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "pickup_location_id": 1,
+        "dropoff_location_id": 1,
+        "passenger_count": 1.0,
+        "trip_distance": 1.0,
+    }])
+
+    out_path = build_dim_segment_tlc_volume(
+        spark,
+        map_zone_segment_path=map_zone_segment_path,
+        silver_dir=silver_dir,
+        taxi_types=["yellow"],
+    )
+
+    validated_path = validate_dim_segment_tlc_volume(out_path, map_zone_segment_path=map_zone_segment_path)
+    assert validated_path == out_path
+
+    df = pd.read_parquet(out_path)
+    assert len(df) == 3 * 24  # 맨해튼 세그먼트(A,B,C)만 — D는 제외
+    assert "D" not in df["segment_id"].values
+    hour8 = df[df["hour"] == 8].set_index("segment_id")["dropoff_count_raw"]
+    assert hour8["A"] == 1
+    assert hour8["B"] == 1
+    assert hour8["C"] == 0
+
+
+def test_validate_dim_segment_tlc_volume_rejects_duplicate_rows(tmp_path):
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": ["A"],
+        "zone_id": [1],
+        "borough": ["Manhattan"],
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    bad_path = tmp_path / "dim_segment_tlc_volume.parquet"
+    pd.DataFrame({
+        "segment_id": ["A"] * 25,  # 24개여야 하는데 25개 (중복)
+        "hour": list(range(24)) + [0],
+        "dropoff_count_raw": [0] * 25,
+        "tlc_volume": [0.5] * 25,
+    }).to_parquet(bad_path, index=False)
+
+    with pytest.raises(AssertionError):
+        validate_dim_segment_tlc_volume(str(bad_path), map_zone_segment_path=map_zone_segment_path)
