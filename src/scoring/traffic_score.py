@@ -365,6 +365,22 @@ def get_closure_data_date_range() -> tuple[str, str]:
     return closure_penalty.get_data_date_range(_latest_mapping_dt())
 
 
+def get_active_closures(ts_hour: int | None = None, ts_date: str | None = None) -> list[dict]:
+    """(ts_date, ts_hour) 시점에 맨해튼 전체에서 활성인 공사/통제 목록 —
+    get_nearby_closures()와 달리 특정 segment에 anchor되지 않는다. 대시보드
+    "이 날짜에 활성인 공사" 목록(클릭하면 그 segment로 지도 이동+점수 조회)용."""
+    if ts_hour is None:
+        ts_hour = _current_hour()
+    if ts_date is None:
+        ts_date = _current_date()
+
+    return closure_penalty.get_active_closures(
+        mapping_dt=_latest_mapping_dt(),
+        query_date=ts_date,
+        hour=ts_hour,
+    )
+
+
 # LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
 # 5=Staten Island (NYC 공식 자치구 코드, WEST 81 STREET/ARDEN STREET 등 알려진
 # 맨해튼 도로로 실측 대조해서 확인함). 지금 프로젝트 범위가 맨해튼뿐이라
