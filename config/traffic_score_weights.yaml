@@ -29,4 +29,4 @@ components:
       enabled: true          # dim_segment_traffic_score_v0.capacity_per_hour
     closure_penalty:
       weight: 1.0
-      enabled: false         # TODO: 공사/도로통제로 인한 용량 감소 (다른 조원 작업)
+      enabled: true          # dim_segment_closure_penalty.closure_capacity_reduction (src/scoring/closure_penalty.py)
