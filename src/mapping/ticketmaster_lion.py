@@ -8,12 +8,6 @@ Ticketmaster Silver -> LION segment mapping
 - venue 기준 200ft 이내의 모든 segment 매핑
 - 200ft 안에 segment가 없는 venue는 nearest segment 1개 fallback
 - mapping 결과를 run_date 기준 Parquet으로 저장
-
-DE 관점
-- 입력/출력 검증
-- 동일 run_date 동일 경로 저장
-- 데이터 품질 로깅
-- 실패 시 명확하게 예외 발생
 """
 
 import os

@@ -51,7 +51,7 @@ DIM_SEGMENT_PATH = SILVER_DIR / "dim_segment.parquet"
 LION_COLUMNS = [
     "SegmentID", "Street", "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir",
     "FeatureTyp", "Number_Travel_Lanes", "Number_Total_Lanes",
-    "StreetWidth_Min", "StreetWidth_Max", "SHAPE_Length", "LBoro",
+    "StreetWidth_Min", "StreetWidth_Max", "SHAPE_Length", "LBoro","NodeIDFrom", "NodeIDTo",
 ]
 
 # RW_TYPE(도로유형 코드, 공식 정의) -> road_class 1차 분류
@@ -209,11 +209,13 @@ def build_dim_segment(
             "SHAPE": "geometry",
             "SHAPE_Length": "length_ft",
             "Number_Travel_Lanes": "lanes_total",
+            "NodeIDFrom": "node_from",
+            "NodeIDTo": "node_to",
         }
     )[[
         "segment_id", "street_name", "borough_code", "geometry", "length_ft", "road_class",
         "is_two_way", "lanes_total", "lane_miles", "base_capacity_per_lane",
-        "capacity_per_hour", "is_routable",
+        "capacity_per_hour", "is_routable", "node_from", "node_to",
     ]]
 
     dim_segment_path = silver_root / "dim_segment.parquet"
