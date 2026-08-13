@@ -8,21 +8,27 @@ Traffic Score 조회 계층 — segment_id x ts_hour 기준 단일 조회 인터
    config/traffic_score_weights.yaml에서 가중치·on/off를 관리한다. 코드에
    가중치를 하드코딩하지 않는다 — 새 컴포넌트가 생기면 yaml에 줄만 추가하고
    COMPONENT_SOURCES에 데이터 매핑만 붙이면 된다.
-3. ts_hour: closure_penalty가 이제 segment_id x hour(0~23) 단위로 계산되므로
-   (src/scoring/closure_penalty.py) 실제로 시간대별 조회가 된다. ts_hour=None이면
-   "지금 몇 시인지"(America/New_York 기준)로 자동 대체한다 — 대시보드가 아직
-   시간 선택 UI 없이 늘 ts_hour=None으로만 호출해도 "현재 시각 기준" 점수가
-   바로 나오게 하기 위함. 나중에 프론트에 시간 선택이 생기면 그때는 명시적으로
-   ts_hour를 넘기면 된다. centrality/base_capacity는 여전히 분기 1회 갱신되는
-   정적값이라 시간에 따라 안 바뀐다 — 지금 시간대별로 실제 변하는 건
-   closure_penalty뿐이다(TLC 수요가 나중에 붙으면 그것도 시간대별이 될 예정).
+3. ts_hour/ts_date: closure_penalty는 segment_id x hour(0~23) 단위로 계산되고,
+   그 활성 여부 자체가 permit의 실제 날짜 범위(work_start_ts~work_end_ts)와
+   요일에 달려 있어서(src/scoring/closure_penalty.py) 조회 시각뿐 아니라
+   "어느 날짜를 볼 것인지"도 필요하다. 둘 다 None이면 현재 시각/날짜
+   (America/New_York 기준)로 자동 대체한다. centrality/base_capacity는 여전히
+   분기 1회 갱신되는 정적값이라 시간/날짜에 따라 안 바뀐다 — 지금 실제로
+   변하는 건 closure_penalty뿐이다(TLC 수요가 나중에 붙으면 그것도 시간대/
+   날짜별이 될 예정).
+4. closure_penalty는 "최신 매핑 스냅샷(mapping_dt) 하나"에서 나온 permit
+   후보들을, 조회하려는 ts_date 기준으로 활성 여부만 다시 판정하는 식이라
+   ts_date를 바꿀 때마다 온디맨드로 재계산한다(디스크에 날짜별로 미리 계산해
+   두지 않음 — 과거/미래 날짜를 자유롭게 넘겨볼 수 있어야 해서 모든 날짜를
+   미리 구워둘 수 없다). 계산 자체는 몇 초 걸리므로 (component, ts_date)별로
+   캐싱해서 같은 날짜 재조회는 즉시 응답한다.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime
+from datetime import datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from zoneinfo import ZoneInfo
 
 import pandas as pd
@@ -33,7 +39,6 @@ from src.common.logger import get_logger
 from src.lion.silver import DIM_SEGMENT_PATH
 from src.lion.traffic_score import DIM_SEGMENT_TRAFFIC_SCORE_PATH
 from src.scoring import closure_penalty
-from src.scoring.closure_penalty import OUT_SOURCE as CLOSURE_PENALTY_SOURCE
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
 
@@ -54,18 +59,22 @@ COMPONENT_SOURCES: dict[str, str | None] = {
     "closure_penalty": "closure_capacity_reduction",
 }
 
-# 시간대(hour)별로 값이 달라지는 컴포넌트 목록 — value는 그 컴포넌트의 Silver/Gold
-# 산출물이 저장된 SILVER_DIR 밑 디렉터리 이름이다(dt= 파티션을 스스로 찾아서
-# 읽는다, closure_penalty.py의 OUT_SOURCE와 동일 패턴). 여기 없는 컴포넌트는
-# _load_base_data()의 정적 테이블(분기 1회 갱신)에서 값을 가져온다고 간주한다.
+# 시간대(hour) x 날짜(ts_date)별로 값이 달라지는 컴포넌트 목록 — value는
+# "이 컴포넌트의 (segment_id, hour, value_col) 테이블을 ts_date 하나 기준으로
+# 만들어주는 함수"다. 여기 없는 컴포넌트는 _load_base_data()의 정적 테이블
+# (분기 1회 갱신)에서 값을 가져온다고 간주한다.
 #
 # 새 시간대별 컴포넌트(예: TLC 통행량)를 추가할 때 할 일은 딱 두 가지뿐이다 —
-# ① COMPONENT_SOURCES에 컬럼명 추가, ② 여기에 "그 컴포넌트 이름: Silver 출력
-# 디렉터리 이름" 한 줄 추가. get_traffic_score()/get_map_data() 코드는 안 건드려도
-# 된다 — segment_id x hour 스키마(컬럼: segment_id, hour, <값 컬럼>)로 저장하는
-# 것만 맞추면 자동으로 시간대별 조회에 포함된다.
-HOURLY_COMPONENT_SOURCES: dict[str, str] = {
-    "closure_penalty": CLOSURE_PENALTY_SOURCE,
+# ① COMPONENT_SOURCES에 컬럼명 추가, ② 여기에 "그 컴포넌트 이름: ts_date를
+# 받아 segment_id x hour x <값 컬럼> DataFrame을 반환하는 함수" 한 줄 추가.
+# get_traffic_score()/get_map_data() 코드는 안 건드려도 된다.
+HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
+    "closure_penalty": lambda ts_date: closure_penalty.compute_hourly_penalty(
+        closure_penalty.load_ground_zero_records(_latest_mapping_dt()),
+        ts_date,
+        _load_adjacency(),
+        _load_capacity_by_segment(),
+    ),
 }
 
 _cache: dict[str, Any] = {}
@@ -74,11 +83,40 @@ _cache: dict[str, Any] = {}
 def _latest_partition_path(source_dir_name: str) -> Path | None:
     """<source_dir_name>의 dt= 파티션 중 가장 최근 것을 찾는다.
 
-    ingest_daily가 매일 새로 만드는 시간대별 테이블들은 dim_segment_traffic_score_v0
+    ingest_daily가 매일 새로 만드는 테이블들은 dim_segment_traffic_score_v0
     (분기 1회)처럼 고정 경로가 아니라 그날그날 파티션을 스스로 찾아야 한다.
     """
     partitions = sorted((SILVER_DIR / source_dir_name).glob("dt=*/data.parquet"))
     return partitions[-1] if partitions else None
+
+
+def _latest_run_date(source_dir_name: str) -> str | None:
+    """<source_dir_name>의 dt= 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13")."""
+    path = _latest_partition_path(source_dir_name)
+    if path is None:
+        return None
+    return path.parent.name.split("=", 1)[1]
+
+
+def _latest_mapping_dt() -> str:
+    """map_road_control_segment(map_road_closure_segment도 같은 날 함께 갱신됨)의
+    최신 dt= 파티션 날짜 — closure_penalty 계산의 "진앙 후보" 데이터 스냅샷
+    기준이다. 대시보드에서 사용자가 고르는 조회 날짜(ts_date)와는 다른
+    개념이다: 이건 "우리가 아는 공사/통제 허가 목록을 언제 기준으로
+    수집했는지"이고, ts_date는 "그 허가들 중 어느 게 그 날짜에 실제로
+    활성인지" 판단 기준이다.
+    """
+    mapping_dt = _latest_run_date(closure_penalty.MAP_ROAD_CONTROL_SEGMENT_DIR.name)
+    if mapping_dt is None:
+        raise RuntimeError("map_road_control_segment 데이터가 없습니다 — 매핑 파이프라인을 먼저 실행하세요.")
+    return mapping_dt
+
+
+def _load_capacity_by_segment() -> dict:
+    """segment_id -> capacity_per_hour. 요청마다 다시 읽지 않도록 캐싱한다."""
+    if "capacity_by_segment" not in _cache:
+        _cache["capacity_by_segment"] = closure_penalty.load_capacity_by_segment()
+    return _cache["capacity_by_segment"]
 
 
 def load_weights(path: Path = WEIGHTS_CONFIG_PATH) -> dict:
@@ -102,11 +140,16 @@ def _current_hour() -> int:
     return datetime.now(LOCAL_TZ).hour
 
 
+def _current_date() -> str:
+    """ts_date=None일 때 쓸 기본값 — America/New_York 기준 오늘 날짜."""
+    return datetime.now(LOCAL_TZ).date().isoformat()
+
+
 def _load_base_data() -> pd.DataFrame:
     """dim_segment(geometry 등) + dim_segment_traffic_score_v0(컴포넌트 값)를 합친 조회용 테이블.
 
-    시간에 안 따라 바뀌는 정적 컴포넌트만 — closure_penalty(시간대별)는 여기
-    안 넣고 _load_closure_penalty_hourly()에서 별도로 관리한다.
+    시간에 안 따라 바뀌는 정적 컴포넌트만 — closure_penalty(시간대/날짜별)는
+    여기 안 넣고 HOURLY_COMPONENT_LOADERS/_load_hourly_table()에서 별도로 관리한다.
 
     API 요청마다 parquet을 다시 읽지 않도록 프로세스 안에서 한 번만 로드해 캐싱한다.
     """
@@ -125,36 +168,28 @@ def _load_base_data() -> pd.DataFrame:
     return df
 
 
-def _load_hourly_table(component_name: str) -> pd.DataFrame:
-    """HOURLY_COMPONENT_SOURCES에 등록된 컴포넌트의 (segment_id, hour, value) 테이블.
-
-    아직 한 번도 안 만들어졌으면(파티션 없음) 빈 테이블 — 이 경우 모든 조회가
-    이 컴포넌트=0(영향 없음)으로 처리된다.
+def _load_hourly_table(component_name: str, ts_date: str) -> pd.DataFrame:
+    """HOURLY_COMPONENT_LOADERS에 등록된 컴포넌트의, ts_date 기준
+    (segment_id, hour, value) 테이블. (component, ts_date) 조합별로 캐싱한다 —
+    같은 날짜를 다시 조회할 땐 재계산하지 않는다.
     """
-    cache_key = f"hourly_df::{component_name}"
+    cache_key = f"hourly_df::{component_name}::{ts_date}"
     if cache_key in _cache:
         return _cache[cache_key]
 
-    value_col = COMPONENT_SOURCES[component_name]
-    source_dir = HOURLY_COMPONENT_SOURCES[component_name]
-    path = _latest_partition_path(source_dir)
-    if path is not None:
-        df = pd.read_parquet(path, columns=["segment_id", "hour", value_col])
-    else:
-        df = pd.DataFrame(columns=["segment_id", "hour", value_col])
-
+    df = HOURLY_COMPONENT_LOADERS[component_name](ts_date)
     _cache[cache_key] = df
     return df
 
 
-def _hourly_lookup(component_name: str) -> dict[tuple[str, int], float]:
+def _hourly_lookup(component_name: str, ts_date: str) -> dict[tuple[str, int], float]:
     """(segment_id, hour) -> 값 딕셔너리. 단건 조회(get_traffic_score)용."""
-    cache_key = f"hourly_lookup::{component_name}"
+    cache_key = f"hourly_lookup::{component_name}::{ts_date}"
     if cache_key in _cache:
         return _cache[cache_key]
 
     value_col = COMPONENT_SOURCES[component_name]
-    df = _load_hourly_table(component_name)
+    df = _load_hourly_table(component_name, ts_date)
     lookup = {
         (seg, int(hour)): value
         for seg, hour, value in zip(df["segment_id"], df["hour"], df[value_col])
@@ -176,20 +211,23 @@ def _enabled_items(components: dict, row: pd.Series) -> list[dict]:
     return items
 
 
-def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
+def get_traffic_score(segment_id: str, ts_hour: int | None = None, ts_date: str | None = None) -> dict:
     """
-    segment_id x ts_hour 하나의 traffic_score와 구성 요소별 세부값을 돌려주는
-    단일 조회 인터페이스.
+    segment_id x ts_hour x ts_date 하나의 traffic_score와 구성 요소별 세부값을
+    돌려주는 단일 조회 인터페이스.
 
-    ts_hour: None이면 현재 시각(America/New_York, 0~23)으로 자동 대체한다.
-    closure_penalty가 segment_id x hour 단위라 시간대별로 실제 값이 달라진다
-    (centrality/base_capacity는 여전히 분기 1회 정적값).
+    ts_hour/ts_date: None이면 현재 시각/날짜(America/New_York)로 자동 대체한다.
+    closure_penalty가 segment_id x hour이고 그 활성 여부가 실제 permit 날짜
+    범위/요일에 달려 있어서 둘 다 결과에 영향을 준다(centrality/base_capacity는
+    여전히 분기 1회 정적값).
 
     Raises:
         KeyError: segment_id가 dim_segment(+score)에 없을 때.
     """
     if ts_hour is None:
         ts_hour = _current_hour()
+    if ts_date is None:
+        ts_date = _current_date()
 
     weights = load_weights()
     df = _load_base_data()
@@ -198,11 +236,11 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
         raise KeyError(f"segment_id를 찾을 수 없습니다: {segment_id}")
     row = df.loc[segment_id].to_dict()
 
-    # 시간대별 컴포넌트는 전부 여기서 일괄 채운다 — HOURLY_COMPONENT_SOURCES에
+    # 시간대별 컴포넌트는 전부 여기서 일괄 채운다 — HOURLY_COMPONENT_LOADERS에
     # 등록된 것만큼 자동으로 반영되고, 값이 없으면(그 시간엔 영향 없음) 0.0.
-    for name, source_dir in HOURLY_COMPONENT_SOURCES.items():
+    for name in HOURLY_COMPONENT_LOADERS:
         column = COMPONENT_SOURCES[name]
-        row[column] = _hourly_lookup(name).get((segment_id, ts_hour), 0.0)
+        row[column] = _hourly_lookup(name, ts_date).get((segment_id, ts_hour), 0.0)
 
     demand_items = _enabled_items(weights["components"]["demand"], row)
     capacity_items = _enabled_items(weights["components"]["capacity"], row)
@@ -217,6 +255,7 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
     return {
         "segment_id": segment_id,
         "ts_hour": ts_hour,
+        "ts_date": ts_date,
         "traffic_score": traffic_score,
         "lanes_total": lanes_total,
         "components": {
@@ -226,25 +265,18 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
     }
 
 
-def get_traffic_score_hourly(segment_id: str) -> list[dict]:
-    """segment_id 하나의 0~23시 전체 프로파일 — get_traffic_score()를 24번 재사용한다.
+def get_traffic_score_hourly(segment_id: str, ts_date: str | None = None) -> list[dict]:
+    """segment_id 하나의 (ts_date 기준) 0~23시 전체 프로파일 — get_traffic_score()를
+    24번 재사용한다.
 
     대시보드의 "하루 전체 막대 그래프"용. _load_base_data()/_hourly_lookup()이
     이미 캐싱돼 있어서 24번 호출해도 실제로는 가벼운 딕셔너리 조회 24번일 뿐이다
-    (매번 parquet을 다시 읽지 않음).
+    (매번 다시 계산하지 않음).
 
     Raises:
         KeyError: segment_id가 dim_segment(+score)에 없을 때.
     """
-    return [get_traffic_score(segment_id, ts_hour=h) for h in range(24)]
-
-
-def _latest_run_date(source_dir_name: str) -> str | None:
-    """<source_dir_name>의 dt= 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13")."""
-    path = _latest_partition_path(source_dir_name)
-    if path is None:
-        return None
-    return path.parent.name.split("=", 1)[1]
+    return [get_traffic_score(segment_id, ts_hour=h, ts_date=ts_date) for h in range(24)]
 
 
 def _load_adjacency() -> dict:
@@ -254,12 +286,11 @@ def _load_adjacency() -> dict:
     return _cache["adjacency"]
 
 
-def get_nearby_closures(segment_id: str, ts_hour: int | None = None) -> list[dict]:
+def get_nearby_closures(segment_id: str, ts_hour: int | None = None, ts_date: str | None = None) -> list[dict]:
     """
-    segment_id 기준 MAX_HOPS 이내에서 현재(ts_hour) 활성인 공사/통제 목록 —
-    대시보드 "현재 영향받는 공사" 상세 패널용. closure_penalty를 만들 때 쓴
-    것과 같은(최신) run_date 파티션 기준으로 계산해야 집계 점수와 앞뒤가
-    맞으므로, closure_penalty의 최신 dt= 파티션 날짜를 그대로 재사용한다.
+    segment_id 기준 MAX_HOPS 이내에서 (ts_date, ts_hour) 시점에 활성인 공사/통제
+    목록 — 대시보드 "현재 영향받는 공사" 상세 패널용. mapping_dt(최신 매핑
+    스냅샷)는 고정하고 ts_date만 바꿔가며 조회할 수 있다.
 
     Raises:
         KeyError: segment_id가 dim_segment(+score)에 없을 때.
@@ -269,17 +300,22 @@ def get_nearby_closures(segment_id: str, ts_hour: int | None = None) -> list[dic
 
     if ts_hour is None:
         ts_hour = _current_hour()
-
-    run_date = _latest_run_date(CLOSURE_PENALTY_SOURCE)
-    if run_date is None:
-        return []
-
-    weekday = date.fromisoformat(run_date).weekday()
-    adjacency = _load_adjacency()
+    if ts_date is None:
+        ts_date = _current_date()
 
     return closure_penalty.get_nearby_closures(
-        segment_id, run_date=run_date, hour=ts_hour, weekday=weekday, adjacency=adjacency,
+        segment_id,
+        mapping_dt=_latest_mapping_dt(),
+        query_date=ts_date,
+        hour=ts_hour,
+        adjacency=_load_adjacency(),
     )
+
+
+def get_closure_data_date_range() -> tuple[str, str]:
+    """현재 매핑 스냅샷에 있는 공사/통제 permit들의 전체 날짜 범위 — 대시보드
+    날짜 선택기 min/max 힌트용."""
+    return closure_penalty.get_data_date_range(_latest_mapping_dt())
 
 
 # LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
@@ -291,25 +327,39 @@ def get_nearby_closures(segment_id: str, ts_hour: int | None = None) -> list[dic
 DASHBOARD_BOROUGH_CODE = "1"
 
 
-def get_map_data(ts_hour: int | None = None) -> pd.DataFrame:
+def get_segment_geometries() -> pd.DataFrame:
+    """지도 렌더링용 좌표 전용 테이블 — segment_id, geometry (Manhattan 한정).
+
+    geometry는 시간/날짜와 무관한 정적 데이터라, closure_penalty 온디맨드
+    계산까지 딸려오는 get_map_data() 대신 이걸 쓰면 가볍게 가져올 수 있다.
+    """
+    df = _load_base_data()
+    df = df[df["borough_code"] == DASHBOARD_BOROUGH_CODE]
+    return df[["segment_id", "geometry"]].reset_index(drop=True)
+
+
+def get_map_data(ts_hour: int | None = None, ts_date: str | None = None) -> pd.DataFrame:
     """지도 렌더링용 벌크 데이터 — segment_id, geometry, road_class, traffic_score.
 
     맨해튼(DASHBOARD_BOROUGH_CODE)만 반환한다 — 프로젝트 범위 자체가 맨해튼이라.
-    ts_hour: None이면 현재 시각(America/New_York)으로 자동 대체 — get_traffic_score()와 동일.
+    ts_hour/ts_date: None이면 현재 시각/날짜(America/New_York)로 자동 대체 —
+    get_traffic_score()와 동일.
     """
     if ts_hour is None:
         ts_hour = _current_hour()
+    if ts_date is None:
+        ts_date = _current_date()
 
     weights = load_weights()
     df = _load_base_data()
     df = df[df["borough_code"] == DASHBOARD_BOROUGH_CODE].reset_index(drop=True)
 
-    # 시간대별 컴포넌트는 전부 여기서 일괄 병합한다 — HOURLY_COMPONENT_SOURCES에
-    # 등록된 것만큼 자동으로 반영된다. 이 ts_hour 한 시간대분만 골라서 병합하고,
-    # 매칭 안 되는(그 시간엔 영향 없는) segment는 0으로 채운다.
-    for name, source_dir in HOURLY_COMPONENT_SOURCES.items():
+    # 시간대별 컴포넌트는 전부 여기서 일괄 병합한다 — HOURLY_COMPONENT_LOADERS에
+    # 등록된 것만큼 자동으로 반영된다. 이 ts_date x ts_hour 한 시간대분만 골라서
+    # 병합하고, 매칭 안 되는(그 시간엔 영향 없는) segment는 0으로 채운다.
+    for name in HOURLY_COMPONENT_LOADERS:
         column = COMPONENT_SOURCES[name]
-        hourly = _load_hourly_table(name)
+        hourly = _load_hourly_table(name, ts_date)
         this_hour = hourly.loc[hourly["hour"] == ts_hour, ["segment_id", column]]
         df = df.merge(this_hour, on="segment_id", how="left")
         df[column] = df[column].fillna(0.0)
