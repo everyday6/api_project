@@ -5,8 +5,13 @@
 환경이 변경되더라도 이 파일만 수정하면 된다.
 """
 
+import os
 from datetime import datetime
 from pathlib import Path
+
+from dotenv import load_dotenv
+
+load_dotenv()
 
 # ==========================
 # TLC 데이터 설정
@@ -48,6 +53,7 @@ RECENT_MONTHS_WINDOW = 3
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
 DATA_DIR = PROJECT_ROOT / "data"
+CONFIG_DIR = PROJECT_ROOT / "config"
 
 TMP_DIR = DATA_DIR / "tmp"
 
@@ -59,7 +65,7 @@ SILVER_DIR = DATA_DIR / "silver"
 # ==========================
 
 # HEAD / GET Timeout
-HTTP_TIMEOUT = 30
+HTTP_TIMEOUT = 60
 
 # 다운로드 Chunk 크기
 CHUNK_SIZE = 8192
@@ -68,3 +74,54 @@ CHUNK_SIZE = 8192
 USER_AGENT = {
     "User-Agent": "Traffic-Score-Project/1.0"
 }
+
+# ==========================
+# NYC Open Data 설정
+# ==========================
+
+# 분석 대상 Borough
+# 같은 맨해튼이지만 소스마다 표기가 달라 분리한다.
+BOROUGH = "MANHATTAN"        # 공사 허가 (대문자)
+BOROUGH_EVENT = "Manhattan"  # 행사 (첫 글자만 대문자)
+
+# Socrata API 페이지 크기
+SOCRATA_PAGE_SIZE = 50000
+
+# NYC Open Data API URL
+DATASETS = {
+    "construction": "https://data.cityofnewyork.us/resource/tqtj-sjs8.json",
+    "closure": "https://data.cityofnewyork.us/resource/ezy6-djsf.json",
+    "event": "https://nycopendata.socrata.com/resource/tvpp-9vvx.json",
+    "parks": "https://data.cityofnewyork.us/resource/enfh-gkve.json",
+}
+
+# ==========================
+# Ticketmaster 설정
+# ==========================
+
+# Ticketmaster API Key (.env에서 불러옴)
+TICKETMASTER_API_KEY = os.getenv("TICKETMASTER_API_KEY")
+
+# Ticketmaster Discovery API URL
+TICKETMASTER_URL = (
+    "https://app.ticketmaster.com/discovery/v2/events.json"
+)
+
+# 조회 대상 도시
+TICKETMASTER_CITY = "New York"
+
+# API 페이지 크기
+TICKETMASTER_PAGE_SIZE = 200
+
+# API 최대 조회 가능 건수
+# 이 값에 도달하면 초과분은 조용히 누락되므로
+# CHUNK_DAYS 단위로 기간을 쪼개 호출한다.
+TICKETMASTER_MAX_RESULTS = 1000
+
+# API 호출 간 대기 시간
+TICKETMASTER_SLEEP = 0.25
+
+# 미래 이벤트 조회 기간
+TICKETMASTER_LOOKAHEAD_DAYS = 120
+
+TICKETMASTER_CHUNK_DAYS = 7
