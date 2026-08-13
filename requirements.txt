@@ -10,3 +10,4 @@ networkx
 
 pyarrow==25.0.1
 python-dotenv==1.2.2
+pytest==8.4.2

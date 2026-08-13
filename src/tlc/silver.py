@@ -19,7 +19,7 @@ from src.common.spark import get_spark
 from src.tlc.transform import transform
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver")
 
 
 @task(
