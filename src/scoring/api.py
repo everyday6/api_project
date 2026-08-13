@@ -20,7 +20,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse
 from shapely import wkt
 
-from src.scoring.traffic_score import get_map_data, get_traffic_score
+from src.scoring.traffic_score import get_map_data, get_traffic_score, get_traffic_score_hourly
 
 app = FastAPI(title="Traffic Score API")
 
@@ -40,6 +40,19 @@ def api_get_traffic_score(segment_id: str, ts_hour: Optional[int] = None):
     """
     try:
         return get_traffic_score(segment_id, ts_hour=ts_hour)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
+
+
+@app.get("/api/traffic_score/{segment_id}/hourly")
+def api_get_traffic_score_hourly(segment_id: str):
+    """
+    segment_id 하나의 0~23시 전체 프로파일 — "하루 전체를 한눈에" 보여주는
+    대시보드 막대 그래프용. get_traffic_score()를 24번 재사용할 뿐이라 별도
+    계산 로직은 없다.
+    """
+    try:
+        return get_traffic_score_hourly(segment_id)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
 
