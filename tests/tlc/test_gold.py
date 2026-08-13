@@ -287,6 +287,7 @@ def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
         spark,
         map_zone_segment_path=map_zone_segment_path,
         silver_dir=silver_dir,
+        gold_dir=tmp_path / "gold",
         taxi_types=["yellow"],
     )
 
@@ -342,6 +343,7 @@ def test_build_dim_segment_tlc_volume_logs_unmatched_zone_trips(tmp_path, spark,
             spark,
             map_zone_segment_path=map_zone_segment_path,
             silver_dir=silver_dir,
+            gold_dir=tmp_path / "gold",
             taxi_types=["yellow"],
         )
 
@@ -397,6 +399,7 @@ def test_validate_dim_segment_tlc_volume_rejects_zero_matching_segments(tmp_path
         spark,
         map_zone_segment_path=map_zone_segment_path,
         silver_dir=silver_dir,
+        gold_dir=tmp_path / "gold",
         taxi_types=["yellow"],
     )
 
@@ -533,6 +536,7 @@ def test_build_then_query_full_pipeline_seam(tmp_path, spark):
         spark,
         map_zone_segment_path=map_zone_segment_path,
         silver_dir=silver_dir,
+        gold_dir=tmp_path / "gold",
         taxi_types=["yellow"],
     )
     validate_dim_segment_tlc_volume(
