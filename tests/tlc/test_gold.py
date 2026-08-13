@@ -274,10 +274,13 @@ def gold_and_adjacency_paths(tmp_path):
         "tlc_volume":        [0.9, 0.95, 0.5, 0.5, 0.1, 0.1],
     }).to_parquet(gold_path, index=False)
 
+    # D는 A의 직접 이웃으로 그래프에는 있지만, Gold 테이블(맨해튼 한정)에는
+    # 아예 없다 — 맨해튼 밖으로 벗어난 이웃을 흉내낸 것. 이런 이웃은 결과에서
+    # 조용히 빠져야 한다(에러도, null score도 없이).
     adjacency_path = tmp_path / "graph_segment_adjacency.parquet"
     pd.DataFrame({
-        "segment_id":          ["A", "B"],
-        "neighbor_segment_id": ["B", "A"],
+        "segment_id":          ["A", "B", "A"],
+        "neighbor_segment_id": ["B", "A", "D"],
     }).to_parquet(adjacency_path, index=False)
 
     return gold_path, adjacency_path
@@ -295,6 +298,21 @@ def test_get_tlc_traffic_score_for_construction_returns_self_and_neighbors(gold_
     assert by_segment["B"] == {"segment_id": "B", "hop_distance": 1, "hour": 8, "traffic_score": 0.5}
     assert "C" not in by_segment  # A와 인접하지 않음
     assert [r["segment_id"] for r in result] == ["A", "B"]  # hop_distance 오름차순
+
+
+def test_get_tlc_traffic_score_for_construction_excludes_neighbor_missing_from_gold(gold_and_adjacency_paths):
+    # D는 A의 직접(1-hop) 이웃이지만 Gold 테이블(맨해튼 한정)에는 없다.
+    # Gold가 시티 전체가 아니라 맨해튼만 담고 있어 생기는 정상적인 상황이므로
+    # 에러 없이, null score도 없이 결과에서 조용히 빠져야 한다.
+    gold_path, adjacency_path = gold_and_adjacency_paths
+
+    result = get_tlc_traffic_score_for_construction(
+        "A", hour=8, hops=3, gold_path=gold_path, adjacency_path=adjacency_path,
+    )
+
+    segment_ids = [r["segment_id"] for r in result]
+    assert "D" not in segment_ids
+    assert segment_ids == ["A", "B"]  # D는 조용히 제외되고 A, B만 남음
 
 
 def test_get_tlc_traffic_score_for_construction_missing_segment_raises(gold_and_adjacency_paths):
