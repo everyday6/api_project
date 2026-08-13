@@ -17,14 +17,14 @@ import pandas as pd
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, dayofweek, hour as hour_of_day
 
-from src.common.config import BOROUGH_EVENT, SILVER_DIR, TAXI_TYPES
+from src.common.config import BOROUGH_EVENT, GOLD_DIR, SILVER_DIR, TAXI_TYPES
 from src.common.logger import get_logger
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.mapping.zone_segment import MAP_ZONE_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_gold")
 
-DIM_SEGMENT_TLC_VOLUME_PATH = SILVER_DIR / "dim_segment_tlc_volume.parquet"
+DIM_SEGMENT_TLC_VOLUME_PATH = GOLD_DIR / "dim_segment_tlc_volume.parquet"
 
 HOURS = list(range(24))
 DEFAULT_HOPS = 3
@@ -130,6 +130,7 @@ def build_dim_segment_tlc_volume(
     spark: SparkSession,
     map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
     silver_dir: Path = SILVER_DIR,
+    gold_dir: Path = GOLD_DIR,
     taxi_types: list[str] = TAXI_TYPES,
     borough: str = BOROUGH_EVENT,
 ) -> str:
@@ -161,8 +162,8 @@ def build_dim_segment_tlc_volume(
     expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
     result = _normalize_tlc_volume(expanded)
 
-    out_path = silver_dir / "dim_segment_tlc_volume.parquet"
-    silver_dir.mkdir(parents=True, exist_ok=True)
+    out_path = gold_dir / "dim_segment_tlc_volume.parquet"
+    gold_dir.mkdir(parents=True, exist_ok=True)
     result.to_parquet(out_path, index=False)
 
     logger.info(f"[tlc_gold] dim_segment_tlc_volume 저장 완료: {len(result)}행 -> {out_path}")

@@ -29,7 +29,6 @@ from src.common.config import (
     INITIAL_START_DATE,
     INITIAL_END_DATE,
     TMP_DIR,
-    BRONZE_DIR,
     TAXI_TYPES,
     HTTP_TIMEOUT,
     CHUNK_SIZE,
@@ -39,6 +38,7 @@ from src.common.config import (
 )
 
 from src.common.logger import get_logger
+from src.tlc.bronze import BRONZE_ROOT
 
 
 # =========================================================
@@ -300,7 +300,7 @@ def generate_incremental_download_list() -> list[dict]:
             )
 
             # 이미 Bronze에 있으면 서버에 물어볼 필요 없이 건너뛴다.
-            if (BRONZE_DIR / filename).exists():
+            if (BRONZE_ROOT / filename).exists():
                 continue
 
             url = build_url(

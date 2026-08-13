@@ -17,6 +17,8 @@ from src.common.config import BRONZE_DIR
 from src.common.logger import get_logger
 
 
+BRONZE_ROOT = BRONZE_DIR / "tlc"
+
 # Logger 생성
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_bronze")
 
@@ -44,7 +46,7 @@ def store_bronze(
     # Bronze 폴더 생성
     # -----------------------------------------
 
-    BRONZE_DIR.mkdir(
+    BRONZE_ROOT.mkdir(
         parents=True,
         exist_ok=True,
     )
@@ -53,7 +55,7 @@ def store_bronze(
     # Bronze 저장 경로
     # -----------------------------------------
 
-    bronze_path = BRONZE_DIR / filename
+    bronze_path = BRONZE_ROOT / filename
 
     # -----------------------------------------
     # 이미 Bronze에 존재하는 경우
