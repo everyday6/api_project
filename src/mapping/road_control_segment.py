@@ -179,7 +179,13 @@ def reachable_streets_by_end(
 
 def load_construction_events(run_date: str) -> pd.DataFrame:
     path = ROAD_CONTROL_EVENTS_DIR / f"dt={run_date}" / "data.parquet"
-    df = pd.read_parquet(path, columns=["permit_id", "on_street", "from_street", "to_street", "control_type"])
+    df = pd.read_parquet(
+        path,
+        columns=[
+            "permit_id", "on_street", "from_street", "to_street", "control_type",
+            "work_start_hour", "work_end_hour", "work_days_code",
+        ],
+    )
     df = df[df["control_type"] == "construction"].drop(columns=["control_type"])
 
     for col in ["on_street", "from_street", "to_street"]:
