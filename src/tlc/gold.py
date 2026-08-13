@@ -55,3 +55,15 @@ def _expand_zone_to_segment_hour(
     merged["dropoff_count_raw"] = merged["dropoff_count"].fillna(0).astype("int64")
 
     return merged[["segment_id", "hour", "dropoff_count_raw"]]
+
+
+def _normalize_tlc_volume(df: pd.DataFrame) -> pd.DataFrame:
+    """dropoff_count_raw를 전체 (segment_id, hour) 조합 기준 global percentile
+    rank(0~1)로 정규화한다. dim_segment_traffic_score_v0의 demand_raw(중심성)를
+    만들 때 쓴 방식과 동일하다 — 세그먼트/시간대별로 따로 rank하지 않고 전부
+    하나로 묶어서 비교한다.
+    """
+
+    result = df.copy()
+    result["tlc_volume"] = result["dropoff_count_raw"].rank(pct=True, method="average")
+    return result

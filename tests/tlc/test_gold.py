@@ -1,6 +1,6 @@
 import pandas as pd
 
-from src.tlc.gold import _expand_zone_to_segment_hour
+from src.tlc.gold import _expand_zone_to_segment_hour, _normalize_tlc_volume
 
 
 def test_expand_zone_to_segment_hour_fills_missing_with_zero():
@@ -36,3 +36,32 @@ def test_expand_zone_to_segment_hour_every_segment_has_24_hours():
     result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
 
     assert sorted(result["hour"].tolist()) == list(range(24))
+
+
+def test_normalize_tlc_volume_percentile_rank():
+    df = pd.DataFrame({
+        "segment_id": ["A", "B", "C", "D", "E"],
+        "hour": [0, 0, 0, 0, 0],
+        "dropoff_count_raw": [0, 0, 5, 20, 100],
+    })
+
+    result = _normalize_tlc_volume(df)
+
+    values = result.set_index("segment_id")["tlc_volume"]
+    assert values["A"] == 0.3
+    assert values["B"] == 0.3  # 동점(0)은 평균 등수를 받음
+    assert values["C"] == 0.6
+    assert values["D"] == 0.8
+    assert values["E"] == 1.0
+
+
+def test_normalize_tlc_volume_keeps_original_columns():
+    df = pd.DataFrame({
+        "segment_id": ["A", "B"],
+        "hour": [0, 1],
+        "dropoff_count_raw": [1, 2],
+    })
+
+    result = _normalize_tlc_volume(df)
+
+    assert list(result.columns) == ["segment_id", "hour", "dropoff_count_raw", "tlc_volume"]
