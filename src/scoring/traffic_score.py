@@ -39,6 +39,7 @@ from src.common.logger import get_logger
 from src.lion.silver import DIM_SEGMENT_PATH
 from src.lion.traffic_score import DIM_SEGMENT_TRAFFIC_SCORE_PATH
 from src.scoring import closure_penalty
+from src.tlc.gold import DIM_SEGMENT_TLC_VOLUME_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
 
@@ -53,7 +54,7 @@ WEIGHTS_CONFIG_PATH = CONFIG_DIR / "traffic_score_weights.yaml"
 # 구현하면 여기에 한 줄만 추가하면 된다.
 COMPONENT_SOURCES: dict[str, str | None] = {
     "centrality": "demand_raw",
-    "tlc_volume": None,
+    "tlc_volume": "tlc_volume",
     "event_boost": None,
     "base_capacity": "capacity_per_hour",
     "closure_penalty": "closure_capacity_reduction",
@@ -75,6 +76,7 @@ HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
         _load_adjacency(),
         _load_capacity_by_segment(),
     ),
+    "tlc_volume": lambda ts_date: _load_tlc_volume_table(),
 }
 
 _cache: dict[str, Any] = {}
@@ -117,6 +119,33 @@ def _load_capacity_by_segment() -> dict:
     if "capacity_by_segment" not in _cache:
         _cache["capacity_by_segment"] = closure_penalty.load_capacity_by_segment()
     return _cache["capacity_by_segment"]
+
+
+def _load_tlc_volume_table() -> pd.DataFrame:
+    """dim_segment_tlc_volume(segment_id, hour, tlc_volume) — 평일 하차량 기준
+    percentile(0~1)이라 요일/날짜 구분이 없는 정적 테이블이다(ts_date와 무관 —
+    HOURLY_COMPONENT_LOADERS의 다른 컴포넌트와 시그니처만 맞춘다).
+
+    dags/tlc_gold_volume.py를 아직 실행하지 않아 파일이 없으면(수동 트리거 DAG라
+    당장은 없을 수 있음) 빈 테이블을 반환한다 — 이 경우 tlc_volume은 모든 조회에서
+    0(영향 없음)으로 처리되고, 나중에 파이프라인이 돌면 재시작 없이는 아니지만
+    코드 변경 없이 자동으로 반영된다.
+    """
+    if "tlc_volume_table" in _cache:
+        return _cache["tlc_volume_table"]
+
+    if DIM_SEGMENT_TLC_VOLUME_PATH.exists():
+        df = pd.read_parquet(DIM_SEGMENT_TLC_VOLUME_PATH, columns=["segment_id", "hour", "tlc_volume"])
+    else:
+        logger.warning(
+            "[scoring] dim_segment_tlc_volume이 없습니다(%s) — tlc_volume을 0으로 처리합니다. "
+            "dags/tlc_gold_volume.py를 실행하면 반영됩니다.",
+            DIM_SEGMENT_TLC_VOLUME_PATH,
+        )
+        df = pd.DataFrame(columns=["segment_id", "hour", "tlc_volume"])
+
+    _cache["tlc_volume_table"] = df
+    return df
 
 
 def load_weights(path: Path = WEIGHTS_CONFIG_PATH) -> dict:
