@@ -3,12 +3,17 @@ Bronze — 공사 허가 (Street Construction Permits)
 
 역할
 
-- Socrata API에서 공사 허가 전체 데이터 수집
+- Socrata API에서 공사 허가 데이터 수집 (issuedworkstartdate 2025-01-01 이후만 —
+  road_closures/stipulations와 동일하게 프로젝트에서 필요한 범위로 제한)
 - API 원본을 최대한 그대로 저장
 - Parquet 형식으로 날짜별 스냅샷 저장
 - 동일 RUN_DATE 재실행 시 같은 경로에 저장하여 멱등성 유지
 
-※ 증분 수집, 데이터 정제, 필터링, 타입 변환 등은 수행하지 않는다.
+매일 이 범위 전체를 통째로 다시 받는 방식(증분 아님)이라, 이 태스크가 처음 도는
+날부터 이미 2025-01-01~현재 전체가 다 받아진다 — 별도 백필 스크립트가 필요 없다
+(road_closures와 동일한 이유, src/road_closures/bronze.py 참고).
+
+※ 데이터 정제, 필터링(날짜 제외) 이외의 타입 변환 등은 수행하지 않는다.
 """
 
 import sys
@@ -29,6 +34,9 @@ logger = get_logger(__name__)
 
 SOURCE = "construction"
 ORDER = "permitnumber"
+
+# 프로젝트에서 필요한 범위 (road_closures/stipulations와 동일 기준)
+WHERE = "issuedworkstartdate >= '2025-01-01T00:00:00'"
 
 
 def main():
@@ -53,7 +61,7 @@ def main():
     try:
         total = fetch_all_streaming(
             url=DATASETS[SOURCE],
-            where="1=1",
+            where=WHERE,
             order=ORDER,
             out_path=out_path,
         )

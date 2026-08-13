@@ -27,6 +27,7 @@ from src.common.config import CONFIG_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.lion.silver import DIM_SEGMENT_PATH
 from src.lion.traffic_score import DIM_SEGMENT_TRAFFIC_SCORE_PATH
+from src.scoring.closure_penalty import OUT_SOURCE as CLOSURE_PENALTY_SOURCE
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
 
@@ -42,10 +43,21 @@ COMPONENT_SOURCES: dict[str, str | None] = {
     "tlc_volume": None,
     "event_boost": None,
     "base_capacity": "capacity_per_hour",
-    "closure_penalty": None,
+    "closure_penalty": "closure_capacity_reduction",
 }
 
 _cache: dict[str, Any] = {}
+
+
+def _latest_closure_penalty_path() -> Path | None:
+    """dim_segment_closure_penalty의 dt= 파티션 중 가장 최근 것을 찾는다.
+
+    ingest_daily가 매일 새로 만드는 테이블이라(construction 허가는 dt=today
+    기준이라 매번 계산됨) dim_segment_traffic_score_v0(분기 1회)처럼 고정
+    경로가 아니라 그날그날 파티션을 스스로 찾아야 한다.
+    """
+    partitions = sorted((SILVER_DIR / CLOSURE_PENALTY_SOURCE).glob("dt=*/data.parquet"))
+    return partitions[-1] if partitions else None
 
 
 def load_weights(path: Path = WEIGHTS_CONFIG_PATH) -> dict:
@@ -78,7 +90,21 @@ def _load_base_data() -> pd.DataFrame:
     )
     score = pd.read_parquet(DIM_SEGMENT_TRAFFIC_SCORE_PATH)
 
-    df = dim.merge(score, on="segment_id", how="inner").set_index("segment_id", drop=False)
+    df = dim.merge(score, on="segment_id", how="inner")
+
+    # closure_penalty(용량 감소량)는 매일 갱신되는 별도 테이블 — LEFT JOIN해서
+    # 공사/통제가 없는 segment는 0(감소 없음)으로 채운다. 아직 한 번도 안
+    # 만들어졌으면(파티션 없음) 전부 0으로 둔다 — closure_penalty가 아직
+    # enabled: false인 상태에서도 이 함수 자체는 정상 동작해야 하기 때문.
+    closure_path = _latest_closure_penalty_path()
+    if closure_path is not None:
+        closure = pd.read_parquet(closure_path, columns=["segment_id", "closure_capacity_reduction"])
+        df = df.merge(closure, on="segment_id", how="left")
+    else:
+        df["closure_capacity_reduction"] = None
+    df["closure_capacity_reduction"] = df["closure_capacity_reduction"].fillna(0.0)
+
+    df = df.set_index("segment_id", drop=False)
     _cache["base_df"] = df
     logger.info(f"[scoring] 조회용 데이터 로드 완료: {len(df)}행")
     return df
@@ -135,10 +161,23 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None) -> dict:
     }
 
 
+# LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
+# 5=Staten Island (NYC 공식 자치구 코드, WEST 81 STREET/ARDEN STREET 등 알려진
+# 맨해튼 도로로 실측 대조해서 확인함). 지금 프로젝트 범위가 맨해튼뿐이라
+# 대시보드 지도에만 적용 — get_traffic_score()는 segment_id 단건 조회라 다른
+# 자치구 segment_id가 들어와도 그대로 조회는 되게 두고, "지도에 뭘 그릴지"만
+# 여기서 좁힌다. Bronze/Silver 자체는 필터링하지 않는다(요청에 따름).
+DASHBOARD_BOROUGH_CODE = "1"
+
+
 def get_map_data() -> pd.DataFrame:
-    """지도 렌더링용 벌크 데이터 — segment_id, geometry, road_class, traffic_score."""
+    """지도 렌더링용 벌크 데이터 — segment_id, geometry, road_class, traffic_score.
+
+    맨해튼(DASHBOARD_BOROUGH_CODE)만 반환한다 — 프로젝트 범위 자체가 맨해튼이라.
+    """
     weights = load_weights()
     df = _load_base_data()
+    df = df[df["borough_code"] == DASHBOARD_BOROUGH_CODE]
 
     demand_cols = [
         COMPONENT_SOURCES[name]
