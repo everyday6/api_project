@@ -209,7 +209,6 @@ def build_dim_segment(
     dim_segment = df.rename(
         columns={
             "SegmentID": "segment_id",
-            "Street": "street_name",
             "LBoro": "borough_code",
             "SHAPE": "geometry",
             "SHAPE_Length": "length_ft",
