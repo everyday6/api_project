@@ -237,3 +237,14 @@ def get_tlc_traffic_score_for_construction(
     ]
 
     return sorted(results, key=lambda r: r["hop_distance"])
+
+
+if __name__ == "__main__":
+    from src.common.spark import get_spark
+
+    spark_session = get_spark()
+    try:
+        out = build_dim_segment_tlc_volume(spark_session)
+        validate_dim_segment_tlc_volume(out)
+    finally:
+        spark_session.stop()
