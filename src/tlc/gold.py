@@ -67,6 +67,17 @@ def _read_zone_hour_counts(
     )
 
     result = counted.toPandas()
+
+    # 실 데이터의 dropoff_location_id는 nullable(src/tlc/transform.py의
+    # SILVER_SCHEMA)이고 결측치를 삭제하지 않는다. Spark groupBy는 NULL도
+    # 자기 그룹으로 유지하므로, 여기서 걸러내지 않으면 zone_id 컬럼에 NaN이
+    # 남아 바로 아래 int64 캐스팅이 깨진다.
+    null_zone = result["zone_id"].isna()
+    if null_zone.any():
+        dropped = int(result.loc[null_zone, "dropoff_count"].sum())
+        logger.warning(f"[tlc_gold] dropoff_location_id 결측으로 제외: {dropped}건")
+        result = result.loc[~null_zone].copy()
+
     result["zone_id"] = result["zone_id"].astype("int64")
     result["hour"] = result["hour"].astype("int64")
     result["dropoff_count"] = result["dropoff_count"].astype("int64")
@@ -134,6 +145,19 @@ def build_dim_segment_tlc_volume(
     map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
     map_zone_segment = map_zone_segment.loc[map_zone_segment["borough"] == borough, ["segment_id", "zone_id"]]
 
+    # zone_id가 '{borough}' 세그먼트 중 어디에도 안 붙는 트립: TLC 특수 zone
+    # 코드(264/265 등 zone_id 1~263 밖)나 다른 자치구 zone이 여기 해당한다.
+    # 결과에서는 자연히 빠지지만(join 대상이 아니므로) 몇 건이 빠졌는지는
+    # 로그로 남긴다 (spec의 "제외 대상" 항목).
+    matched_zone_ids = set(map_zone_segment["zone_id"])
+    unmatched = ~zone_hour_counts["zone_id"].isin(matched_zone_ids)
+    if unmatched.any():
+        unmatched_trips = int(zone_hour_counts.loc[unmatched, "dropoff_count"].sum())
+        logger.warning(
+            f"[tlc_gold] zone이 '{borough}' 세그먼트에 매칭되지 않아 제외된 하차 {unmatched_trips}건 "
+            "(TLC 특수 zone 코드 또는 다른 자치구 zone)"
+        )
+
     expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
     result = _normalize_tlc_volume(expanded)
 
@@ -149,8 +173,16 @@ def validate_dim_segment_tlc_volume(
     path: str,
     map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
     borough: str = BOROUGH_EVENT,
+    min_segments: int = 15_000,
+    max_segments: int = 25_000,
 ) -> str:
-    """dim_segment_tlc_volume.parquet의 최소 불변식을 확인한다."""
+    """dim_segment_tlc_volume.parquet의 최소 불변식을 확인한다.
+
+    min_segments/max_segments는 실 운영(맨해튼, 약 19,574개 세그먼트)을
+    기준으로 한 기본값이다. 테스트에서 작은 픽스처를 쓸 때는 이 범위를
+    맞게 좁혀서 넘기면 된다 — borough 파라미터와 같은 이유(테스트 가능성)로
+    인자화했다.
+    """
 
     df = pd.read_parquet(path)
 
@@ -161,6 +193,17 @@ def validate_dim_segment_tlc_volume(
 
     map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "borough"])
     segment_count = map_zone_segment.loc[map_zone_segment["borough"] == borough, "segment_id"].nunique()
+    assert segment_count > 0, (
+        f"borough='{borough}'에 해당하는 세그먼트가 없습니다 (map_zone_segment의 borough 표기를 확인하세요)"
+    )
+    # 실측 기준 맨해튼 세그먼트는 약 19,574개(design.md 참고). 기본 범위를
+    # 벗어나면 borough 필터가 잘못됐거나(오타 등) map_zone_segment 자체가
+    # 깨진 것으로 본다.
+    assert min_segments <= segment_count <= max_segments, (
+        f"borough='{borough}' 세그먼트 수가 예상 범위({min_segments:,}~{max_segments:,}, "
+        f"실측 기준 약 19,574개) 밖입니다: {segment_count}"
+    )
+
     expected_rows = segment_count * len(HOURS)
     assert len(df) == expected_rows, f"행 수가 예상과 다릅니다: {len(df)} != {expected_rows}"
 

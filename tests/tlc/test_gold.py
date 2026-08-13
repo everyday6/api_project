@@ -135,6 +135,64 @@ def test_read_zone_hour_counts_filters_weekday_and_counts(tmp_path, spark):
     assert row["dropoff_count"] == 2  # 월요일 2건만 카운트, 토요일 제외
 
 
+def test_read_zone_hour_counts_drops_null_zone_id(tmp_path, spark, caplog):
+    # 실 데이터(SILVER_SCHEMA)는 dropoff_location_id가 nullable이고 결측치를
+    # 삭제하지 않는다. group by는 NULL도 자기 그룹으로 유지하므로, 이 결측
+    # 트립이 있어도 크래시 없이 제외되고 나머지는 정상 집계돼야 한다.
+    rows = [
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+            "pickup_location_id": 10,
+            "dropoff_location_id": 5,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 9, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 9, 30),
+            "pickup_location_id": 10,
+            "dropoff_location_id": None,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 9, 5),
+            "dropoff_datetime": datetime(2024, 1, 1, 9, 40),
+            "pickup_location_id": 10,
+            "dropoff_location_id": None,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+    ]
+    df = pd.DataFrame(rows)
+    # astype("Int32")로 캐스팅해야 None이 float64/NaN이 아니라 실제 운영
+    # 스키마(IntegerType, nullable)와 같은 nullable-int로 parquet에 저장된다.
+    df["dropoff_location_id"] = df["dropoff_location_id"].astype("Int32")
+
+    out_dir = tmp_path / "yellow_tripdata_2024-01"
+    out_dir.mkdir(parents=True)
+    df.to_parquet(
+        out_dir / "data.parquet",
+        index=False,
+        coerce_timestamps="us",
+        allow_truncated_timestamps=True,
+    )
+
+    with caplog.at_level("WARNING"):
+        result = _read_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow"])
+
+    # 결측 zone 트립(2건)은 제외되고, zone_id=5 트립(1건)만 남아야 한다.
+    assert len(result) == 1
+    row = result.iloc[0]
+    assert row["zone_id"] == 5
+    assert row["hour"] == 8
+    assert row["dropoff_count"] == 1
+    assert not result["zone_id"].isna().any()
+
+    assert any("결측" in rec.message and "2건" in rec.message for rec in caplog.records)
+
+
 def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
     _write_tlc_silver_fixture(tmp_path, "yellow", "2024-01", [{
         "pickup_datetime": datetime(2024, 1, 2, 9, 0),
@@ -232,7 +290,11 @@ def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
         taxi_types=["yellow"],
     )
 
-    validated_path = validate_dim_segment_tlc_volume(out_path, map_zone_segment_path=map_zone_segment_path)
+    # 픽스처가 세그먼트 3개짜리라 min_segments/max_segments의 실 운영 기본값
+    # (15,000~25,000)을 이 테스트 규모에 맞게 좁혀서 넘긴다.
+    validated_path = validate_dim_segment_tlc_volume(
+        out_path, map_zone_segment_path=map_zone_segment_path, min_segments=1, max_segments=10,
+    )
     assert validated_path == out_path
 
     df = pd.read_parquet(out_path)
@@ -242,6 +304,51 @@ def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
     assert hour8["A"] == 1
     assert hour8["B"] == 1
     assert hour8["C"] == 0
+
+
+def test_build_dim_segment_tlc_volume_logs_unmatched_zone_trips(tmp_path, spark, caplog):
+    # zone 99는 map_zone_segment 어디에도 없다(TLC 특수 zone 코드나 다른
+    # 자치구 zone을 흉내). 이런 트립은 결과에서 조용히 빠지되, 몇 건이
+    # 빠졌는지는 로그로 남아야 한다(spec의 "제외 대상" 항목).
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": ["A"],
+        "zone_id": [1],
+        "borough": ["Manhattan"],
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    silver_dir = tmp_path / "silver"
+    _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", [
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+            "pickup_location_id": 1,
+            "dropoff_location_id": 1,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+        {
+            "pickup_datetime": datetime(2024, 1, 1, 9, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 9, 30),
+            "pickup_location_id": 1,
+            "dropoff_location_id": 99,  # 매칭 안 되는 zone
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        },
+    ])
+
+    with caplog.at_level("WARNING"):
+        out_path = build_dim_segment_tlc_volume(
+            spark,
+            map_zone_segment_path=map_zone_segment_path,
+            silver_dir=silver_dir,
+            taxi_types=["yellow"],
+        )
+
+    assert any("매칭되지 않아 제외된 하차 1건" in rec.message for rec in caplog.records)
+
+    df = pd.read_parquet(out_path)
+    assert df["dropoff_count_raw"].sum() == 1  # zone 99의 트립은 결과에 안 들어감
 
 
 def test_validate_dim_segment_tlc_volume_rejects_duplicate_rows(tmp_path):
@@ -262,6 +369,42 @@ def test_validate_dim_segment_tlc_volume_rejects_duplicate_rows(tmp_path):
 
     with pytest.raises(AssertionError):
         validate_dim_segment_tlc_volume(str(bad_path), map_zone_segment_path=map_zone_segment_path)
+
+
+def test_validate_dim_segment_tlc_volume_rejects_zero_matching_segments(tmp_path, spark):
+    # borough 표기 오타 등으로 map_zone_segment에 borough="Manhattan"인 세그먼트가
+    # 하나도 없는 경우. build는 빈 Gold 테이블을 그대로 써버리고, 이런 상황에서도
+    # validate가 (0 duplicates, 0 rows 다 between() 만족, 0 == 0*24) 식으로
+    # 통과해버리면 안 된다 — segment_count > 0 체크가 이를 막아야 한다.
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B"],
+        "zone_id": [1, 2],
+        "borough": ["Brooklyn", "Queens"],  # Manhattan이 하나도 없음
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    silver_dir = tmp_path / "silver"
+    _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", [{
+        "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "pickup_location_id": 1,
+        "dropoff_location_id": 1,
+        "passenger_count": 1.0,
+        "trip_distance": 1.0,
+    }])
+
+    out_path = build_dim_segment_tlc_volume(
+        spark,
+        map_zone_segment_path=map_zone_segment_path,
+        silver_dir=silver_dir,
+        taxi_types=["yellow"],
+    )
+
+    # build 자체는 (의도된 대로) 빈 Gold 테이블을 조용히 써낸다 — 문제는 validate.
+    assert len(pd.read_parquet(out_path)) == 0
+
+    with pytest.raises(AssertionError, match="세그먼트가 없습니다"):
+        validate_dim_segment_tlc_volume(out_path, map_zone_segment_path=map_zone_segment_path)
 
 
 @pytest.fixture
@@ -331,3 +474,99 @@ def test_get_tlc_traffic_score_for_construction_invalid_hour_raises(gold_and_adj
         get_tlc_traffic_score_for_construction(
             "A", hour=24, gold_path=gold_path, adjacency_path=adjacency_path,
         )
+
+
+def test_build_then_query_full_pipeline_seam(tmp_path, spark):
+    """build_dim_segment_tlc_volume이 실제로 써낸 Gold를 get_tlc_traffic_score_for_construction이
+    그대로 읽어서 맞는 값을 돌려주는지 — 두 함수를 잇는 이음매 자체를 검증한다.
+    (기존 테스트는 build/validate와 query를 각각 따로만 테스트했다.)
+
+    세그먼트 A,B는 zone 1(같은 zone 공유), C는 zone 2 — 전부 맨해튼. 인접
+    그래프는 A-B만 연결한다.
+    """
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B", "C"],
+        "zone_id": [1, 1, 2],
+        "borough": ["Manhattan", "Manhattan", "Manhattan"],
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    adjacency_path = tmp_path / "graph_segment_adjacency.parquet"
+    pd.DataFrame({
+        "segment_id":          ["A", "B"],
+        "neighbor_segment_id": ["B", "A"],
+    }).to_parquet(adjacency_path, index=False)
+
+    # zone 1 하차: 8시 5건, 9시 2건. zone 2 하차: 8시 1건. 나머지 시간대는 0건.
+    rows = []
+    for minute in range(5):
+        rows.append({
+            "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 8, minute),
+            "pickup_location_id": 1,
+            "dropoff_location_id": 1,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        })
+    for minute in range(2):
+        rows.append({
+            "pickup_datetime": datetime(2024, 1, 1, 9, 0),
+            "dropoff_datetime": datetime(2024, 1, 1, 9, minute),
+            "pickup_location_id": 1,
+            "dropoff_location_id": 1,
+            "passenger_count": 1.0,
+            "trip_distance": 1.0,
+        })
+    rows.append({
+        "pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "dropoff_datetime": datetime(2024, 1, 1, 8, 50),
+        "pickup_location_id": 2,
+        "dropoff_location_id": 2,
+        "passenger_count": 1.0,
+        "trip_distance": 1.0,
+    })
+
+    silver_dir = tmp_path / "silver"
+    _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", rows)
+
+    out_path = build_dim_segment_tlc_volume(
+        spark,
+        map_zone_segment_path=map_zone_segment_path,
+        silver_dir=silver_dir,
+        taxi_types=["yellow"],
+    )
+    validate_dim_segment_tlc_volume(
+        out_path, map_zone_segment_path=map_zone_segment_path, min_segments=1, max_segments=10,
+    )
+
+    # 3개 세그먼트 x 24시간 = 72행. dropoff_count_raw 분포: 0이 67행, 1이 1행
+    # (C@8시), 2가 2행(A,B@9시), 5가 2행(A,B@8시). rank(pct=True, method="average")로
+    # 손으로 기대값을 계산한다 — 이 테스트는 이 계산을 재구현하는 게 아니라, build가
+    # 써낸 실제 값을 query 함수가 그대로 돌려주는지가 목적이라 build 함수를 다시
+    # 부르지 않고 직접 산수로만 기대값을 낸다.
+    expected_score_8h = (71 + 72) / 2 / 72  # A,B@8시=5건: 공동 71,72등
+    expected_score_9h = (69 + 70) / 2 / 72  # A,B@9시=2건: 공동 69,70등
+
+    result_8h = get_tlc_traffic_score_for_construction(
+        "A", hour=8, hops=1, gold_path=out_path, adjacency_path=adjacency_path,
+    )
+    by_segment = {r["segment_id"]: r for r in result_8h}
+    assert set(by_segment) == {"A", "B"}  # C는 A와 인접하지 않아 빠짐
+    assert by_segment["A"]["hop_distance"] == 0
+    assert by_segment["B"]["hop_distance"] == 1
+    assert by_segment["A"]["traffic_score"] == pytest.approx(expected_score_8h)
+    assert by_segment["B"]["traffic_score"] == pytest.approx(expected_score_8h)
+
+    result_9h = get_tlc_traffic_score_for_construction(
+        "A", hour=9, hops=1, gold_path=out_path, adjacency_path=adjacency_path,
+    )
+    by_segment_9h = {r["segment_id"]: r for r in result_9h}
+    assert by_segment_9h["A"]["traffic_score"] == pytest.approx(expected_score_9h)
+    # 8시(트립 5건)가 9시(트립 2건)보다 더 붐빈다는 게 점수에도 그대로 반영돼야 한다.
+    assert by_segment["A"]["traffic_score"] > by_segment_9h["A"]["traffic_score"]
+
+    # query 함수가 돌려준 값이 실제로 build가 써낸 Gold 테이블 값 그 자체인지 확인
+    # (읽는 경로가 어긋나 있지 않은지 — 이 테스트가 지키려는 핵심 이음매).
+    gold_df = pd.read_parquet(out_path)
+    actual_cell = gold_df.loc[(gold_df["segment_id"] == "A") & (gold_df["hour"] == 8), "tlc_volume"].iloc[0]
+    assert by_segment["A"]["traffic_score"] == pytest.approx(float(actual_cell))
