@@ -183,7 +183,7 @@ def load_construction_events(run_date: str) -> pd.DataFrame:
         path,
         columns=[
             "permit_id", "on_street", "from_street", "to_street", "control_type",
-            "work_start_hour", "work_end_hour", "work_days_code",
+            "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
         ],
     )
     df = df[df["control_type"] == "construction"].drop(columns=["control_type"])
