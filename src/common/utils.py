@@ -1,6 +1,7 @@
 """공통 유틸."""
 
 import requests
+import re
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
@@ -35,3 +36,19 @@ def save_parquet(df, out_dir, filename="data.parquet"):
     tmp.replace(final)
 
     return final
+
+def clean_street(value):
+    """
+    도로명 공백/대소문자를 정리한다.
+ 
+    원본 데이터는 "WEST   19 STREET", "  12 STREET" 처럼
+    앞뒤·중간 공백이 불규칙해 그대로 두면 JOIN이 실패한다.
+    """
+ 
+    if not isinstance(value, str):
+        return None
+ 
+    cleaned = re.sub(r"\s+", " ", value).strip().upper()
+ 
+    return cleaned or None
+ 
