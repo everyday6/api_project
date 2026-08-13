@@ -37,7 +37,7 @@ sys.path.append(str(PROJECT_ROOT))
 LOCAL_TZ = pendulum.timezone("America/New_York")
 
 default_args = {
-    "owner": "de5",
+    "owner": "jiwon",
 
     # Task 실패 시 최대 3회 자동 재시도
     "retries": 3,
