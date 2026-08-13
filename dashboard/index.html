@@ -34,6 +34,15 @@
   .side-section { padding: 16px; border-bottom: 1px solid var(--rule); }
   .side h1 { font-size: 14px; font-weight: 700; margin: 0 0 12px; }
 
+  .time-row { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
+  .time-row label { font-size: 12px; color: var(--ink-muted); white-space: nowrap; }
+  .time-row label b { color: var(--ink); font-variant-numeric: tabular-nums; }
+  .time-row input[type="range"] { flex: 1; accent-color: var(--accent); }
+  .time-row button {
+    background: var(--panel-2); color: var(--ink); border: 1px solid var(--rule);
+    border-radius: 6px; padding: 6px 10px; font-size: 12px; cursor: pointer;
+  }
+
   .search-row { display: flex; gap: 6px; }
   .search-row input {
     flex: 1; background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink);
@@ -93,11 +102,16 @@
   <div class="side">
     <div class="side-section">
       <h1>Traffic Score Dashboard</h1>
+      <div class="time-row">
+        <label>조회 시각 <b id="hour-label">--</b>시</label>
+        <input type="range" id="hour-slider" min="0" max="23" step="1">
+        <button id="now-btn">지금</button>
+      </div>
       <div class="search-row">
         <input id="search-input" type="text" placeholder="segment_id 입력 (예: 0102186)">
         <button id="search-btn">조회</button>
       </div>
-      <div class="hint">지도에서 세그먼트를 클릭해도 됩니다.</div>
+      <div class="hint">지도에서 세그먼트를 클릭해도 됩니다. closure_penalty는 시간대별로 값이 달라집니다(centrality/base_capacity는 분기 1회 정적값이라 안 바뀝니다).</div>
     </div>
 
     <div class="side-section detail" id="detail">
@@ -115,9 +129,27 @@ let SEGMENTS = [];      // [{segment_id, road_class, traffic_score, coords:[x1,y
 let idToIndex = {};
 let buckets = [[],[],[],[],[]];
 let missing = [];
+let selectedSegmentId = null;
+
+// closure_penalty가 segment_id x hour라 시간대별로 traffic_score가 달라진다
+// (centrality/base_capacity는 분기 1회 정적값이라 시간과 무관). America/New_York
+// 기준으로 계산 — 백엔드(get_traffic_score/get_map_data)가 ts_hour=None일 때
+// 자동으로 대체하는 시간대와 동일 기준.
+function nyHourNow() {
+  const parts = new Intl.DateTimeFormat("en-US", {
+    timeZone: "America/New_York", hour: "numeric", hour12: false,
+  }).format(new Date());
+  return parseInt(parts, 10) % 24;
+}
+
+let selectedHour = nyHourNow();
+
+function hourQuery() {
+  return `?ts_hour=${selectedHour}`;
+}
 
 async function loadMapData() {
-  const res = await fetch("/api/segments/map");
+  const res = await fetch(`/api/segments/map${hourQuery()}`);
   SEGMENTS = await res.json();
   SEGMENTS.forEach((s, i) => { idToIndex[s.segment_id] = i; });
 
@@ -276,10 +308,11 @@ function renderDetail(data) {
 
 async function selectSegment(segmentId) {
   try {
-    const res = await fetch(`/api/traffic_score/${segmentId}`);
+    const res = await fetch(`/api/traffic_score/${segmentId}${hourQuery()}`);
     if (!res.ok) { renderDetail(null); return; }
     const data = await res.json();
     renderDetail(data);
+    selectedSegmentId = segmentId;
     selectedIndex = idToIndex[segmentId] ?? -1;
     draw();
   } catch (e) {
@@ -293,6 +326,39 @@ document.getElementById("search-btn").addEventListener("click", () => {
 });
 document.getElementById("search-input").addEventListener("keydown", (e) => {
   if (e.key === "Enter") document.getElementById("search-btn").click();
+});
+
+// ---------- 시간대 선택 ----------
+const hourSlider = document.getElementById("hour-slider");
+const hourLabel = document.getElementById("hour-label");
+
+function setHourLabel() {
+  hourLabel.textContent = String(selectedHour).padStart(2, "0");
+}
+
+async function applyHourChange() {
+  setHourLabel();
+  await loadMapData();
+  // 지도 색상이 시간대별로 바뀐 걸 다시 그림. 선택돼 있던 세그먼트가 있으면
+  // 그 시간대 기준으로 상세 패널도 다시 조회한다(같은 segment_id, 새 ts_hour).
+  if (selectedSegmentId) {
+    await selectSegment(selectedSegmentId);
+  } else {
+    draw();
+  }
+}
+
+hourSlider.value = selectedHour;
+setHourLabel();
+hourSlider.addEventListener("input", () => {
+  selectedHour = parseInt(hourSlider.value, 10);
+  applyHourChange();
+});
+
+document.getElementById("now-btn").addEventListener("click", () => {
+  selectedHour = nyHourNow();
+  hourSlider.value = selectedHour;
+  applyHourChange();
 });
 
 // ---------- 팬/줌/클릭 ----------
