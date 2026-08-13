@@ -169,3 +169,31 @@ def validate_dim_segment_tlc_volume(
 
     logger.info(f"[tlc_gold] 검증 통과 ({len(df)}행)")
     return path
+
+
+def _neighbor_hop_distances(
+    segment_id: str,
+    adjacency: pd.DataFrame,
+    hops: int = DEFAULT_HOPS,
+) -> dict[str, int]:
+    """segment_id로부터 hops단계 이내(자기 자신 포함)의 세그먼트별 최단 hop 수를 구한다."""
+
+    neighbor_map: dict[str, set[str]] = {}
+    for seg, nbr in zip(adjacency["segment_id"], adjacency["neighbor_segment_id"]):
+        neighbor_map.setdefault(seg, set()).add(nbr)
+
+    distances: dict[str, int] = {segment_id: 0}
+    frontier = {segment_id}
+
+    for depth in range(1, hops + 1):
+        next_frontier: set[str] = set()
+        for seg in frontier:
+            for nbr in neighbor_map.get(seg, set()):
+                if nbr not in distances:
+                    distances[nbr] = depth
+                    next_frontier.add(nbr)
+        if not next_frontier:
+            break
+        frontier = next_frontier
+
+    return distances
