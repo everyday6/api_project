@@ -22,7 +22,7 @@
   body {
     background: var(--bg); color: var(--ink);
     font-family: system-ui, -apple-system, "Segoe UI", sans-serif;
-    display: grid; grid-template-columns: 1fr 340px; grid-template-rows: 1fr;
+    display: grid; grid-template-columns: 1fr 460px; grid-template-rows: 1fr;
     height: 100vh; overflow: hidden;
   }
   .map-pane { position: relative; }
@@ -68,7 +68,9 @@
   .detail .score {
     font-size: 30px; font-weight: 700; font-variant-numeric: tabular-nums; margin: 6px 0 2px;
   }
+  .detail .score .of100 { font-size: 16px; font-weight: 500; color: var(--ink-muted); }
   .detail .score-label { font-size: 11px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; }
+  .detail .score-raw { font-size: 10.5px; color: var(--ink-muted); font-family: ui-monospace, "SF Mono", monospace; }
   .detail .badges { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
   .detail .ts-hour, .detail .lanes {
     display: inline-block; font-size: 11px; padding: 3px 8px;
@@ -134,6 +136,14 @@
     position: absolute; top: 12px; left: 12px; font-size: 12px; color: var(--ink-muted);
     background: var(--panel); border: 1px solid var(--rule); border-radius: 8px; padding: 6px 10px;
   }
+  .hover-tooltip {
+    position: absolute; display: none; pointer-events: none; z-index: 5;
+    font-size: 11.5px; line-height: 1.5; color: var(--ink);
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 6px;
+    padding: 6px 9px; box-shadow: 0 4px 14px rgba(0,0,0,.35);
+    font-family: ui-monospace, "SF Mono", monospace; white-space: nowrap;
+  }
+  .hover-tooltip b { font-variant-numeric: tabular-nums; }
 </style>
 </head>
 <body>
@@ -141,6 +151,7 @@
     <canvas id="map"></canvas>
     <div class="status" id="status">불러오는 중...</div>
     <div class="zoomhint">드래그로 이동 · 스크롤로 확대/축소 · 클릭으로 세그먼트 선택</div>
+    <div class="hover-tooltip" id="hover-tooltip"></div>
   </div>
 
   <div class="side">
@@ -195,6 +206,20 @@ let idToIndex = {};
 let buckets = [[],[],[],[],[]];
 let missing = [];
 let selectedSegmentId = null;
+let scored = []; // 유효한 traffic_score 오름차순 정렬본 — 0~100 정규화(percentile) 계산용
+
+// traffic_score(demand/capacity 비율)는 절대값이 0.001~0.03처럼 작고 감이 안 와서,
+// 현재 로드된 세그먼트 모집단(맨해튼) 내에서의 백분위(0~100)로 변환해 보여준다 —
+// 범례 5분위 버킷과 같은 방식(순위 기반)이라 두 표현이 서로 어긋나지 않는다.
+function percentileScore(score) {
+  if (score === null || score === undefined || scored.length === 0) return null;
+  let lo = 0, hi = scored.length;
+  while (lo < hi) {
+    const mid = (lo + hi) >> 1;
+    if (scored[mid] < score) lo = mid + 1; else hi = mid;
+  }
+  return (lo / scored.length) * 100;
+}
 
 // closure_penalty가 segment_id x hour x 날짜라 시간대/날짜별로 traffic_score가
 // 달라진다(centrality/base_capacity는 분기 1회 정적값이라 무관). America/New_York
@@ -222,7 +247,7 @@ async function loadMapData() {
   SEGMENTS = await res.json();
   SEGMENTS.forEach((s, i) => { idToIndex[s.segment_id] = i; });
 
-  const scored = SEGMENTS.filter(s => s.traffic_score !== null).map(s => s.traffic_score).sort((a,b)=>a-b);
+  scored = SEGMENTS.filter(s => s.traffic_score !== null).map(s => s.traffic_score).sort((a,b)=>a-b);
   const q = p => scored[Math.min(scored.length-1, Math.floor(p*scored.length))];
   const bounds = [q(0.2), q(0.4), q(0.6), q(0.8), Infinity];
 
@@ -355,12 +380,15 @@ function renderDetail(data) {
   const el = document.getElementById("detail");
   if (!data) { el.innerHTML = '<div class="empty">세그먼트를 찾을 수 없습니다.</div>'; return; }
 
-  const scoreText = data.traffic_score === null ? "—" : data.traffic_score.toFixed(6);
+  const pct = percentileScore(data.traffic_score);
+  const scoreText = pct === null ? "—" : Math.round(pct);
+  const rawText = data.traffic_score === null ? "—" : data.traffic_score.toFixed(6);
   const lanesText = data.lanes_total === null || data.lanes_total === undefined ? "—" : `${data.lanes_total}개`;
   let html = `
     <div class="seg-id">${data.segment_id}</div>
-    <div class="score-label">traffic_score_v0</div>
-    <div class="score">${scoreText}</div>
+    <div class="score-label">traffic score (정규화)</div>
+    <div class="score">${scoreText}<span class="of100">${pct === null ? "" : " / 100"}</span></div>
+    <div class="score-raw">raw traffic_score_v0: ${rawText}</div>
     <div class="badges">
       <span class="ts-hour">${data.ts_date ?? "?"} ${String(data.ts_hour ?? "?").padStart(2, "0")}:00</span>
       <span class="lanes">차선 수: <b>${lanesText}</b></span>
@@ -567,15 +595,20 @@ async function loadDateRangeHint() {
   }
 }
 
-// ---------- 팬/줌/클릭 ----------
+// ---------- 팬/줌/클릭/호버 ----------
 let dragging=false, moved=false, lastX=0, lastY=0;
 canvas.addEventListener("pointerdown",(e)=>{dragging=true;moved=false;lastX=e.clientX;lastY=e.clientY;canvas.classList.add("grabbing");canvas.setPointerCapture(e.pointerId);});
 canvas.addEventListener("pointermove",(e)=>{
-  if(!dragging) return;
-  if (Math.abs(e.clientX-lastX)>2 || Math.abs(e.clientY-lastY)>2) moved = true;
-  view.tx += (e.clientX-lastX); view.ty += (e.clientY-lastY);
-  lastX=e.clientX; lastY=e.clientY; draw();
+  if (dragging) {
+    if (Math.abs(e.clientX-lastX)>2 || Math.abs(e.clientY-lastY)>2) moved = true;
+    view.tx += (e.clientX-lastX); view.ty += (e.clientY-lastY);
+    lastX=e.clientX; lastY=e.clientY; draw();
+    hideHoverTooltip();
+    return;
+  }
+  handleHover(e);
 });
+canvas.addEventListener("pointerleave", hideHoverTooltip);
 canvas.addEventListener("pointerup",(e)=>{
   dragging=false; canvas.classList.remove("grabbing");
   if (!moved) handleClick(e);
@@ -593,13 +626,14 @@ canvas.addEventListener("wheel",(e)=>{
 },{passive:false});
 window.addEventListener("resize", resize);
 
-function handleClick(e) {
+// 픽셀 1개만 읽으면 안티앨리어싱으로 가장자리가 반투명/혼색된 픽셀을 집을 확률이
+// 높아서(실측: alpha 48~152인 픽셀이 대부분) 클릭/호버 지점 주변을 훑어 alpha가
+// 가장 높은(가장 "선명한") 픽셀을 고른다 — 얇은 선 클릭 판정을 관용적으로 만드는
+// 목적도 겸함. 클릭과 호버가 완전히 같은 판정 로직을 쓰므로 여기 하나로 공유한다.
+function pickSegmentAt(e) {
   const rect = canvas.getBoundingClientRect();
   const cx = Math.round((e.clientX-rect.left)*dpr), cy = Math.round((e.clientY-rect.top)*dpr);
 
-  // 픽셀 1개만 읽으면 안티앨리어싱으로 가장자리가 반투명/혼색된 픽셀을 집을 확률이
-  // 높아서(실측: alpha 48~152인 픽셀이 대부분) 클릭 지점 주변을 훑어 alpha가 가장
-  // 높은(가장 "선명한") 픽셀을 고른다 — 얇은 선 클릭 판정을 관용적으로 만드는 목적도 겸함.
   const radius = 6;
   const x0 = Math.max(0, cx-radius), y0 = Math.max(0, cy-radius);
   const size = radius*2+1;
@@ -608,10 +642,31 @@ function handleClick(e) {
   for (let i = 0; i < data.length; i += 4) {
     if (data[i+3] > bestAlpha) { bestAlpha = data[i+3]; best = [data[i], data[i+1], data[i+2]]; }
   }
-  if (!best || bestAlpha < 128) return; // 주변에 선명한 세그먼트 색이 없으면 빈 배경 클릭으로 간주
+  if (!best || bestAlpha < 128) return null; // 주변에 선명한 세그먼트 색이 없으면 빈 배경으로 간주
   const idx = colorToIndex(best[0], best[1], best[2]);
-  const seg = SEGMENTS[idx];
+  return SEGMENTS[idx] || null;
+}
+
+function handleClick(e) {
+  const seg = pickSegmentAt(e);
   if (seg) selectSegment(seg.segment_id);
+}
+
+const hoverTooltip = document.getElementById("hover-tooltip");
+function hideHoverTooltip() { hoverTooltip.style.display = "none"; }
+
+function handleHover(e) {
+  const seg = pickSegmentAt(e);
+  if (!seg) { hideHoverTooltip(); return; }
+
+  const pct = percentileScore(seg.traffic_score);
+  const scoreText = pct === null ? "결측" : `${Math.round(pct)} / 100`;
+  hoverTooltip.innerHTML = `<b>${seg.segment_id}</b><br>traffic score: <b>${scoreText}</b>`;
+
+  const rect = canvas.getBoundingClientRect();
+  hoverTooltip.style.left = `${e.clientX - rect.left + 14}px`;
+  hoverTooltip.style.top = `${e.clientY - rect.top + 14}px`;
+  hoverTooltip.style.display = "block";
 }
 
 (async function init() {
