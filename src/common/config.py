@@ -35,6 +35,18 @@ TAXI_TYPES = [
 ]
 
 # ==========================
+# 운영 중 매일 신규 데이터 확인 설정
+# ==========================
+
+# TLC는 벤더 제출을 다 받으려고 보통 이 정도 지연을 두고 데이터를 올린다.
+# 예: 8월이면 대략 (8월 - 2 =) 6월치까지 올라와 있음.
+TLC_PUBLISH_LAG_MONTHS = 2
+
+# 혹시 평소보다 더 늦게 올라온 달이 있을까봐,
+# 기준 달(TLC_PUBLISH_LAG_MONTHS 전)부터 몇 달치를 더 여유 있게 확인할지
+RECENT_MONTHS_WINDOW = 3
+
+# ==========================
 # 저장 경로
 # ==========================
 
@@ -47,6 +59,7 @@ TMP_DIR = DATA_DIR / "tmp"
 
 BRONZE_DIR = DATA_DIR / "bronze"
 SILVER_DIR = DATA_DIR / "silver"
+GOLD_DIR = DATA_DIR / "gold"
 
 # ==========================
 # HTTP 설정
