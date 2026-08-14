@@ -8,7 +8,6 @@ Bronze 일별 전체 스냅샷을 정제한다.
 - 차량 통행과 무관한 허가 시리즈 제외
 - 날짜/시간 표준화
 - 갱신 허가의 작업 시작/종료 시각 복구
-- run_date 기준 진행 중인 공사만 유지
 - 도로명 정규화 (다른 소스와의 JOIN 키)
 - Gold의 Traffic Score 분석에 활용할 컬럼만 저장
 
@@ -73,6 +72,7 @@ READ_COLS = [
     "issuedworkstartdate",
     "issuedworkenddate",
     "boroughname",
+    "permitissuedate",
 ]
 
 STREET_COLS = [
@@ -185,7 +185,7 @@ def resolve_time_chain(df):
     return work.drop(columns=["_needs_recovery"]).reset_index()
 
 
-def transform(df, run_date):
+def transform(df):
     """Bronze 공사 데이터를 Silver 형태로 정제한다."""
 
     # 1. 맨해튼만 유지
@@ -211,6 +211,12 @@ def transform(df, run_date):
     )
     df["work_end_ts"] = pd.to_datetime(
         df["issuedworkenddate"], errors="coerce"
+    )
+    # permit_issue_ts: 실제 공사 기간(work_start_ts~end_ts)과 별개로 "이 허가
+    # 자체가 언제 발급됐는지" — "해당 날짜에 새로 올라온 공사" 목록(대시보드)이
+    # 이 값 기준으로 필터링한다.
+    df["permit_issue_ts"] = pd.to_datetime(
+        df["permitissuedate"], errors="coerce"
     )
 
     # 시작/종료가 없거나 기간이 잘못된 데이터 제외
@@ -245,18 +251,13 @@ def transform(df, run_date):
     # 먼저 제거하면 이전 permit을 따라갈 수 없다.
     df = resolve_time_chain(df)
 
-    # 8. run_date 기준 진행 중인 공사만 유지
-    cutoff = pd.Timestamp(run_date)
-
-    before = len(df)
-    df = df[
-        (df["work_start_ts"] <= cutoff)
-        & (df["work_end_ts"] >= cutoff)
-    ].copy()
-    logger.info(
-        "진행 중 공사만 유지: %d → %d (기준 %s)",
-        before, len(df), run_date,
-    )
+    # 8. (제거됨) 예전엔 여기서 run_date 기준 "진행 중인 공사만" 남겼는데,
+    # Gold(closure_penalty)가 query_date/hour/요일 기준으로 이미 정확하게
+    # 활성 여부를 다시 판단하므로 중복 필터였다. 게다가 이 필터 때문에
+    # "오늘 기준 아직 시작 안 한 미래 공사"가 Silver/매핑 단계에서부터
+    # 통째로 빠져서, 미래 날짜 조회나 "새로 올라온 공사" 목록에서 최근에
+    # 발급된 permit이 사라지는 문제가 있었다 — 제거해서 run_date와 무관하게
+    # (아직 유효한) permit을 전부 남긴다.
 
     # 9. 도로명 정규화
     #
@@ -283,6 +284,7 @@ def transform(df, run_date):
         "geom_wkt",
         "work_start_ts",
         "work_end_ts",
+        "permit_issue_ts",
     ]].reset_index(drop=True)
 
 
@@ -329,7 +331,7 @@ def main(run_date: str | None = None):
     logger.info("공사 Silver 변환 시작: run_date=%s", run_date)
 
     df = load_bronze(run_date)
-    df = transform(df, run_date)
+    df = transform(df)
     validate(df)
 
     path = save_parquet(df, SILVER_DIR / SOURCE / f"dt={run_date}")

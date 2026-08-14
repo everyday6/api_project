@@ -204,6 +204,7 @@ def load_ground_zero_details(mapping_dt: str) -> pd.DataFrame:
         columns=[
             "permit_id", "segment_id", "on_street", "from_street", "to_street",
             "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
+            "permit_issue_ts",
         ],
     )
     construction = construction[construction["segment_id"].notna()]
@@ -226,11 +227,16 @@ def load_ground_zero_details(mapping_dt: str) -> pd.DataFrame:
     closures["work_start_hour"] = pd.Series(float("nan"), index=closures.index, dtype="float64")
     closures["work_end_hour"] = pd.Series(float("nan"), index=closures.index, dtype="float64")
     closures["work_days_code"] = pd.Series(None, index=closures.index, dtype="object")
+    # road_closures 원본엔 "언제 허가가 올라왔는지" 자체가 없다(work 기간만
+    # 있음) — "새로 올라온 공사" 목록은 이 필드가 있는 construction만 대상으로
+    # 하므로, 결측으로 두면 자연히 그 목록에서 제외된다.
+    closures["permit_issue_ts"] = pd.Series(pd.NaT, index=closures.index, dtype="datetime64[ns]")
     closures["source"] = "road_closure"
 
     cols = [
         "segment_id", "source", "permit_id", "on_street", "from_street", "to_street",
         "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code", "purpose",
+        "permit_issue_ts",
     ]
     return pd.concat([construction[cols], closures[cols]], ignore_index=True)
 
@@ -352,6 +358,47 @@ def get_active_closures(mapping_dt: str, query_date: str, hour: int) -> list[dic
         })
 
     rows.sort(key=lambda r: r["work_start_ts"] or "")
+    return rows
+
+
+def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
+    """
+    query_date에 새로 발급된(permit_issue_ts) 공사 permit 목록 —
+    get_active_closures()가 "그 날짜에 공사가 진행 중인지"를 보는 것과 달리
+    "그 날짜에 허가 자체가 올라왔는지"가 기준이다. road_closures는 발급일
+    개념이 원본 데이터에 없어 permit_issue_ts가 항상 결측이므로 자연히
+    이 목록에서 빠진다(construction만 대상).
+
+    하나의 permit이 여러 segment_id에 매핑된 경우 대표 segment_id 하나만
+    남긴다. 발급 시각 오름차순으로 정렬해서 반환한다.
+    """
+    details = load_ground_zero_details(mapping_dt)
+    target = pd.Timestamp(query_date)
+
+    issued_today = details[
+        details["permit_issue_ts"].notna()
+        & (details["permit_issue_ts"].dt.normalize() == target)
+    ]
+    if issued_today.empty:
+        return []
+
+    issued_today = issued_today.sort_values("segment_id")
+    representative = issued_today.groupby("permit_id", as_index=False).first()
+
+    rows = []
+    for row in representative.itertuples(index=False):
+        rows.append({
+            "segment_id": row.segment_id,
+            "permit_id": row.permit_id,
+            "on_street": row.on_street,
+            "from_street": row.from_street,
+            "to_street": row.to_street,
+            "work_start_ts": None if pd.isna(row.work_start_ts) else str(row.work_start_ts),
+            "work_end_ts": None if pd.isna(row.work_end_ts) else str(row.work_end_ts),
+            "permit_issue_ts": None if pd.isna(row.permit_issue_ts) else str(row.permit_issue_ts),
+        })
+
+    rows.sort(key=lambda r: r["permit_issue_ts"] or "")
     return rows
 
 

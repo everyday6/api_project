@@ -25,6 +25,7 @@ from src.scoring.traffic_score import (
     get_closure_data_date_range,
     get_map_data,
     get_nearby_closures,
+    get_newly_issued_closures,
     get_segment_geometries,
     get_traffic_score,
     get_traffic_score_hourly,
@@ -85,6 +86,16 @@ def api_get_active_closures(ts_hour: Optional[int] = None, ts_date: Optional[str
     "이 날짜에 활성인 공사" 목록(클릭하면 그 segment로 지도 이동+점수 조회)용.
     """
     return get_active_closures(ts_hour=ts_hour, ts_date=ts_date)
+
+
+@app.get("/api/newly_issued_closures")
+def api_get_newly_issued_closures(ts_date: Optional[str] = None):
+    """
+    ts_date에 새로 발급된 공사 permit 목록 — /api/active_closures가 "그
+    날짜에 진행 중인지"를 보는 것과 달리 "그 날짜에 허가가 올라왔는지"가
+    기준이다. road_closures는 발급일 개념이 없어 대상에서 자연히 빠진다.
+    """
+    return get_newly_issued_closures(ts_date=ts_date)
 
 
 @app.get("/api/closure_data_range")
