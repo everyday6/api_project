@@ -13,6 +13,8 @@ ingest_taxi_zone_lookup / ingest_taxi_zone_shapefile 함수를 그대로 가져�
 from __future__ import annotations
 
 import io
+import re
+import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -72,6 +74,52 @@ def ingest_taxi_zone_shapefile(bronze_root: Path = BRONZE_ROOT) -> Path:
 
     logger.info(f"[taxi_zone_shapefile] 압축 해제 완료 -> {dest_dir}")
     return str(dest_dir)
+
+
+def validate_taxi_zone_lookup(path: str) -> str:
+    """taxi_zone_lookup.parquet의 최소 불변식을 확인한다."""
+    df = pd.read_parquet(path)
+
+    required_cols = {"LocationID", "Borough", "Zone", "service_zone"}
+    missing = required_cols - set(df.columns)
+    if missing:
+        raise ValueError(f"필수 컬럼 없음: {missing}")
+
+    if df["LocationID"].isna().any():
+        raise ValueError("LocationID NULL 발생")
+
+    if not df["LocationID"].is_unique:
+        raise ValueError("LocationID 중복 발생")
+
+    # 실측 기준 TLC Taxi Zone은 265개 zone(103~105 등 결번 포함) — 여유를 두고 범위 확인.
+    n = len(df)
+    if not (250 <= n <= 280):
+        raise ValueError(f"행 수가 예상 범위(250~280) 밖입니다: {n}")
+
+    logger.info(f"[taxi_zone_lookup] 검증 통과: {n}행")
+    return path
+
+
+def validate_taxi_zone_shapefile(path: str) -> str:
+    """taxi_zones shapefile이 실제로 열리고 zone 폴리곤 개수가 예상 범위인지 확인한다."""
+    shapefile_path = Path(path) / "taxi_zones" / "taxi_zones.shp"
+    if not shapefile_path.exists():
+        raise FileNotFoundError(f"taxi_zones.shp가 없습니다: {shapefile_path}")
+
+    result = subprocess.run(
+        ["ogrinfo", "-so", str(shapefile_path), "taxi_zones"],
+        capture_output=True, text=True,
+    )
+    if result.returncode != 0:
+        raise RuntimeError(f"shapefile을 열 수 없습니다: {result.stderr}")
+
+    match = re.search(r"Feature Count:\s*(\d+)", result.stdout)
+    feature_count = int(match.group(1)) if match else 0
+    if not (250 <= feature_count <= 280):
+        raise ValueError(f"zone 폴리곤 개수가 예상 범위(250~280) 밖입니다: {feature_count}")
+
+    logger.info(f"[taxi_zone_shapefile] 검증 통과: {feature_count}개 zone")
+    return path
 
 
 def get_manhattan_zone_ids(lookup_path: Path = BRONZE_ROOT / "lookup" / "taxi_zone_lookup.parquet") -> list[int]:
