@@ -30,7 +30,7 @@ HOURS = list(range(24))
 DEFAULT_HOPS = 3
 
 
-def _read_zone_hour_counts(
+def collect_zone_hour_counts(
     spark: SparkSession,
     silver_dir: Path = SILVER_DIR,
     taxi_types: list[str] = TAXI_TYPES,
@@ -41,6 +41,10 @@ def _read_zone_hour_counts(
     재계산, 증분 아님). group by count는 파티션별 부분 집계 후 작은 결과만
     합치는 구조라 원본 규모(3년치, 약 140개 파일)와 무관하게 메모리 사용량이
     작다.
+
+    무거운(3년치 전체 스캔) 부분이라 build_dim_segment_tlc_volume과 별도
+    태스크로 분리돼 있다. 반환값은 zone x hour 조합(최대 수천 행) 정도로
+    작아서 XCom으로 다음 태스크에 그대로 넘길 수 있다.
     """
 
     paths = [
@@ -127,21 +131,21 @@ def _normalize_tlc_volume(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def build_dim_segment_tlc_volume(
-    spark: SparkSession,
+    zone_hour_counts: pd.DataFrame,
     map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
-    silver_dir: Path = SILVER_DIR,
     gold_dir: Path = GOLD_DIR,
-    taxi_types: list[str] = TAXI_TYPES,
     borough: str = BOROUGH_EVENT,
 ) -> str:
-    """dim_segment_tlc_volume.parquet을 처음부터 다시 계산해서 저장한다.
+    """zone x hour 집계 결과를 받아 dim_segment_tlc_volume.parquet을 만든다.
+
+    무거운 Silver 전체 스캔(collect_zone_hour_counts)은 별도 태스크에서
+    이미 끝내고 그 결과를 받는다 — 여기서 실패해도(예: 저장 경로 문제) 그
+    스캔을 다시 하지 않아도 된다.
 
     공사 허가 신청이 맨해튼 한정이라, map_zone_segment의 borough 컬럼으로
     맨해튼 세그먼트만 걸러서 쓴다. TLC silver 자체(팀 공용 코드)는 도시 전체를
     유지하고, 이 Gold 단계에서만 필터링한다.
     """
-
-    zone_hour_counts = _read_zone_hour_counts(spark, silver_dir=silver_dir, taxi_types=taxi_types)
 
     map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
     map_zone_segment = map_zone_segment.loc[map_zone_segment["borough"] == borough, ["segment_id", "zone_id"]]
@@ -288,7 +292,9 @@ if __name__ == "__main__":
 
     spark_session = get_spark()
     try:
-        out = build_dim_segment_tlc_volume(spark_session)
-        validate_dim_segment_tlc_volume(out)
+        counts = collect_zone_hour_counts(spark_session)
     finally:
         spark_session.stop()
+
+    out = build_dim_segment_tlc_volume(counts)
+    validate_dim_segment_tlc_volume(out)
