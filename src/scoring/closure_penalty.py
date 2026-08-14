@@ -370,7 +370,17 @@ def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
     이 목록에서 빠진다(construction만 대상).
 
     하나의 permit이 여러 segment_id에 매핑된 경우 대표 segment_id 하나만
-    남긴다. 발급 시각 오름차순으로 정렬해서 반환한다.
+    남긴다.
+
+    NYC DOT는 같은 공사 현장이라도 규제 항목(장비 배치/자재 적치/도로 점용/
+    보도 점용/폐기물 컨테이너 등)마다 permit_id를 따로 발급한다 — 그래서
+    (on_street, from_street, to_street, work_start_ts, work_end_ts,
+    segment_id)가 완전히 같은 permit이 5~6건씩 나오는 경우가 흔하다(전체
+    데이터 기준 4만7천여 그룹, 심하면 한 그룹에 30건 이상). permit_type을
+    보여주지 않는 이 목록에서는 사용자에게 "완전 중복"으로 보이므로, 이
+    조합이 같은 permit들은 가장 먼저 발급된 1건만 대표로 남긴다.
+
+    발급 시각 오름차순으로 정렬해서 반환한다.
     """
     details = load_ground_zero_details(mapping_dt)
     target = pd.Timestamp(query_date)
@@ -384,6 +394,12 @@ def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
 
     issued_today = issued_today.sort_values("segment_id")
     representative = issued_today.groupby("permit_id", as_index=False).first()
+
+    representative = representative.sort_values("permit_issue_ts")
+    representative = representative.groupby(
+        ["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"],
+        as_index=False,
+    ).first()
 
     rows = []
     for row in representative.itertuples(index=False):
