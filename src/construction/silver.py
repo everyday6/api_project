@@ -323,8 +323,10 @@ def validate(df):
     )
 
 
-def main(run_date: str | None = None):
-
+def build(run_date: str | None = None) -> str:
+    """load -> transform -> save만 한다(validate 없음) — build/validate를 별도
+    Airflow 태스크로 나눠서, validate 실패로 재시도할 때 이 무거운 변환을
+    다시 안 해도 되게 하기 위함."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
@@ -332,14 +334,28 @@ def main(run_date: str | None = None):
 
     df = load_bronze(run_date)
     df = transform(df)
-    validate(df)
 
     path = save_parquet(df, SILVER_DIR / SOURCE / f"dt={run_date}")
 
     logger.info(
-        "공사 Silver 완료: rows=%d columns=%d path=%s",
+        "공사 Silver 빌드 완료: rows=%d columns=%d path=%s",
         len(df), len(df.columns), path,
     )
+    return str(path)
+
+
+def validate_output(path: str) -> str:
+    """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    validate(df)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build(run_date)
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":
