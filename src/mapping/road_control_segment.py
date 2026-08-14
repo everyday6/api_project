@@ -184,6 +184,7 @@ def load_construction_events(run_date: str) -> pd.DataFrame:
         columns=[
             "permit_id", "on_street", "from_street", "to_street", "control_type",
             "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
+            "permit_issue_ts",
         ],
     )
     df = df[df["control_type"] == "construction"].drop(columns=["control_type"])
@@ -203,10 +204,18 @@ def match(
 ) -> pd.DataFrame:
     events = construction_events.reset_index(drop=True).reset_index(names="ce_id")
 
-    # on_street 기준 후보 (도로 단위로만 좁혀진 상태 — 이 시점엔 한 허가당 세그먼트 여러 개)
-    candidates = events.merge(
+    # 매칭 결과는 (on_street, from_street, to_street) 조합에만 좌우되는데,
+    # 원본 행은 같은 permit이 요일별 work_hour 규칙마다, 또 여러 permit이
+    # 같은 위치를 공유하며 반복돼서 수만~수십만 행일 수 있다. 행 단위로 후보
+    # 조인+파이썬 루프를 돌리면 행 수에 비례해서 느려지므로, 고유 위치 조합
+    # 단위로 한 번만 계산하고 원본 행에는 조인으로 되돌려 붙인다.
+    LOC_COLS = ["on_street", "from_street", "to_street"]
+    locations = events[LOC_COLS].drop_duplicates().reset_index(drop=True).reset_index(names="loc_id")
+
+    # on_street 기준 후보 (도로 단위로만 좁혀진 상태 — 이 시점엔 위치 하나당 세그먼트 여러 개)
+    candidates = locations.merge(
         dim_segment, left_on="on_street", right_on="street_name", how="inner",
-    )[["ce_id", "segment_id", "on_street", "from_street", "to_street"]]
+    )[["loc_id", "segment_id", "on_street", "from_street", "to_street"]]
 
     # 세그먼트별 "끝별 도달가능 도로명"은 (segment_id, on_street) 조합당 한 번만
     # 계산해서 캐싱한다 — 같은 도로에 permit이 여러 개면 후보 세그먼트가 반복되기 때문.
@@ -233,11 +242,15 @@ def match(
             if i != j
         )
         if ok:
-            matched_pairs.append((row.ce_id, row.segment_id))
+            matched_pairs.append((row.loc_id, row.segment_id))
 
-    matched = pd.DataFrame(matched_pairs, columns=["ce_id", "segment_id"])
+    matched_by_loc = pd.DataFrame(matched_pairs, columns=["loc_id", "segment_id"])
 
-    result = events.merge(matched, on="ce_id", how="left").drop(columns=["ce_id"])
+    # 원본 행(ce_id) <- 위치(loc_id) <- 매칭된 segment_id 순으로 되돌려 붙인다
+    # (위치 하나가 여러 segment_id에 매칭되면 원본 행도 그만큼 여러 행으로 늘어남 —
+    # 기존 행 단위 처리와 동일한 결과 형태).
+    events_with_loc = events.merge(locations, on=LOC_COLS, how="left")
+    result = events_with_loc.merge(matched_by_loc, on="loc_id", how="left").drop(columns=["ce_id", "loc_id"])
     return result
 
 
