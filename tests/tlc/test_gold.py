@@ -4,7 +4,7 @@ import pandas as pd
 import pytest
 from pyspark.sql import SparkSession
 
-from src.tlc.gold import _expand_zone_to_segment_hour, _normalize_tlc_volume, _read_zone_hour_counts
+from src.tlc.gold import _expand_zone_to_segment_hour, _normalize_tlc_volume, collect_zone_hour_counts
 
 
 @pytest.fixture(scope="module")
@@ -96,7 +96,7 @@ def test_normalize_tlc_volume_keeps_original_columns():
     assert list(result.columns) == ["segment_id", "hour", "dropoff_count_raw", "tlc_volume"]
 
 
-def test_read_zone_hour_counts_filters_weekday_and_counts(tmp_path, spark):
+def test_collect_zone_hour_counts_filters_weekday_and_counts(tmp_path, spark):
     # 2024-01-01(월)은 포함, 2024-01-06(토)은 제외되어야 한다.
     rows = [
         {
@@ -126,7 +126,7 @@ def test_read_zone_hour_counts_filters_weekday_and_counts(tmp_path, spark):
     ]
     _write_tlc_silver_fixture(tmp_path, "yellow", "2024-01", rows)
 
-    result = _read_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow"])
+    result = collect_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow"])
 
     assert len(result) == 1
     row = result.iloc[0]
@@ -135,7 +135,7 @@ def test_read_zone_hour_counts_filters_weekday_and_counts(tmp_path, spark):
     assert row["dropoff_count"] == 2  # 월요일 2건만 카운트, 토요일 제외
 
 
-def test_read_zone_hour_counts_drops_null_zone_id(tmp_path, spark, caplog):
+def test_collect_zone_hour_counts_drops_null_zone_id(tmp_path, spark, caplog):
     # 실 데이터(SILVER_SCHEMA)는 dropoff_location_id가 nullable이고 결측치를
     # 삭제하지 않는다. group by는 NULL도 자기 그룹으로 유지하므로, 이 결측
     # 트립이 있어도 크래시 없이 제외되고 나머지는 정상 집계돼야 한다.
@@ -180,7 +180,7 @@ def test_read_zone_hour_counts_drops_null_zone_id(tmp_path, spark, caplog):
     )
 
     with caplog.at_level("WARNING"):
-        result = _read_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow"])
+        result = collect_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow"])
 
     # 결측 zone 트립(2건)은 제외되고, zone_id=5 트립(1건)만 남아야 한다.
     assert len(result) == 1
@@ -193,7 +193,7 @@ def test_read_zone_hour_counts_drops_null_zone_id(tmp_path, spark, caplog):
     assert any("결측" in rec.message and "2건" in rec.message for rec in caplog.records)
 
 
-def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
+def test_collect_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
     _write_tlc_silver_fixture(tmp_path, "yellow", "2024-01", [{
         "pickup_datetime": datetime(2024, 1, 2, 9, 0),
         "dropoff_datetime": datetime(2024, 1, 2, 9, 15),
@@ -211,7 +211,7 @@ def test_read_zone_hour_counts_reads_multiple_taxi_types(tmp_path, spark):
         "trip_distance": 1.0,
     }])
 
-    result = _read_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow", "green"])
+    result = collect_zone_hour_counts(spark, silver_dir=tmp_path, taxi_types=["yellow", "green"])
 
     assert len(result) == 1
     row = result.iloc[0]
@@ -283,12 +283,11 @@ def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
         "trip_distance": 1.0,
     }])
 
+    zone_hour_counts = collect_zone_hour_counts(spark, silver_dir=silver_dir, taxi_types=["yellow"])
     out_path = build_dim_segment_tlc_volume(
-        spark,
+        zone_hour_counts,
         map_zone_segment_path=map_zone_segment_path,
-        silver_dir=silver_dir,
         gold_dir=tmp_path / "gold",
-        taxi_types=["yellow"],
     )
 
     # 픽스처가 세그먼트 3개짜리라 min_segments/max_segments의 실 운영 기본값
@@ -338,13 +337,13 @@ def test_build_dim_segment_tlc_volume_logs_unmatched_zone_trips(tmp_path, spark,
         },
     ])
 
+    zone_hour_counts = collect_zone_hour_counts(spark, silver_dir=silver_dir, taxi_types=["yellow"])
+
     with caplog.at_level("WARNING"):
         out_path = build_dim_segment_tlc_volume(
-            spark,
+            zone_hour_counts,
             map_zone_segment_path=map_zone_segment_path,
-            silver_dir=silver_dir,
             gold_dir=tmp_path / "gold",
-            taxi_types=["yellow"],
         )
 
     assert any("매칭되지 않아 제외된 하차 1건" in rec.message for rec in caplog.records)
@@ -395,12 +394,11 @@ def test_validate_dim_segment_tlc_volume_rejects_zero_matching_segments(tmp_path
         "trip_distance": 1.0,
     }])
 
+    zone_hour_counts = collect_zone_hour_counts(spark, silver_dir=silver_dir, taxi_types=["yellow"])
     out_path = build_dim_segment_tlc_volume(
-        spark,
+        zone_hour_counts,
         map_zone_segment_path=map_zone_segment_path,
-        silver_dir=silver_dir,
         gold_dir=tmp_path / "gold",
-        taxi_types=["yellow"],
     )
 
     # build 자체는 (의도된 대로) 빈 Gold 테이블을 조용히 써낸다 — 문제는 validate.
@@ -532,12 +530,11 @@ def test_build_then_query_full_pipeline_seam(tmp_path, spark):
     silver_dir = tmp_path / "silver"
     _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", rows)
 
+    zone_hour_counts = collect_zone_hour_counts(spark, silver_dir=silver_dir, taxi_types=["yellow"])
     out_path = build_dim_segment_tlc_volume(
-        spark,
+        zone_hour_counts,
         map_zone_segment_path=map_zone_segment_path,
-        silver_dir=silver_dir,
         gold_dir=tmp_path / "gold",
-        taxi_types=["yellow"],
     )
     validate_dim_segment_tlc_volume(
         out_path, map_zone_segment_path=map_zone_segment_path, min_segments=1, max_segments=10,
