@@ -131,7 +131,7 @@ def load_construction_silver(run_date: str) -> pd.DataFrame:
     return pd.read_parquet(path)
 
 
-def build(construction: pd.DataFrame) -> pd.DataFrame:
+def _merge_work_hours(construction: pd.DataFrame) -> pd.DataFrame:
     work_hours = extract_work_hours()
 
     return construction.merge(
@@ -163,23 +163,41 @@ def validate(df: pd.DataFrame, construction_rows: int) -> None:
     logger.info("work_days_code 분포:\n%s", df["work_days_code"].value_counts(dropna=False).to_string())
 
 
-def main(run_date: str | None = None) -> str:
+def build(run_date: str | None = None) -> str:
+    """load -> merge -> save만 한다(validate 없음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
     logger.info("construction_work_hours Silver 변환 시작: run_date=%s", run_date)
 
     construction = load_construction_silver(run_date)
-    df = build(construction)
-    validate(df, construction_rows=len(construction))
+    df = _merge_work_hours(construction)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
-        "construction_work_hours Silver 완료: rows=%d columns=%d path=%s",
+        "construction_work_hours Silver 빌드 완료: rows=%d columns=%d path=%s",
         len(df), len(df.columns), path,
     )
     return str(path)
+
+
+def validate_output(path: str, run_date: str) -> str:
+    """build()가 저장한 결과를 다시 읽어, 그 run_date의 construction Silver
+    행수와 비교하며 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    construction_rows = len(load_construction_silver(run_date))
+    validate(df, construction_rows=construction_rows)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    if run_date is None:
+        run_date = os.getenv("RUN_DATE", date.today().isoformat())
+    path = build(run_date)
+    validate_output(path, run_date)
+    return path
 
 
 if __name__ == "__main__":

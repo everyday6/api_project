@@ -264,7 +264,8 @@ def flatten(events):
     return df
 
 
-def main():
+def build() -> str:
+    """fetch -> save만 한다(validate 없음)."""
 
     if not TICKETMASTER_API_KEY:
         raise ValueError(
@@ -324,12 +325,28 @@ def main():
     )
 
     logger.info(
-        "Ticketmaster 수집 완료: "
+        "Ticketmaster 수집 빌드 완료: "
         "rows=%d columns=%d path=%s",
         len(df),
         len(df.columns),
         path,
     )
+    return str(path)
+
+
+def validate_output(path: str) -> str:
+    """저장된 Bronze 파일에 행이 실제로 있는지 확인한다."""
+    df = pd.read_parquet(path)
+    if df.empty:
+        raise ValueError("Ticketmaster 받은 데이터가 없습니다.")
+    return path
+
+
+def main() -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build()
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":
