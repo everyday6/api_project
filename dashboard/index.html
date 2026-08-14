@@ -188,7 +188,7 @@
     </div>
 
     <div class="side-section">
-      <div class="cap" style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); font-weight:600; margin-bottom:8px;">이 날짜에 활성인 공사 (<span id="active-count">0</span>건)</div>
+      <div class="cap" style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); font-weight:600; margin-bottom:8px;">이 날짜에 새로 올라온 공사 (<span id="active-count">0</span>건)</div>
       <input class="active-filter" id="active-filter" type="text" placeholder="도로명으로 검색 (예: BROADWAY)">
       <div class="active-list" id="active-list"></div>
     </div>
@@ -614,29 +614,30 @@ function renderNearbyClosures(items) {
   panel.style.display = "block";
 }
 
-// ---------- 이 날짜에 활성인 공사 전체 목록(특정 세그먼트에 anchor되지 않음) ----------
-// 하루에도 수천 건이 활성일 수 있어(맨해튼 전체 기준) 전부 렌더링하면 무거우니
-// 도로명 검색으로 좁히게 하고, 검색 전에는 시작일 빠른 순 상위 N개만 보여준다.
-let ACTIVE_CLOSURES = [];
+// ---------- 이 날짜에 새로 올라온 공사(permit_issue_ts 기준) ----------
+// "그 날짜에 진행 중인지"가 아니라 "그 날짜에 허가 자체가 발급됐는지" 기준
+// — road_closures는 발급일 개념이 없어 이 목록엔 안 나온다(공사만). 하루에도
+// 수천 건일 수 있어 도로명 검색으로 좁히게 하고, 검색 전엔 상위 N개만 표시.
+let NEWLY_ISSUED_CLOSURES = [];
 const ACTIVE_DISPLAY_LIMIT = 150;
 
 async function loadActiveClosures() {
   try {
-    const res = await fetch(`/api/active_closures${hourQuery()}`);
-    ACTIVE_CLOSURES = res.ok ? await res.json() : [];
+    const res = await fetch(`/api/newly_issued_closures?ts_date=${selectedDate}`);
+    NEWLY_ISSUED_CLOSURES = res.ok ? await res.json() : [];
   } catch (e) {
-    ACTIVE_CLOSURES = [];
+    NEWLY_ISSUED_CLOSURES = [];
   }
   renderActiveList();
 }
 
 function renderActiveList() {
-  document.getElementById("active-count").textContent = ACTIVE_CLOSURES.length.toLocaleString();
+  document.getElementById("active-count").textContent = NEWLY_ISSUED_CLOSURES.length.toLocaleString();
 
   const query = document.getElementById("active-filter").value.trim().toUpperCase();
   const filtered = query
-    ? ACTIVE_CLOSURES.filter(c => c.on_street.includes(query) || c.from_street.includes(query) || c.to_street.includes(query))
-    : ACTIVE_CLOSURES;
+    ? NEWLY_ISSUED_CLOSURES.filter(c => c.on_street.includes(query) || c.from_street.includes(query) || c.to_street.includes(query))
+    : NEWLY_ISSUED_CLOSURES;
 
   const list = document.getElementById("active-list");
   list.innerHTML = "";
@@ -650,9 +651,9 @@ function renderActiveList() {
     const div = document.createElement("div");
     div.className = "active-item";
     div.innerHTML = `
-      <div class="row1"><span class="street">${item.on_street}</span><span class="src">${item.source === "construction" ? "공사" : "통제"}</span></div>
+      <div class="row1"><span class="street">${item.on_street}</span></div>
       <div class="cross">${item.from_street} ~ ${item.to_street}</div>
-      <div class="range">${formatDate(item.work_start_ts)} ~ ${formatDate(item.work_end_ts)}</div>
+      <div class="range">발급일 ${formatDate(item.permit_issue_ts)} · 공사기간 ${formatDate(item.work_start_ts)} ~ ${formatDate(item.work_end_ts)}</div>
     `;
     div.addEventListener("click", () => {
       selectSegment(item.segment_id);
