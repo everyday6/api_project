@@ -21,7 +21,6 @@ keyset 방식은 "직전 마지막 행의 정렬 컬럼 값보다 큰 행"을 �
 """
 
 import time
-import logging
 
 import pandas as pd
 import pyarrow as pa
@@ -35,13 +34,14 @@ from requests.exceptions import (
 )
 from urllib3.util.retry import Retry
 
-from common.config import (
+from .config import (
     HTTP_TIMEOUT,
     SOCRATA_PAGE_SIZE,
 )
+from .logger import get_logger
 
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="socrata")
 
 
 def make_session():
@@ -207,6 +207,26 @@ def _combine_where(base_where, cursor_where):
     return f"({base_where}) AND {cursor_where}"
 
 
+def _select_for_order(order_columns):
+    """
+    order에 :id 같은 시스템 컬럼이 섞여 있으면 $select로 명시해야 한다.
+
+    실측 확인: $order=:id를 걸어도 $select에 명시하지 않으면 응답 JSON에
+    :id 필드 자체가 안 내려온다. 그러면 커서가 다음 페이지 값을 못 뽑아서
+    (None) 그 컬럼 기준 조건이 "col > null"이 되어 항상 거짓이 되고,
+    조용히 첫 페이지 분량만 받고 끝나버린다 — 에러 없이 데이터가 잘려나가는
+    가장 위험한 케이스. :로 시작하는 order 컬럼이 있으면 '*, :col, ...'로
+    전체 필드 + 시스템 컬럼을 같이 요청해서 이 문제를 막는다.
+    """
+
+    system_columns = [c for c in order_columns if c.startswith(":")]
+
+    if not system_columns:
+        return None
+
+    return "*, " + ", ".join(system_columns)
+
+
 def fetch_all_streaming(
     url,
     where,
@@ -221,6 +241,7 @@ def fetch_all_streaming(
 
     session = make_session()
     order_columns = _parse_order_columns(order)
+    select = _select_for_order(order_columns)
 
     cursor_values = None
     total = 0
@@ -256,6 +277,8 @@ def fetch_all_streaming(
                 "$limit": SOCRATA_PAGE_SIZE,
                 "$order": order,
             }
+            if select:
+                params["$select"] = select
 
             batch = _get_page(
                 session,
@@ -382,6 +405,7 @@ def fetch_all(
 
     session = make_session()
     order_columns = _parse_order_columns(order)
+    select = _select_for_order(order_columns)
 
     cursor_values = None
     rows = []
@@ -398,6 +422,8 @@ def fetch_all(
             "$limit": SOCRATA_PAGE_SIZE,
             "$order": order,
         }
+        if select:
+            params["$select"] = select
 
         batch = _get_page(
             session,
