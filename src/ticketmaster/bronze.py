@@ -23,6 +23,7 @@ from pathlib import Path
 from datetime import date, timedelta
 
 import pandas as pd
+import requests
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
@@ -43,7 +44,7 @@ from common.logger import get_logger
 
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="ticketmaster_bronze")
 
 SOURCE = "ticketmaster"
 
@@ -66,13 +67,21 @@ def request_page(
         "sort": "date,asc",
     }
 
-    res = session.get(
-        TICKETMASTER_URL,
-        params=params,
-        timeout=HTTP_TIMEOUT,
-    )
-
-    res.raise_for_status()
+    try:
+        res = session.get(
+            TICKETMASTER_URL,
+            params=params,
+            timeout=HTTP_TIMEOUT,
+        )
+        res.raise_for_status()
+    except requests.RequestException:
+        logger.exception(
+            "Ticketmaster 페이지 조회 실패: %s~%s page=%d",
+            start_date,
+            end_date,
+            page,
+        )
+        raise
 
     return res.json()
 

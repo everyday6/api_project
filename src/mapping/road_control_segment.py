@@ -47,7 +47,6 @@ BEND/DEAD END(교차로 아님), 터널·다리 진출입로(LION에 대응 세�
 from __future__ import annotations
 
 import os
-import re
 from datetime import date
 
 import pandas as pd

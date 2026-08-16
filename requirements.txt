@@ -11,3 +11,11 @@ networkx
 pyarrow==25.0.1
 python-dotenv==1.2.2
 pytest==8.4.2
+
+# scoring/api.py(Traffic Score API)가 직접 씀. 지금은 apache/airflow 베이스
+# 이미지에 Airflow 자체 의존성으로 딸려 들어와 있어서 없어도 동작하지만,
+# 베이스 이미지가 바뀌면 조용히 깨질 수 있어 명시한다. 버전은 안 박아서
+# 이미 설치된 버전(Airflow가 요구하는 버전)과 충돌하지 않게 한다.
+fastapi
+uvicorn
+PyYAML
