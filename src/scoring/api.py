@@ -16,10 +16,11 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import FileResponse
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.responses import FileResponse, JSONResponse
 from shapely import wkt
 
+from src.common.logger import get_logger
 from src.scoring.traffic_score import (
     get_active_closures,
     get_closure_data_date_range,
@@ -31,9 +32,32 @@ from src.scoring.traffic_score import (
     get_traffic_score_hourly,
 )
 
+logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_api")
+
 app = FastAPI(title="Traffic Score API")
 
 DASHBOARD_DIR = Path(__file__).resolve().parents[2] / "dashboard"
+
+
+@app.exception_handler(Exception)
+async def log_unexpected_exception(request: Request, exc: Exception):
+    """개별 엔드포인트에서 처리하지 않은 예외만 여기로 온다.
+
+    KeyError -> HTTPException(404) 같이 각 엔드포인트가 이미 처리하는
+    경우는 FastAPI가 그쪽 핸들러로 먼저 보내므로 여기까지 안 온다.
+    여기 걸리는 건 전부 예상하지 못한 버그/데이터 이상이라는 뜻이라
+    500으로 감춰지기 전에 반드시 기록해 둔다.
+    """
+    logger.error(
+        "처리되지 않은 예외: %s %s",
+        request.method,
+        request.url.path,
+        exc_info=exc,
+    )
+    return JSONResponse(
+        status_code=500,
+        content={"detail": "Internal Server Error"},
+    )
 
 
 @app.get("/")
