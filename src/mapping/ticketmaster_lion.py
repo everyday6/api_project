@@ -31,7 +31,7 @@ from src.common.logger import get_logger
 from src.common.utils import save_parquet
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="map_ticketmaster_lion")
 
 SOURCE = "ticketmaster"
 

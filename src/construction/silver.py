@@ -28,7 +28,7 @@ from common.config import BOROUGH, BRONZE_DIR, SILVER_DIR
 from common.logger import get_logger
 from common.utils import clean_street, save_parquet
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_silver")
 
 SOURCE = "construction"
 
