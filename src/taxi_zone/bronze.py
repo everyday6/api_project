@@ -35,8 +35,14 @@ BRONZE_ROOT = BRONZE_DIR / "taxi_zone"
 def ingest_taxi_zone_lookup(bronze_root: Path = BRONZE_ROOT) -> Path:
     """LocationID <-> Borough/Zone 매핑 테이블을 받아서 Parquet로 저장한다."""
 
-    resp = requests.get(LOOKUP_URL, timeout=30)
-    resp.raise_for_status()
+    logger.info(f"[taxi_zone_lookup] 다운로드 시작: {LOOKUP_URL}")
+
+    try:
+        resp = requests.get(LOOKUP_URL, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException:
+        logger.exception(f"[taxi_zone_lookup] 다운로드 실패: {LOOKUP_URL}")
+        raise
 
     df = pd.read_csv(io.BytesIO(resp.content))
 
@@ -56,8 +62,14 @@ def ingest_taxi_zone_lookup(bronze_root: Path = BRONZE_ROOT) -> Path:
 def ingest_taxi_zone_shapefile(bronze_root: Path = BRONZE_ROOT) -> Path:
     """존 경계 shapefile(zip)을 받아서 그대로 압축 해제해 저장한다."""
 
-    resp = requests.get(SHAPEFILE_URL, timeout=30)
-    resp.raise_for_status()
+    logger.info(f"[taxi_zone_shapefile] 다운로드 시작: {SHAPEFILE_URL}")
+
+    try:
+        resp = requests.get(SHAPEFILE_URL, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException:
+        logger.exception(f"[taxi_zone_shapefile] 다운로드 실패: {SHAPEFILE_URL}")
+        raise
 
     dest_dir = bronze_root / "shapefile"
     dest_dir.mkdir(parents=True, exist_ok=True)
@@ -111,6 +123,7 @@ def validate_taxi_zone_shapefile(path: str) -> str:
         capture_output=True, text=True,
     )
     if result.returncode != 0:
+        logger.error(f"[taxi_zone_shapefile] ogrinfo 실패: {result.stderr}")
         raise RuntimeError(f"shapefile을 열 수 없습니다: {result.stderr}")
 
     match = re.search(r"Feature Count:\s*(\d+)", result.stdout)

@@ -30,7 +30,7 @@ from common.config import BRONZE_DIR, SILVER_DIR, BOROUGH_EVENT
 from common.utils import save_parquet, clean_street
 from common.logger import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="event_silver")
 
 SOURCE = "event"
 

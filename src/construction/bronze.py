@@ -32,7 +32,7 @@ from common.socrata import fetch_all_streaming
 from common.logger import get_logger
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_bronze")
 
 SOURCE = "construction"
 ORDER = "permitnumber"
