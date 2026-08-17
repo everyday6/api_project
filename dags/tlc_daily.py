@@ -42,6 +42,7 @@ from src.tlc.bronze import (
 
 from src.tlc.silver import (
     build_silver,
+    chunk_bronze_files,
 )
 
 # download_file.expand()가 파일 개수만큼 태스크 인스턴스를 만드는 mapped
@@ -105,11 +106,19 @@ def tlc_daily():
     )
 
     # -----------------------------------------
-    # 5. 전체 Silver 변환
+    # 5. taxi_type별 청크로 묶기
+    # -----------------------------------------
+
+    bronze_chunks = chunk_bronze_files(
+        bronze_files=bronze_files,
+    )
+
+    # -----------------------------------------
+    # 6. 청크별 Silver 변환 (청크당 Spark 세션 1개)
     # -----------------------------------------
 
     build_silver.expand(
-        bronze_result=bronze_files,
+        bronze_chunk=bronze_chunks,
     )
 
 
