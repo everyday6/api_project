@@ -31,7 +31,7 @@ from datetime import date, timedelta
 
 from src.common.config import BRONZE_DIR
 from src.common.logger import get_logger
-from src.construction_stipulations.bronze import SOURCE, main as ingest_one_day
+from src.construction_stipulations.bronze import SOURCE, build as ingest_one_day
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="backfill_construction_stipulations")
 
@@ -56,7 +56,11 @@ def _already_ingested(run_date: date) -> bool:
     return path.exists()
 
 
-def backfill_construction_stipulations(start: date = START, end: date | None = None):
+def backfill_construction_stipulations(start: date = START, end: date | None = None) -> str | None:
+    """start~end(끝 포함)를 하루씩 채우고, end 날짜(=이 DAG 실행의 "오늘" ds)
+    파티션 경로를 반환한다 — DAG에서 validate_output()으로 그 경로 하나만
+    검증하기 위함(과거 백필분까지 매번 다 검증할 필요는 없음). end 날짜에
+    신규 0건이면(정상 케이스) None을 반환한다."""
     if end is None:
         # 오늘은 소스 반영이 아직 안 끝났을 수 있어 어제까지만 백필한다
         # (오늘치는 평소처럼 ingest_daily의 일일 증분 태스크가 알아서 받는다).
@@ -100,6 +104,9 @@ def backfill_construction_stipulations(start: date = START, end: date | None = N
         raise RuntimeError(
             f"{len(failed_dates)}개 날짜 수집 실패: {', '.join(failed_dates)}"
         )
+
+    result_path = BRONZE_DIR / SOURCE / f"dt={end}" / "data.parquet"
+    return str(result_path) if result_path.exists() else None
 
 
 if __name__ == "__main__":

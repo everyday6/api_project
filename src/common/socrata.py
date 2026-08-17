@@ -20,6 +20,7 @@ keyset 방식은 "직전 마지막 행의 정렬 컬럼 값보다 큰 행"을 �
 걸기 때문에 몇 백만 번째 페이지든 응답 속도가 거의 일정하다.
 """
 
+import concurrent.futures
 import time
 
 import pandas as pd
@@ -31,17 +32,29 @@ from requests.adapters import HTTPAdapter
 from requests.exceptions import (
     ChunkedEncodingError,
     ConnectionError as ReqConnectionError,
+    Timeout as ReqTimeout,
 )
 from urllib3.util.retry import Retry
 
 from .config import (
     HTTP_TIMEOUT,
+    SOCRATA_PAGE_HARD_TIMEOUT,
     SOCRATA_PAGE_SIZE,
 )
 from .logger import get_logger
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="socrata")
+
+# 페이지 요청을 별도 스레드에서 돌리고 SOCRATA_PAGE_HARD_TIMEOUT으로 하드
+# 데드라인을 강제하기 위한 전용 executor. 데드라인을 넘겨 버려진 future의
+# 스레드는 백그라운드에서 계속 대기하다가 결국 소켓이 끊기면 알아서 끝난다
+# (Python은 스레드를 강제 종료할 수 없음) — max_workers를 여유 있게 둬서
+# 그런 좀비 스레드가 몇 개 쌓여도 새 페이지 요청이 밀리지 않게 한다.
+_page_executor = concurrent.futures.ThreadPoolExecutor(
+    max_workers=4,
+    thread_name_prefix="socrata-page",
+)
 
 
 def make_session():
@@ -79,18 +92,33 @@ def _get_page(
     """
     Socrata API 한 페이지를 받아온다.
 
-    연결 자체의 재시도는 requests Retry가 처리하고,
-    응답을 받는 도중 끊기는 경우는 여기서 별도로 재시도한다.
+    session.get() 자체의 커넥션 재시도는 requests Retry(session에 mount된
+    HTTPAdapter)가 처리하지만, 그건 "재시도 횟수"만 보장할 뿐 "전체 소요 시간"은
+    못 막는다 — HTTP_TIMEOUT은 소켓 read 호출 한 번에만 걸리는 타임아웃이라,
+    서버가 응답을 아주 느리게 찔끔찔끔 흘려보내면 각 read는 매번 타임아웃
+    안쪽이라 안 걸리면서도 전체 요청은 시간제한 없이 계속 매달릴 수 있다
+    (실제로 겪음 — 첫 페이지 요청이 1시간 넘게 안 끊기고 매달려 있다가 결국
+    서버 쪽에서 RemoteDisconnected로 강제 종료함). 그래서 별도 스레드에서
+    요청을 돌리고 SOCRATA_PAGE_HARD_TIMEOUT으로 전체 소요 시간에 하드
+    데드라인을 강제한다 — 이 데드라인을 넘기면 그 결과는 버리고(스레드 자체는
+    Python이 강제 종료할 수 없어 백그라운드에 남지만, 결국 소켓이 끊기면서
+    스스로 끝난다) 새 세션으로 재시도한다. 재시도마다 새 세션을 쓰는 건,
+    커넥션 풀에 남아있는 문제 있는 연결을 계속 재사용하지 않기 위함이다.
     """
 
     for attempt in range(max_retries):
 
+        attempt_session = session if attempt == 0 else make_session()
+
         try:
-            res = session.get(
+            future = _page_executor.submit(
+                attempt_session.get,
                 url,
                 params=params,
                 timeout=HTTP_TIMEOUT,
             )
+
+            res = future.result(timeout=SOCRATA_PAGE_HARD_TIMEOUT)
 
             res.raise_for_status()
 
@@ -99,6 +127,8 @@ def _get_page(
         except (
             ChunkedEncodingError,
             ReqConnectionError,
+            ReqTimeout,
+            concurrent.futures.TimeoutError,
         ) as e:
 
             if attempt == max_retries - 1:
@@ -113,11 +143,13 @@ def _get_page(
             wait = 2 ** attempt
 
             logger.warning(
-                "Socrata 응답 중 연결 끊김: "
-                "retry=%d/%d wait=%ds",
+                "Socrata 응답 중 연결 끊김/데드라인(%ds) 초과: "
+                "retry=%d/%d wait=%ds error=%s",
+                SOCRATA_PAGE_HARD_TIMEOUT,
                 attempt + 1,
                 max_retries,
                 wait,
+                e,
             )
 
             time.sleep(wait)

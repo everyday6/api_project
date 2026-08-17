@@ -33,6 +33,8 @@ import os
 from pathlib import Path
 from datetime import date, timedelta
 
+import pandas as pd
+
 sys.path.append(
     str(Path(__file__).resolve().parent.parent)
 )
@@ -48,12 +50,12 @@ SOURCE = "construction_stipulations"
 ORDER = "permitnumber, stipulationid, :id"
 
 
-def main():
-
-    run_date = os.getenv(
-        "RUN_DATE",
-        date.today().isoformat(),
-    )
+def build(run_date: str | None = None) -> str | None:
+    """하루치(run_date) 증분 수집. 신규 0건이면 fetch_all_streaming이 파일을
+    만들지 않으므로 정상 케이스로 보고 None을 반환한다(호출부/validate_output
+    둘 다 None을 "그날 신규 없음"으로 취급)."""
+    if run_date is None:
+        run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
     start = date.fromisoformat(run_date)
     end = start + timedelta(days=1)
@@ -95,12 +97,14 @@ def main():
                 "소스 반영 지연 또는 실제로 해당일 신규 레코드 없음)",
                 run_date,
             )
-        else:
-            logger.info(
-                "공사 스티퓰레이션 증분 수집 완료: rows=%d path=%s",
-                total,
-                out_path,
-            )
+            return None
+
+        logger.info(
+            "공사 스티퓰레이션 증분 수집 완료: rows=%d path=%s",
+            total,
+            out_path,
+        )
+        return str(out_path)
 
     except Exception:
         logger.exception(
@@ -108,6 +112,28 @@ def main():
             run_date,
         )
         raise
+
+
+def validate_output(path: str | None) -> str | None:
+    """path가 None이면(그날 신규 0건이라 build()가 파일을 안 만든 경우) 정상
+    케이스이니 그대로 통과시킨다. 파일이 있으면 permitnumber 컬럼이 비어있지
+    않은지만 확인한다(Bronze라 그 이상의 정제/검증은 하지 않음)."""
+    if path is None:
+        logger.info("공사 스티퓰레이션 검증 스킵: 그날 신규 0건(정상 케이스)")
+        return path
+
+    df = pd.read_parquet(path, columns=["permitnumber"])
+    if df.empty:
+        raise ValueError(f"공사 스티퓰레이션 파일이 비어 있습니다: {path}")
+
+    logger.info("공사 스티퓰레이션 검증 완료: rows=%d path=%s", len(df), path)
+    return path
+
+
+def main(run_date: str | None = None) -> str | None:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build(run_date)
+    return validate_output(path)
 
 
 if __name__ == "__main__":
