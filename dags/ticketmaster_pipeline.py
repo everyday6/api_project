@@ -19,6 +19,8 @@ from datetime import timedelta
 import pendulum
 from airflow.sdk import Asset, dag, get_current_context, task
 
+from src.common.alerts import notify_slack_failure
+
 LOCAL_TZ = pendulum.timezone("America/New_York")
 
 default_args = {
@@ -27,6 +29,7 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
     "retry_exponential_backoff": True,
     "execution_timeout": timedelta(hours=1),
+    "on_failure_callback": notify_slack_failure,
 }
 
 MAP_TICKETMASTER_LION = Asset("map_ticketmaster_lion")

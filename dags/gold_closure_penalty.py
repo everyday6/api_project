@@ -24,12 +24,15 @@ from datetime import timedelta
 import pendulum
 from airflow.sdk import Asset, dag, task
 
+from src.common.alerts import notify_slack_failure
+
 default_args = {
     "owner": "jiwon",
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
     "retry_exponential_backoff": True,
     "execution_timeout": timedelta(hours=1),
+    "on_failure_callback": notify_slack_failure,
 }
 
 
