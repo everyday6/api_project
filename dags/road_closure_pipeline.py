@@ -27,11 +27,13 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 
+from src.common.alerts import notify_slack_failure
 from src.road_closures.bronze import ingest_road_closures, validate_road_closures
 
 default_args = {
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": notify_slack_failure,
 }
 
 with DAG(
