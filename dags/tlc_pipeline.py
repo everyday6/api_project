@@ -16,10 +16,11 @@ Silver
 다음 단계(예: Validate)가 전체적으로 시작된다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from airflow.decorators import dag
 
+from src.common.alerts import notify_slack_failure
 from src.common.downloader import (
     generate_download_list,
     download_file,
@@ -37,6 +38,16 @@ from src.tlc.silver import (
     build_silver,
 )
 
+# download_file.expand()가 파일 개수만큼 태스크 인스턴스를 만드는 mapped
+# task라서, default_args에 on_failure_callback을 넣으면 실패한 인덱스마다
+# Slack이 따로 온다. retries만 여기 걸고, on_failure_callback은 아래
+# @dag()에 DAG 레벨로 따로 걸어서 이 DAG run 전체가 실패로 확정될 때
+# 딱 한 번만 오게 한다.
+default_args = {
+    "retries": 3,
+    "retry_delay": timedelta(minutes=5),
+}
+
 
 # =========================================================
 # DAG
@@ -47,6 +58,8 @@ from src.tlc.silver import (
     start_date=datetime(2025, 8, 1),
     schedule="@monthly",
     catchup=False,
+    default_args=default_args,
+    on_failure_callback=notify_slack_failure,
     tags=["TLC"],
 )
 def tlc_pipeline():
