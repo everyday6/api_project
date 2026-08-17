@@ -45,8 +45,14 @@ def ingest_lion(version_date: str | None = None, bronze_root: Path = BRONZE_ROOT
     if version_date is None:
         version_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
-    resp = requests.get(LION_ZIP_URL, headers=HEADERS, timeout=180)
-    resp.raise_for_status()
+    logger.info(f"[lion] version_date={version_date} 다운로드 시작: {LION_ZIP_URL}")
+
+    try:
+        resp = requests.get(LION_ZIP_URL, headers=HEADERS, timeout=180)
+        resp.raise_for_status()
+    except requests.RequestException:
+        logger.exception(f"[lion] version_date={version_date} 다운로드 실패: {LION_ZIP_URL}")
+        raise
 
     dest_dir = bronze_root / f"version_date={version_date}"
     dest_dir.mkdir(parents=True, exist_ok=True)

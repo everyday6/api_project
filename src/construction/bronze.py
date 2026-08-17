@@ -21,6 +21,8 @@ import os
 from pathlib import Path
 from datetime import date
 
+import pandas as pd
+
 sys.path.append(
     str(Path(__file__).resolve().parent.parent)
 )
@@ -30,16 +32,23 @@ from common.socrata import fetch_all_streaming
 from common.logger import get_logger
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_bronze")
 
 SOURCE = "construction"
-ORDER = "permitnumber"
+# permitnumber만으로는 페이지 경계에서 tie-breaker가 없어서, 같은
+# permitnumber를 가진 행이 누락되거나 중복될 수 있다(construction_stipulations,
+# road_closures에서 이미 겪은 문제와 동일 원인). Socrata 내부 고유 행 식별자인
+# :id를 같이 걸어서 경계에서 행이 새지 않게 한다.
+ORDER = "permitnumber, :id"
 
 # 프로젝트에서 필요한 범위 (road_closures/stipulations와 동일 기준)
 WHERE = "issuedworkstartdate >= '2025-01-01T00:00:00'"
 
 
-def main():
+def build() -> str:
+    """Socrata에서 전체를 받아 저장만 한다(validate 없음) — build/validate를
+    별도 Airflow 태스크로 나눠서, validate 실패로 재시도할 때 이 페이지네이션
+    fetch를 처음부터 다시 안 해도 되게 하기 위함."""
 
     run_date = os.getenv(
         "RUN_DATE",
@@ -66,11 +75,6 @@ def main():
             out_path=out_path,
         )
 
-        if total == 0:
-            raise ValueError(
-                "공사 데이터를 받지 못했습니다."
-            )
-
         logger.info(
             "공사 전체 수집 완료: rows=%d path=%s",
             total,
@@ -83,6 +87,23 @@ def main():
             run_date,
         )
         raise
+
+    return str(out_path)
+
+
+def validate_output(path: str) -> str:
+    """저장된 Bronze 파일에 행이 실제로 있는지 확인한다."""
+    df = pd.read_parquet(path, columns=["permitnumber"])
+    if len(df) == 0:
+        raise ValueError("공사 데이터를 받지 못했습니다.")
+    return path
+
+
+def main() -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build()
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":

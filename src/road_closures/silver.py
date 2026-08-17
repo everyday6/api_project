@@ -82,7 +82,7 @@ def load_road_closures() -> pd.DataFrame:
     return df
 
 
-def build(construction_work_hours: pd.DataFrame, road_closures: pd.DataFrame) -> pd.DataFrame:
+def _combine(construction_work_hours: pd.DataFrame, road_closures: pd.DataFrame) -> pd.DataFrame:
     road_closures = road_closures.reset_index(drop=True).reset_index(names="_rc_id")
 
     # on_street + from_street + to_street(구간)까지 같아야 후보로 모으고,
@@ -137,7 +137,8 @@ def validate(df: pd.DataFrame, construction_rows: int, road_closures_rows: int) 
     logger.info("control_type 분포:\n%s", df["control_type"].value_counts(dropna=False).to_string())
 
 
-def main(run_date: str | None = None) -> str:
+def build(run_date: str | None = None) -> str:
+    """load -> combine -> save만 한다(validate 없음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
@@ -146,16 +147,34 @@ def main(run_date: str | None = None) -> str:
     construction_work_hours = load_construction_work_hours(run_date)
     road_closures = load_road_closures()
 
-    df = build(construction_work_hours, road_closures)
-    validate(df, construction_rows=len(construction_work_hours), road_closures_rows=len(road_closures))
+    df = _combine(construction_work_hours, road_closures)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
-        "road_control_events Silver 완료: rows=%d columns=%d path=%s",
+        "road_control_events Silver 빌드 완료: rows=%d columns=%d path=%s",
         len(df), len(df.columns), path,
     )
     return str(path)
+
+
+def validate_output(path: str, run_date: str) -> str:
+    """build()가 저장한 결과를 다시 읽어, 그 run_date의 원본 두 개(construction_
+    work_hours, road_closures) 행수와 비교하며 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    construction_rows = len(load_construction_work_hours(run_date))
+    road_closures_rows = len(load_road_closures())
+    validate(df, construction_rows=construction_rows, road_closures_rows=road_closures_rows)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    if run_date is None:
+        run_date = os.getenv("RUN_DATE", date.today().isoformat())
+    path = build(run_date)
+    validate_output(path, run_date)
+    return path
 
 
 if __name__ == "__main__":

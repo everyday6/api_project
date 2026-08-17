@@ -101,7 +101,8 @@ def validate(df: pd.DataFrame, total_rows: int) -> None:
         )
 
 
-def main(run_date: str | None = None) -> str:
+def build(run_date: str | None = None) -> str:
+    """load -> match -> save만 한다(validate 없음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
@@ -112,15 +113,32 @@ def main(run_date: str | None = None) -> str:
     other_road_control = load_other_road_control(run_date)
 
     df = match(other_road_control, dim_segment, tree)
-    validate(df, total_rows=len(other_road_control))
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
-        "map_road_closure_segment 완료: rows=%d columns=%d path=%s",
+        "map_road_closure_segment 빌드 완료: rows=%d columns=%d path=%s",
         len(df), len(df.columns), path,
     )
     return str(path)
+
+
+def validate_output(path: str, run_date: str) -> str:
+    """build()가 저장한 결과를 다시 읽어, 그 run_date의 원본 other_road_control
+    행수와 비교하며 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    total_rows = len(load_other_road_control(run_date))
+    validate(df, total_rows=total_rows)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    if run_date is None:
+        run_date = os.getenv("RUN_DATE", date.today().isoformat())
+    path = build(run_date)
+    validate_output(path, run_date)
+    return path
 
 
 if __name__ == "__main__":

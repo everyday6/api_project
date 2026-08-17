@@ -55,6 +55,8 @@ PROJECT_ROOT = Path(__file__).resolve().parents[2]
 DATA_DIR = PROJECT_ROOT / "data"
 CONFIG_DIR = PROJECT_ROOT / "config"
 
+LOG_DIR = PROJECT_ROOT / "logs"
+
 TMP_DIR = DATA_DIR / "tmp"
 
 BRONZE_DIR = DATA_DIR / "bronze"
@@ -102,6 +104,10 @@ DATASETS = {
 # ==========================
 
 # Ticketmaster API Key (.env에서 불러옴)
+# 여기서 없다고 바로 에러내지 않는다 — config.py는 거의 모든 DAG가 공통으로
+# 임포트하는 파일이라, 여기서 raise하면 Ticketmaster와 무관한 파이프라인까지
+# 전부 깨진다. 실제로 이 키가 필요한 시점(src/ticketmaster/bronze.py의
+# build())에서만 검증한다.
 TICKETMASTER_API_KEY = os.getenv("TICKETMASTER_API_KEY")
 
 # Ticketmaster Discovery API URL
