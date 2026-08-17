@@ -79,7 +79,12 @@ def construction_pipeline():
         from src.construction_stipulations.backfill import backfill_construction_stipulations
 
         context = get_current_context()
-        backfill_construction_stipulations(end=_date.fromisoformat(context["ds"]))
+        return backfill_construction_stipulations(end=_date.fromisoformat(context["ds"]))
+
+    @task(task_id="validate_stipulations")
+    def validate_stipulations(path: str | None):
+        from src.construction_stipulations.bronze import validate_output
+        return validate_output(path)
 
     # ───────────────────────────
     # Silver
@@ -170,7 +175,8 @@ def construction_pipeline():
     construction_bronze_path = fetch_construction()
     construction_bronze_validated = validate_construction_bronze(construction_bronze_path)
 
-    stipulations_bronze_done = fetch_stipulations()
+    stipulations_path = fetch_stipulations()
+    stipulations_validated = validate_stipulations(stipulations_path)
 
     construction_silver_path = build_construction()
     construction_bronze_validated >> construction_silver_path
@@ -181,7 +187,7 @@ def construction_pipeline():
     construction_gold_validated = validate_construction_gold(construction_gold_path)
 
     work_hours_path = build_work_hours()
-    [construction_gold_validated, stipulations_bronze_done] >> work_hours_path
+    [construction_gold_validated, stipulations_validated] >> work_hours_path
     work_hours_validated = validate_work_hours(work_hours_path)
 
     road_control_events_path = build_road_control_events()
