@@ -3,9 +3,14 @@ DAG: construction_pipeline
 
 공사 허가(construction) + 스티퓰레이션(work_hours) + road_closures를 합친
 road_control_events, 그리고 그걸 segment_id에 매핑하는 것까지 담당하는
-도메인 파이프라인(Bronze -> Silver -> Mapping). 예전엔 ingest_daily 하나에
-event/ticketmaster와 섞여 있었는데, "독립적으로 실패/재시도/스케줄될 필요가
-있는가" 기준으로 도메인별로 쪼갰다.
+도메인 파이프라인(Bronze -> Silver -> Gold -> Mapping). 예전엔 ingest_daily
+하나에 event/ticketmaster와 섞여 있었는데, "독립적으로 실패/재시도/스케줄될
+필요가 있는가" 기준으로 도메인별로 쪼갰다.
+
+construction Silver는 데이터 자체의 유효성만 확인한 도시 전체 데이터고,
+Gold(manhattan_construction_events)에서 Manhattan/상태/시리즈 기준으로
+Traffic Score에 필요한 permit만 추려낸다(src/construction/gold.py 참고).
+work_hours(스티퓰레이션)는 이 Gold 결과와 조인한다.
 
 끝에서 map_road_control_segment/map_road_closure_segment를 Asset으로
 내보낸다 — gold_closure_penalty가 이 두 Asset을 구독해서, cron 추측 없이
@@ -91,6 +96,21 @@ def construction_pipeline():
         from src.construction.silver import validate_output
         return validate_output(path)
 
+    # ───────────────────────────
+    # Gold
+    # ───────────────────────────
+
+    @task(task_id="build_construction_gold")
+    def build_construction_gold():
+        from src.construction.gold import build
+        context = get_current_context()
+        return build(context["ds"])
+
+    @task(task_id="validate_construction_gold")
+    def validate_construction_gold(path: str):
+        from src.construction.gold import validate_output
+        return validate_output(path)
+
     @task(task_id="build_work_hours")
     def build_work_hours():
         from src.construction_stipulations.silver import build
@@ -156,8 +176,12 @@ def construction_pipeline():
     construction_bronze_validated >> construction_silver_path
     construction_silver_validated = validate_construction(construction_silver_path)
 
+    construction_gold_path = build_construction_gold()
+    construction_silver_validated >> construction_gold_path
+    construction_gold_validated = validate_construction_gold(construction_gold_path)
+
     work_hours_path = build_work_hours()
-    [construction_silver_validated, stipulations_bronze_done] >> work_hours_path
+    [construction_gold_validated, stipulations_bronze_done] >> work_hours_path
     work_hours_validated = validate_work_hours(work_hours_path)
 
     road_control_events_path = build_road_control_events()
