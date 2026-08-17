@@ -88,6 +88,16 @@ USER_AGENT = {
 }
 
 # ==========================
+# 알림 설정
+# ==========================
+
+# Slack Incoming Webhook URL (.env에서 불러옴)
+# 여기서 없다고 바로 에러내지 않는다 — config.py는 거의 모든 DAG가 공통으로
+# 임포트하는 파일이라, 여기서 raise하면 알림과 무관한 파이프라인까지 전부
+# 깨진다. 실제로 알림을 보내는 시점(src/common/alerts.py)에서만 확인한다.
+SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
+
+# ==========================
 # NYC Open Data 설정
 # ==========================
 
