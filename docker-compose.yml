@@ -30,6 +30,8 @@ x-airflow-env: &airflow-env
 
   TICKETMASTER_API_KEY: ${TICKETMASTER_API_KEY}
 
+  SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+
   PYTHONPATH: /opt/airflow
 
 x-airflow-volumes: &airflow-volumes
