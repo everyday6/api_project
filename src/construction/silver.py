@@ -1,17 +1,22 @@
 """
 Silver — 공사 허가
 
-Bronze 일별 전체 스냅샷을 정제한다.
+Bronze 일별 전체 스냅샷을 정제한다. 여기서는 "이 행이 어떤 분석을 하더라도
+유효한 데이터인가"만 본다 — Manhattan 한정, 상태/시리즈 기준 제외처럼
+"Traffic Score에 필요한가"를 따지는 판단은 src/construction/gold.py로
+옮겼다 (구분 기준: 데이터 자체가 잘못됐으면 Silver, 데이터는 멀쩡한데
+우리 분석엔 안 맞으면 Gold).
 
-- 맨해튼만 필터
-- 취소/행정 허가 제외
-- 차량 통행과 무관한 허가 시리즈 제외
-- 날짜/시간 표준화
+- 컬럼명/타입 통일
+- 날짜/시간 파싱, 시작/종료 없거나 기간이 잘못된 행 제거
 - 갱신 허가의 작업 시작/종료 시각 복구
 - 도로명 정규화 (다른 소스와의 JOIN 키)
-- Gold의 Traffic Score 분석에 활용할 컬럼만 저장
+- Gold가 필터링에 쓸 수 있게 status/borough는 남겨서 저장
 
-Traffic Score 가중치/영향도는 Gold에서 처리한다.
+permit_id 중복은 여기서 조용히 지우지 않고 validate()에서 에러로 막는다 —
+Bronze의 keyset 페이지네이션(order=permitnumber, :id)이 tie-breaker를
+갖췄으니 정상적으로는 안 생겨야 하고, 생긴다면 그 자체가 원인을 찾아야 할
+신호다.
 """
 
 import sys
@@ -24,38 +29,13 @@ import pyarrow.parquet as pq
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from common.config import BOROUGH, BRONZE_DIR, SILVER_DIR
+from common.config import BRONZE_DIR, SILVER_DIR
 from common.logger import get_logger
 from common.utils import clean_street, save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_silver")
 
 SOURCE = "construction"
-
-# 행정성 permit type
-ADMIN_TYPES = [
-    "EMBARGO",
-]
-
-# 분석 대상에서 제외할 상태
-DROP_STATUS = [
-    "VOIDED AFTER ISSUE",
-    "SUBMITTED",
-    "SIM SUBMITTED",
-    "PERMIT HELD FOR EXTERNAL REVIEW",
-    "FEE REVIEW",
-]
-
-# 차량 통행 영향 분석과 직접 관련이 적은 허가 시리즈
-# COMMERICAL은 원본 데이터의 오타 표기
-DROP_SERIES = [
-    "MISCELLANEOUS CASH RECEIPTS",
-    "COMMERCIAL REFUSE CONTAINER PERMIT",
-    "COMMERICAL REFUSE CONTAINER PERMIT",
-    "SIDEWALK CONSTRUCTION PERMIT",
-    "CANOPY PERMIT",
-    "VAULT LICENSE",
-]
 
 # Bronze에서 읽을 컬럼
 READ_COLS = [
@@ -102,6 +82,11 @@ def resolve_time_chain(df):
     종일(00시~23시)로 기록된 갱신 허가는
     previouspermitnumber를 따라가 이전 허가의
     실제 작업 시작/종료 시각을 복구한다.
+
+    Gold에서 상태/시리즈로 걸러내기 전, Bronze에 가까운 원본 상태에서
+    수행한다 — 이전 permit이 취소/제출 등 상태라도 체인은 그대로 따라갈
+    수 있어야 하기 때문이다 (Silver에서는 상태로 행을 지우지 않으므로
+    자연히 보장된다).
 
     복구 실패 여부는 내부 처리에만 사용하고
     최종 Silver에는 저장하지 않는다.
@@ -186,12 +171,9 @@ def resolve_time_chain(df):
 
 
 def transform(df):
-    """Bronze 공사 데이터를 Silver 형태로 정제한다."""
+    """Bronze 공사 데이터를 최소 정제한다 — 데이터 자체의 유효성만 본다."""
 
-    # 1. 맨해튼만 유지
-    df = df[df["boroughname"] == BOROUGH].copy()
-
-    # 2. 컬럼명 통일
+    # 1. 컬럼명 통일 (status/borough는 Gold의 필터 기준이라 남겨둔다)
     df = df.rename(columns={
         "permitnumber": "permit_id",
         "previouspermitnumber": "prev_permit_id",
@@ -203,9 +185,10 @@ def transform(df):
         "fromstreetname": "from_street",
         "tostreetname": "to_street",
         "wkt": "geom_wkt",
+        "boroughname": "borough",
     })
 
-    # 3. 날짜/시간 변환
+    # 2. 날짜/시간 변환
     df["work_start_ts"] = pd.to_datetime(
         df["issuedworkstartdate"], errors="coerce"
     )
@@ -219,47 +202,18 @@ def transform(df):
         df["permitissuedate"], errors="coerce"
     )
 
-    # 시작/종료가 없거나 기간이 잘못된 데이터 제외
+    # 시작/종료가 없거나 기간이 잘못된 데이터 제외 — 어떤 분석을 하든 못 쓰는
+    # 행이라 Silver에서 제거한다.
     df = df[
         df["work_start_ts"].notna()
         & df["work_end_ts"].notna()
         & (df["work_end_ts"] > df["work_start_ts"])
     ].copy()
 
-    # 4. 취소 / 검토 중 상태 제외
-    df = df[~df["status"].isin(DROP_STATUS)].copy()
-
-    # 5. 행정성 허가 제외
-    admin_pattern = "|".join(ADMIN_TYPES)
-
-    df = df[
-        ~df["permit_type"]
-        .astype(str)
-        .str.upper()
-        .str.contains(admin_pattern, na=False)
-    ].copy()
-
-    # 6. 차량 통행과 직접 관련이 적은 허가 제외
-    before = len(df)
-    df = df[~df["permit_series"].isin(DROP_SERIES)].copy()
-    logger.info("차량 무관 시리즈 제외: %d → %d", before, len(df))
-
-    # 7. 갱신 허가의 작업 시각 복구
-    #
-    # 활성 공사 필터보다 먼저 수행한다.
-    # 이전 permit은 이미 만료된 경우가 많기 때문에
-    # 먼저 제거하면 이전 permit을 따라갈 수 없다.
+    # 3. 갱신 허가의 작업 시각 복구
     df = resolve_time_chain(df)
 
-    # 8. (제거됨) 예전엔 여기서 run_date 기준 "진행 중인 공사만" 남겼는데,
-    # Gold(closure_penalty)가 query_date/hour/요일 기준으로 이미 정확하게
-    # 활성 여부를 다시 판단하므로 중복 필터였다. 게다가 이 필터 때문에
-    # "오늘 기준 아직 시작 안 한 미래 공사"가 Silver/매핑 단계에서부터
-    # 통째로 빠져서, 미래 날짜 조회나 "새로 올라온 공사" 목록에서 최근에
-    # 발급된 permit이 사라지는 문제가 있었다 — 제거해서 run_date와 무관하게
-    # (아직 유효한) permit을 전부 남긴다.
-
-    # 9. 도로명 정규화
+    # 4. 도로명 정규화
     #
     # wkt가 비어 있는 경우가 많아 도로명이 사실상 유일한 JOIN 키다.
     # 원본은 "WEST   19 STREET"처럼 공백이 불규칙하므로
@@ -267,16 +221,18 @@ def transform(df):
     for col in STREET_COLS:
         df[col] = df[col].map(clean_street)
 
-    # 10. 수치 컬럼 변환
+    # 5. 수치 컬럼 변환
     df["linear_feet"] = pd.to_numeric(
         df["linear_feet"], errors="coerce"
     )
 
-    # 11. Gold 분석에 활용할 컬럼만 저장
+    # 6. Gold가 필터링에 쓸 status/borough까지 포함해서 저장
     return df[[
         "permit_id",
         "permit_series",
         "permit_type",
+        "status",
+        "borough",
         "linear_feet",
         "on_street",
         "from_street",
@@ -289,7 +245,7 @@ def transform(df):
 
 
 def validate(df):
-    """Silver 결과 기본 품질 검증."""
+    """Silver 결과 기본 품질 검증 — 데이터 자체의 유효성만 확인한다."""
 
     if df.empty:
         raise ValueError("construction Silver 결과가 비었습니다.")
@@ -297,7 +253,9 @@ def validate(df):
     if df["permit_id"].isna().any():
         raise ValueError("permit_id NULL 발생")
 
-    # permit 하나당 한 행이어야 함
+    # permit 하나당 한 행이어야 함. Bronze의 keyset 페이지네이션에 :id
+    # tie-breaker를 걸어뒀으니 정상적으로는 안 생겨야 하고, 생기면 조용히
+    # 지우지 않고 여기서 바로 알린다.
     if not df["permit_id"].is_unique:
         n_dup = int(df["permit_id"].duplicated().sum())
         raise ValueError(f"permit_id 중복 발생: {n_dup}건")
@@ -315,11 +273,6 @@ def validate(df):
     logger.info(
         "공사 Silver 검증 완료: rows=%d wkt없음=%d 위치없음=%d",
         len(df), no_wkt, no_location,
-    )
-
-    logger.info(
-        "permit_series 분포:\n%s",
-        df["permit_series"].value_counts(dropna=False).to_string(),
     )
 
 

@@ -123,7 +123,7 @@ services:
       --email ${AIRFLOW_ADMIN_EMAIL}
       || true &&
       airflow pools set downloads 16 'TLC 파일 다운로드 동시 실행 제한 (네트워크 대역폭 보호용)' &&
-      airflow pools set silver_pool 4 'TLC Silver 변환(Spark) 동시 실행 제한 (spark-master 1대 자원 보호용)'
+      airflow pools set silver_pool 3 'TLC Silver 변환(Spark) 동시 실행 제한 (spark-master 1대 자원 보호용)'
       "
 
 
