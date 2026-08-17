@@ -370,7 +370,17 @@ def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
     이 목록에서 빠진다(construction만 대상).
 
     하나의 permit이 여러 segment_id에 매핑된 경우 대표 segment_id 하나만
-    남긴다. 발급 시각 오름차순으로 정렬해서 반환한다.
+    남긴다.
+
+    NYC DOT는 같은 공사 현장이라도 규제 항목(장비 배치/자재 적치/도로 점용/
+    보도 점용/폐기물 컨테이너 등)마다 permit_id를 따로 발급한다 — 그래서
+    (on_street, from_street, to_street, work_start_ts, work_end_ts,
+    segment_id)가 완전히 같은 permit이 5~6건씩 나오는 경우가 흔하다(전체
+    데이터 기준 4만7천여 그룹, 심하면 한 그룹에 30건 이상). permit_type을
+    보여주지 않는 이 목록에서는 사용자에게 "완전 중복"으로 보이므로, 이
+    조합이 같은 permit들은 가장 먼저 발급된 1건만 대표로 남긴다.
+
+    발급 시각 오름차순으로 정렬해서 반환한다.
     """
     details = load_ground_zero_details(mapping_dt)
     target = pd.Timestamp(query_date)
@@ -384,6 +394,12 @@ def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
 
     issued_today = issued_today.sort_values("segment_id")
     representative = issued_today.groupby("permit_id", as_index=False).first()
+
+    representative = representative.sort_values("permit_issue_ts")
+    representative = representative.groupby(
+        ["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"],
+        as_index=False,
+    ).first()
 
     rows = []
     for row in representative.itertuples(index=False):
@@ -524,10 +540,11 @@ def validate(df: pd.DataFrame) -> None:
     logger.info("시간대별 영향받는 segment 수:\n%s", df.groupby("hour")["segment_id"].nunique().to_string())
 
 
-def main(run_date: str | None = None) -> str:
-    """일 배치용 진입점 — run_date 하루치를 mapping_dt(어느 매핑 스냅샷을 읽을지)
-    이자 query_date(그 permit들 중 어느 게 이 날짜에 활성인지)로 동일하게 쓴다
-    ("오늘 갱신된 데이터로 오늘 상태를 본다"는 배치 시나리오라 둘이 항상 같음)."""
+def build(run_date: str | None = None) -> str:
+    """load -> compute -> save만 한다(validate 없음). run_date 하루치를
+    mapping_dt(어느 매핑 스냅샷을 읽을지)이자 query_date(그 permit들 중 어느
+    게 이 날짜에 활성인지)로 동일하게 쓴다("오늘 갱신된 데이터로 오늘 상태를
+    본다"는 배치 시나리오라 둘이 항상 같음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
@@ -538,15 +555,28 @@ def main(run_date: str | None = None) -> str:
     capacity_by_segment = load_capacity_by_segment()
 
     df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment)
-    validate(df)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
-        "closure_penalty 완료: rows=%d path=%s",
+        "closure_penalty 빌드 완료: rows=%d path=%s",
         len(df), path,
     )
     return str(path)
+
+
+def validate_output(path: str) -> str:
+    """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    validate(df)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build(run_date)
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":

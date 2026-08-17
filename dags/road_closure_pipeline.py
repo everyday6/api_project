@@ -1,5 +1,5 @@
 """
-DAG: ingest_weekly
+DAG: road_closure_pipeline
 
 도로 통제(road_closures) ingestion. 매주 월요일 새벽에 실행되며, BACKFILL_START
 (2025-01-01)부터 이번 실행일까지 전체를 매번 통째로 다시 받아 하나의 parquet
@@ -15,6 +15,11 @@ Airflow가 이 둘을 똑같이 "트리거 시각"으로 채워서 [오늘,오�
 
 실제 ingestion/검증 로직은 src/road_closures/bronze.py에 있고, 이 파일은
 언제/어떤 순서로 그 함수들을 실행할지만 정의한다.
+
+construction_pipeline(daily)이 여기서 만든 Bronze 파일을 그냥 최신 것으로
+읽는다 — 이 파이프라인은 매주 1회만 갱신되므로 Asset으로 daily 파이프라인을
+기다리게 하지 않고, 반대로 daily 쪽에서 그때그때 최신 파일을 읽는 방식을
+그대로 유지한다(이유는 construction_pipeline.py 참고).
 """
 
 from datetime import datetime, timedelta
@@ -30,13 +35,13 @@ default_args = {
 }
 
 with DAG(
-    dag_id="ingest_weekly",
+    dag_id="road_closure_pipeline",
     description="도로 통제(road_closures) 전체 스냅샷 갱신 (BACKFILL_START ~ 실행일)",
     schedule="0 4 * * 1",          # 매주 월요일 새벽 4시
     start_date=datetime(2025, 1, 1),
     catchup=False,
     default_args=default_args,
-    tags=["bronze", "weekly"],
+    tags=["road_closure", "weekly"],
 ) as dag:
 
     task_ingest_road_closures = PythonOperator(

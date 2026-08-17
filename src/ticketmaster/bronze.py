@@ -23,6 +23,7 @@ from pathlib import Path
 from datetime import date, timedelta
 
 import pandas as pd
+import requests
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
@@ -43,7 +44,7 @@ from common.logger import get_logger
 
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="ticketmaster_bronze")
 
 SOURCE = "ticketmaster"
 
@@ -66,13 +67,21 @@ def request_page(
         "sort": "date,asc",
     }
 
-    res = session.get(
-        TICKETMASTER_URL,
-        params=params,
-        timeout=HTTP_TIMEOUT,
-    )
-
-    res.raise_for_status()
+    try:
+        res = session.get(
+            TICKETMASTER_URL,
+            params=params,
+            timeout=HTTP_TIMEOUT,
+        )
+        res.raise_for_status()
+    except requests.RequestException:
+        logger.exception(
+            "Ticketmaster 페이지 조회 실패: %s~%s page=%d",
+            start_date,
+            end_date,
+            page,
+        )
+        raise
 
     return res.json()
 
@@ -264,7 +273,8 @@ def flatten(events):
     return df
 
 
-def main():
+def build() -> str:
+    """fetch -> save만 한다(validate 없음)."""
 
     if not TICKETMASTER_API_KEY:
         raise ValueError(
@@ -324,12 +334,28 @@ def main():
     )
 
     logger.info(
-        "Ticketmaster 수집 완료: "
+        "Ticketmaster 수집 빌드 완료: "
         "rows=%d columns=%d path=%s",
         len(df),
         len(df.columns),
         path,
     )
+    return str(path)
+
+
+def validate_output(path: str) -> str:
+    """저장된 Bronze 파일에 행이 실제로 있는지 확인한다."""
+    df = pd.read_parquet(path)
+    if df.empty:
+        raise ValueError("Ticketmaster 받은 데이터가 없습니다.")
+    return path
+
+
+def main() -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build()
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":

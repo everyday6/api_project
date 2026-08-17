@@ -24,7 +24,7 @@ from src.common.logger import get_logger
 from src.common.utils import clean_street, save_parquet
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="map_event_lion")
 
 SOURCE = "event"
 
@@ -591,6 +591,7 @@ def validate_mapping(df: pd.DataFrame):
 # =========================================================
 
 def build_event_lion_mapping(run_date: str) -> str:
+    """load -> map -> save만 한다(validate 없음)."""
 
     started = time.perf_counter()
 
@@ -601,12 +602,10 @@ def build_event_lion_mapping(run_date: str) -> str:
 
     result = map_event_to_lion(event_df, lion_df)
 
-    validate_mapping(result)
-
     path = save_parquet(result, output_dir(run_date))
 
     logger.info(
-        "Event-LION 매핑 완료: rows=%d elapsed=%.2fs path=%s",
+        "Event-LION 매핑 빌드 완료: rows=%d elapsed=%.2fs path=%s",
         len(result),
         time.perf_counter() - started,
         path,
@@ -615,12 +614,21 @@ def build_event_lion_mapping(run_date: str) -> str:
     return str(path)
 
 
-def main(run_date: str | None = None):
+def validate_output(path: str) -> str:
+    """build_event_lion_mapping()이 저장한 결과를 다시 읽어 validate_mapping()을 돌린다."""
+    df = pd.read_parquet(path)
+    validate_mapping(df)
+    return path
 
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
-    build_event_lion_mapping(run_date)
+    path = build_event_lion_mapping(run_date)
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":

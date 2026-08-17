@@ -1,9 +1,10 @@
 """
 Silver — 공사 허가 시간대 제약 (construction_work_hours)
 
-construction Silver(허가 정보) + construction_stipulations Bronze(조건/유의사항
-텍스트)에서 "WORK 9AM - 4PM, MONDAY TO FRIDAY" 류 작업 시간대 제약만 뽑아서 조인한
-결과. 차선 유지/폭 관련 stipulation은 파싱하지 않는다(요청 범위 밖 — 너무 복잡함).
+construction Gold(manhattan_construction_events, Traffic Score에 필요한 permit만
+남은 상태) + construction_stipulations Bronze(조건/유의사항 텍스트)에서 "WORK 9AM
+- 4PM, MONDAY TO FRIDAY" 류 작업 시간대 제약만 뽑아서 조인한 결과. 차선 유지/폭
+관련 stipulation은 파싱하지 않는다(요청 범위 밖 — 너무 복잡함).
 
 전체 stipulation 텍스트 1,157만 건 중 고유 문구는 12,627개뿐이고, 시간대 제약
 패턴에 해당하는 건 27개 고유 문구 · 52만여 행(4.5%)이다. 나머지 90%+는 소음
@@ -32,7 +33,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import BRONZE_DIR, SILVER_DIR
+from src.common.config import BRONZE_DIR, GOLD_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.construction_stipulations.bronze import SOURCE as STIPULATIONS_SOURCE
@@ -40,7 +41,11 @@ from src.construction_stipulations.bronze import SOURCE as STIPULATIONS_SOURCE
 logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_stipulations_silver")
 
 OUT_SOURCE = "construction_work_hours"
-CONSTRUCTION_SILVER_DIR = SILVER_DIR / "construction"
+
+# construction Silver가 아니라 Gold(manhattan_construction_events)를 읽는다 —
+# Manhattan/상태/시리즈로 이미 걸러진, Traffic Score에 실제로 필요한 permit만
+# 대상으로 작업시간 stipulation을 매칭하기 위함 (src/construction/gold.py 참고).
+CONSTRUCTION_GOLD_DIR = GOLD_DIR / "construction"
 
 # "WORK 9AM - 4PM, MONDAY TO FRIDAY" / "WORK 10PM - 6AM NIGHTLY. SECTION 24-224..." 류를
 # 매칭해서 시작/종료 시각 + 요일 구절(raw)을 뽑는다. 요일 구절 뒤에 붙는
@@ -126,12 +131,12 @@ def extract_work_hours(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> 
     )
 
 
-def load_construction_silver(run_date: str) -> pd.DataFrame:
-    path = CONSTRUCTION_SILVER_DIR / f"dt={run_date}" / "data.parquet"
+def load_construction_gold(run_date: str) -> pd.DataFrame:
+    path = CONSTRUCTION_GOLD_DIR / f"dt={run_date}" / "data.parquet"
     return pd.read_parquet(path)
 
 
-def build(construction: pd.DataFrame) -> pd.DataFrame:
+def _merge_work_hours(construction: pd.DataFrame) -> pd.DataFrame:
     work_hours = extract_work_hours()
 
     return construction.merge(
@@ -163,23 +168,41 @@ def validate(df: pd.DataFrame, construction_rows: int) -> None:
     logger.info("work_days_code 분포:\n%s", df["work_days_code"].value_counts(dropna=False).to_string())
 
 
-def main(run_date: str | None = None) -> str:
+def build(run_date: str | None = None) -> str:
+    """load -> merge -> save만 한다(validate 없음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
     logger.info("construction_work_hours Silver 변환 시작: run_date=%s", run_date)
 
-    construction = load_construction_silver(run_date)
-    df = build(construction)
-    validate(df, construction_rows=len(construction))
+    construction = load_construction_gold(run_date)
+    df = _merge_work_hours(construction)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
-        "construction_work_hours Silver 완료: rows=%d columns=%d path=%s",
+        "construction_work_hours Silver 빌드 완료: rows=%d columns=%d path=%s",
         len(df), len(df.columns), path,
     )
     return str(path)
+
+
+def validate_output(path: str, run_date: str) -> str:
+    """build()가 저장한 결과를 다시 읽어, 그 run_date의 construction Gold
+    행수와 비교하며 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    construction_rows = len(load_construction_gold(run_date))
+    validate(df, construction_rows=construction_rows)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    if run_date is None:
+        run_date = os.getenv("RUN_DATE", date.today().isoformat())
+    path = build(run_date)
+    validate_output(path, run_date)
+    return path
 
 
 if __name__ == "__main__":

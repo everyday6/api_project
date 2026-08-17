@@ -31,7 +31,7 @@ from src.common.logger import get_logger
 from src.common.utils import save_parquet
 
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="map_ticketmaster_lion")
 
 SOURCE = "ticketmaster"
 
@@ -524,7 +524,7 @@ def map_ticketmaster_to_lion(
 # Output validation
 # =========================================================
 
-def validate_output(
+def _validate_result(
     df: pd.DataFrame,
     input_df: pd.DataFrame,
 ):
@@ -731,11 +731,6 @@ def build_ticketmaster_lion_mapping(
         lion_df,
     )
 
-    validate_output(
-        result,
-        ticketmaster_df,
-    )
-
     path = save_mapping(
         result,
         run_date,
@@ -747,7 +742,7 @@ def build_ticketmaster_lion_mapping(
     )
 
     logger.info(
-        "Ticketmaster-LION 파이프라인 완료: "
+        "Ticketmaster-LION 파이프라인 빌드 완료: "
         "run_date=%s rows=%d elapsed=%.2fs path=%s",
         run_date,
         len(result),
@@ -758,9 +753,18 @@ def build_ticketmaster_lion_mapping(
     return path
 
 
+def validate_output(path: str, run_date: str) -> str:
+    """build_ticketmaster_lion_mapping()이 저장한 결과를 다시 읽어, 그 run_date의
+    원본 ticketmaster 입력과 비교하며 _validate_result()를 돌린다."""
+    df = pd.read_parquet(path)
+    input_df = load_ticketmaster(run_date)
+    _validate_result(df, input_df)
+    return path
+
+
 def main(
     run_date: str | None = None,
-):
+) -> str:
 
     if run_date is None:
         run_date = os.getenv(
@@ -768,9 +772,11 @@ def main(
             date.today().isoformat(),
         )
 
-    build_ticketmaster_lion_mapping(
+    path = build_ticketmaster_lion_mapping(
         run_date
     )
+    validate_output(path, run_date)
+    return path
 
 
 if __name__ == "__main__":

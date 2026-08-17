@@ -12,13 +12,14 @@ from common.socrata import fetch_all
 from common.utils import save_parquet
 from common.logger import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="event_bronze")
 
 SOURCE = "event"
 ORDER = "event_id"
 
 
-def main(run_date: str | None = None):
+def build(run_date: str | None = None) -> str:
+    """fetch -> save만 한다(validate 없음)."""
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
@@ -41,22 +42,33 @@ def main(run_date: str | None = None):
 
     df = pd.DataFrame(rows)
 
-    if df.empty:
-        raise ValueError(
-            f"{SOURCE}: 받은 데이터가 없음"
-        )
-
     path = save_parquet(
         df,
         out_dir,
     )
 
     logger.info(
-        "행사 수집 완료: rows=%d columns=%d path=%s",
+        "행사 수집 빌드 완료: rows=%d columns=%d path=%s",
         len(df),
         len(df.columns),
         path,
     )
+    return str(path)
+
+
+def validate_output(path: str) -> str:
+    """저장된 Bronze 파일에 행이 실제로 있는지 확인한다."""
+    df = pd.read_parquet(path)
+    if df.empty:
+        raise ValueError(f"{SOURCE}: 받은 데이터가 없음")
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build(run_date)
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":

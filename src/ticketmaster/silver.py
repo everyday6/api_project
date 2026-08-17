@@ -26,7 +26,7 @@ from common.config import BRONZE_DIR, SILVER_DIR
 from common.utils import save_parquet
 from common.logger import get_logger
 
-logger = get_logger(__name__)
+logger = get_logger(__name__, log_to_file=True, log_file_stem="ticketmaster_silver")
 
 SOURCE = "ticketmaster"
 
@@ -238,8 +238,8 @@ def validate(df):
     )
 
 
-def main(run_date: str | None = None):
-
+def build(run_date: str | None = None) -> str:
+    """load -> transform -> save만 한다(validate 없음)."""
     if run_date is None:
         run_date = os.getenv(
             "RUN_DATE",
@@ -253,7 +253,6 @@ def main(run_date: str | None = None):
 
     df = load_bronze(run_date)
     df = transform(df, run_date)
-    validate(df)
 
     path = save_parquet(
         df,
@@ -263,12 +262,27 @@ def main(run_date: str | None = None):
     )
 
     logger.info(
-        "Ticketmaster Silver 완료: "
+        "Ticketmaster Silver 빌드 완료: "
         "rows=%d columns=%d path=%s",
         len(df),
         len(df.columns),
         path,
     )
+    return str(path)
+
+
+def validate_output(path: str) -> str:
+    """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
+    df = pd.read_parquet(path)
+    validate(df)
+    return path
+
+
+def main(run_date: str | None = None) -> str:
+    """build + validate를 순서대로 실행 — Airflow 밖에서 스크립트로 직접 돌릴 때용."""
+    path = build(run_date)
+    validate_output(path)
+    return path
 
 
 if __name__ == "__main__":

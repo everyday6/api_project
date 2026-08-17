@@ -31,12 +31,12 @@ import requests
 
 from src.common.config import BRONZE_DIR
 from src.common.logger import get_logger
+from src.common.socrata import fetch_all
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="road_closures")
 
 DATASET_ID = "ezy6-djsf"
 BASE_URL = f"https://data.cityofnewyork.us/resource/{DATASET_ID}.json"
-PAGE_SIZE = 50_000
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
@@ -51,34 +51,6 @@ BRONZE_ROOT = BRONZE_DIR / "road_closures"
 BACKFILL_START = date(2025, 1, 1)
 
 
-def _fetch_all_pages(where_clause: str | None = None, select: str | None = None) -> list[dict]:
-    """Socrata는 한 번에 최대 몇만 건만 주기 때문에 offset을 늘려가며 다 받는다."""
-    records: list[dict] = []
-    offset = 0
-
-    while True:
-        params = {"$limit": PAGE_SIZE, "$offset": offset}
-        if where_clause:
-            params["$where"] = where_clause
-        if select:
-            params["$select"] = select
-
-        resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=60)
-        resp.raise_for_status()
-        page = resp.json()
-
-        if not page:
-            break
-
-        records.extend(page)
-        offset += PAGE_SIZE
-
-        if len(page) < PAGE_SIZE:
-            break
-
-    return records
-
-
 def check_earliest_work_start_date() -> str | None:
     """
     진단용 함수. 이 데이터셋에 실제로 WorkStartDate가 언제부터 있는지 확인한다.
@@ -88,8 +60,13 @@ def check_earliest_work_start_date() -> str | None:
         "$order": "WorkStartDate ASC",
         "$limit": 1,
     }
-    resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
+    try:
+        resp = requests.get(BASE_URL, params=params, headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+    except requests.RequestException:
+        logger.exception("[check_earliest] 조회 실패")
+        raise
+
     rows = resp.json()
 
     if not rows:
@@ -120,7 +97,10 @@ def ingest_road_closures(end_date: str | None = None, bronze_root: Path = BRONZE
         f"AND WorkStartDate < '{end_date}T00:00:00'"
     )
 
-    records = _fetch_all_pages(where_clause=where_clause)
+    # 정렬 기준 컬럼이 마땅치 않아(고유 permitnumber 같은 게 없음) Socrata
+    # 내부 행 식별자인 :id 하나만으로 keyset 페이지네이션한다 — 유일성만
+    # 보장되면 되고 순서 자체엔 의미가 없어서 이걸로 충분하다.
+    records = fetch_all(BASE_URL, where=where_clause, order=":id")
     df = pd.DataFrame.from_records(records)
 
     df["_ingested_at"] = datetime.now(timezone.utc).isoformat()
