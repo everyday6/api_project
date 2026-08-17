@@ -84,6 +84,32 @@ def build_silver(
             filename = bronze_result["filename"]
             bronze_path = bronze_result["bronze_path"]
 
+            silver_path = (
+                SILVER_DIR /
+                Path(filename).stem
+            )
+
+            # -----------------------------------------
+            # 이미 처리된 파일이면 건너뛰기
+            # -----------------------------------------
+            #
+            # 디렉토리 존재 여부만 보면 executor가 쓰는 도중에 죽어서
+            # 남은 불완전한 결과물도 "완료"로 착각할 수 있다. Spark는
+            # 쓰기가 성공하면 _SUCCESS 마커 파일을 남기므로 그걸로 확인한다.
+
+            if (silver_path / "_SUCCESS").exists():
+
+                logger.info(
+                    f"이미 처리된 파일입니다. 건너뜁니다 : {filename}"
+                )
+
+                results.append({
+                    "filename": filename,
+                    "silver_path": str(silver_path),
+                })
+
+                continue
+
             logger.info(
                 f"Silver 변환 시작 : {filename}"
             )
@@ -108,11 +134,6 @@ def build_silver(
             # -----------------------------------------
             # 파일별 Silver 저장
             # -----------------------------------------
-
-            silver_path = (
-                SILVER_DIR /
-                Path(filename).stem
-            )
 
             silver_df.write.mode(
                 "overwrite"
