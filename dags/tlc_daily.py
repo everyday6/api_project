@@ -22,10 +22,11 @@ Silver
 아무 일도 하지 않고 정상 종료된다.
 """
 
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from airflow.decorators import dag
 
+from src.common.alerts import notify_slack_failure
 from src.common.downloader import (
     generate_incremental_download_list,
     download_file,
@@ -43,6 +44,16 @@ from src.tlc.silver import (
     build_silver,
 )
 
+# download_file.expand()가 파일 개수만큼 태스크 인스턴스를 만드는 mapped
+# task라서, default_args에 on_failure_callback을 넣으면 실패한 인덱스마다
+# Slack이 따로 온다(예: 120개 중 20개 실패 -> 알림 20개). retries만 여기
+# 걸고, on_failure_callback은 아래 @dag()에 DAG 레벨로 따로 걸어서 이 DAG
+# run 전체가 실패로 확정될 때 딱 한 번만 오게 한다.
+default_args = {
+    "retries": 3,
+    "retry_delay": timedelta(minutes=5),
+}
+
 
 # =========================================================
 # DAG
@@ -57,6 +68,8 @@ from src.tlc.silver import (
     # 같은 파일(tmp 경로가 run별로 안 나뉘어 있음)을 두고 충돌할 수 있어서
     # 동시에 1개만 실행되게 제한
     max_active_runs=1,
+    default_args=default_args,
+    on_failure_callback=notify_slack_failure,
     tags=["TLC", "daily"],
 )
 def tlc_daily():

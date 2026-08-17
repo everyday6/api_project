@@ -20,6 +20,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.sdk import Asset
 
+from src.common.alerts import notify_slack_failure
 from src.taxi_zone.bronze import (
     ingest_taxi_zone_lookup,
     ingest_taxi_zone_shapefile,
@@ -29,6 +30,7 @@ from src.taxi_zone.bronze import (
 
 default_args = {
     "retries": 2,
+    "on_failure_callback": notify_slack_failure,
 }
 
 with DAG(

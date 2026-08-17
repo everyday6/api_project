@@ -29,6 +29,7 @@ import pandas as pd
 from airflow import DAG
 from airflow.operators.python import PythonOperator, get_current_context
 
+from src.common.alerts import notify_slack_failure
 from src.common.spark import get_spark
 from src.tlc.gold import (
     build_dim_segment_tlc_volume,
@@ -39,6 +40,7 @@ from src.tlc.gold import (
 default_args = {
     "retries": 3,
     "retry_delay": timedelta(minutes=5),
+    "on_failure_callback": notify_slack_failure,
 }
 
 # collect_zone_hour_counts가 반환하는 DataFrame의 컬럼 순서.
