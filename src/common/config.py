@@ -70,6 +70,15 @@ GOLD_DIR = DATA_DIR / "gold"
 # HEAD / GET Timeout
 HTTP_TIMEOUT = 60
 
+# 한 페이지 요청 전체(내부 재연결 포함)에 거는 하드 데드라인. requests의
+# timeout은 소켓 read 호출 "한 번"에만 걸려서, 서버가 응답을 아주 느리게
+# 찔끔찔끔 흘려보내면(각 read는 HTTP_TIMEOUT 안쪽이라 안 걸림) 전체 요청은
+# 시간제한 없이 계속 매달릴 수 있다(실제로 겪음 — 첫 페이지 요청이 1시간
+# 넘게 안 끊기고 매달려 있다가 서버 쪽에서 강제로 RemoteDisconnected로 끊음).
+# src/common/socrata.py의 _get_page가 이 값으로 별도 스레드에 하드 데드라인을
+# 건다.
+SOCRATA_PAGE_HARD_TIMEOUT = 90
+
 # 다운로드 Chunk 크기
 CHUNK_SIZE = 8192
 
