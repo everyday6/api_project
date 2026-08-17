@@ -178,8 +178,12 @@ def check_file_exists(
 # =========================================================
 
 @task(
-    retries=2,
+    retries=5,
     retry_delay=timedelta(minutes=1),
+    # TLC 서버가 몇 분 이상 일시적으로 403/5xx를 뱉는 경우까지
+    # 버티도록 재시도 간격을 지수적으로 늘린다 (1분 → 2분 → ... → 최대 10분).
+    retry_exponential_backoff=True,
+    max_retry_delay=timedelta(minutes=10),
 )
 def generate_download_list() -> list[dict]:
     """
@@ -339,8 +343,12 @@ def generate_incremental_download_list() -> list[dict]:
 # =========================================================
 
 @task(
-    retries=3,
+    retries=5,
     retry_delay=timedelta(minutes=1),
+    # TLC 서버가 몇 분 이상 일시적으로 403/5xx를 뱉는 경우까지
+    # 버티도록 재시도 간격을 지수적으로 늘린다 (1분 → 2분 → ... → 최대 10분).
+    retry_exponential_backoff=True,
+    max_retry_delay=timedelta(minutes=10),
     # 동시 다운로드 개수를 4개로 제한해서 대용량 파일(fhvhv 등)이
     # 네트워크 대역폭을 너무 잘게 나눠쓰지 않게 함
     pool="downloads",
