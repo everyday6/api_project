@@ -87,6 +87,14 @@
   .comp-total { display: flex; justify-content: space-between; font-size: 13px; font-weight: 600; padding-top: 8px; margin-top: 4px; border-top: 1px solid var(--rule); }
   .comp-total .v { font-family: ui-monospace, "SF Mono", monospace; }
 
+  .detail-toggle {
+    margin-top: 14px; width: 100%; background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink-muted);
+    border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12px; cursor: pointer; text-align: left;
+  }
+  .detail-toggle:hover { color: var(--ink); border-color: var(--accent); }
+  .comp-groups { display: none; }
+  .comp-groups.expanded { display: block; }
+
   .legend { padding: 16px; }
   .legend .cap { font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-muted); margin-bottom: 8px; font-weight: 600; }
   .legend .row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
@@ -112,6 +120,7 @@
   .hourly-bar.good { background: var(--good); }
   .hourly-bar.bad { background: var(--r4); }
   .hourly-bar.pinned { outline: 2px solid var(--ink); outline-offset: 1px; }
+  .hourly-bar.no-construction { opacity: .35; }
   .hourly-axis {
     display: grid; grid-template-columns: repeat(24, 1fr);
     font-size: 8.5px; color: var(--ink-muted); margin-top: 4px; font-variant-numeric: tabular-nums;
@@ -119,31 +128,78 @@
   .hourly-axis span { text-align: center; }
 
   .nearby-list { display: flex; flex-direction: column; gap: 8px; max-height: 320px; overflow-y: auto; }
+  .nearby-list.collapsed { display: none; }
+  .nearby-panel-header:hover { color: var(--ink); }
   .nearby-item {
     background: var(--panel-2); border: 1px solid var(--rule); border-radius: 8px; padding: 8px 10px;
+    cursor: pointer; transition: border-color .1s;
   }
+  .nearby-item:hover { border-color: var(--accent); }
   .nearby-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .nearby-item .street { font-size: 12.5px; font-weight: 600; }
   .nearby-item .hop { font-size: 10px; color: var(--accent); white-space: nowrap; flex: none; }
   .nearby-item .range { font-size: 11px; color: var(--ink-muted); margin-top: 3px; }
   .nearby-item .cross { font-size: 11px; color: var(--ink-muted); margin-top: 2px; }
+  .nearby-item .expand-hint { font-size: 9.5px; color: var(--ink-muted); margin-top: 4px; opacity: .7; }
+  .nearby-item .nearby-detail {
+    display: none; margin-top: 7px; padding-top: 7px; border-top: 1px dashed var(--rule);
+    font-size: 10.5px; color: var(--ink-muted); font-family: ui-monospace, "SF Mono", monospace;
+  }
+  .nearby-item.expanded .nearby-detail { display: block; }
+  .nearby-item.expanded .expand-hint { display: none; }
   .nearby-more { font-size: 11px; color: var(--ink-muted); text-align: center; padding-top: 2px; }
 
-  .active-filter {
-    width: 100%; background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink);
-    border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12.5px; margin-bottom: 8px;
+  /* ---------- 하단 중앙 플로팅 패널: "이 날짜에 새로 올라온 공사" ---------- */
+  .bottom-panel {
+    position: absolute; left: 50%; bottom: 16px; transform: translateX(-50%);
+    width: calc(100% - 48px);
+    max-height: 30vh;
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 10px;
+    padding: 10px 14px 12px; box-shadow: 0 10px 30px rgba(0,0,0,.45);
+    display: flex; flex-direction: column; gap: 8px;
   }
-  .active-list { display: flex; flex-direction: column; gap: 6px; max-height: 280px; overflow-y: auto; }
+  .bottom-panel-header { display: flex; align-items: center; gap: 12px; flex: none; }
+  .bottom-panel-header .cap {
+    font-size: 10px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-muted);
+    font-weight: 600; white-space: nowrap; flex: none;
+  }
+  .active-filter {
+    flex: 1; min-width: 0; background: var(--panel-2); border: 1px solid var(--rule); color: var(--ink);
+    border-radius: 6px; padding: 7px 9px; font: inherit; font-size: 12.5px;
+  }
+  .active-list {
+    display: flex; flex-direction: column; gap: 7px;
+    overflow-y: auto; overflow-x: hidden;
+  }
   .active-item {
-    background: var(--panel-2); border: 1px solid var(--rule); border-radius: 8px; padding: 7px 9px;
+    background: var(--panel-2); border: 1px solid var(--rule); border-radius: 8px; padding: 9px 12px;
     cursor: pointer; transition: border-color .1s;
+    display: flex; gap: 10px; align-items: flex-start;
   }
   .active-item:hover { border-color: var(--accent); }
-  .active-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
-  .active-item .street { font-size: 12px; font-weight: 600; }
-  .active-item .src { font-size: 9.5px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .04em; white-space: nowrap; flex: none; }
-  .active-item .cross { font-size: 10.5px; color: var(--ink-muted); margin-top: 2px; }
-  .active-item .range { font-size: 10.5px; color: var(--ink-muted); margin-top: 1px; }
+  .active-item .active-item-num {
+    flex: none; width: 20px; height: 20px; border-radius: 50%;
+    background: var(--panel); border: 1px solid var(--rule); color: var(--ink-muted);
+    font-size: 10px; font-weight: 700; font-variant-numeric: tabular-nums;
+    display: flex; align-items: center; justify-content: center;
+  }
+  .active-item .active-item-body { flex: 1; min-width: 0; }
+  .active-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .active-item .street { font-size: 13px; font-weight: 600; }
+  .active-item .permit-type {
+    font-size: 9.5px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .02em;
+    background: var(--panel); border: 1px solid var(--rule); border-radius: 999px; padding: 2px 9px;
+    white-space: nowrap; flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis;
+  }
+  .active-item .cross { font-size: 11.5px; color: var(--ink-muted); margin-top: 3px; }
+  .active-item .detail-lines {
+    margin-top: 7px; padding-left: 10px; border-left: 2px solid var(--rule);
+    display: flex; flex-direction: column; gap: 2px;
+  }
+  .active-item .detail-line { font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
+  .active-item .detail-line.work-hours { color: var(--ink); }
+  .active-item .detail-line.embargo { color: var(--r4); }
+  .active-list .nearby-more { text-align: center; padding: 6px 0; }
 
   .zoomhint {
     position: absolute; top: 12px; right: 12px; font-size: 10.5px; color: var(--ink-muted);
@@ -169,6 +225,14 @@
     <div class="status" id="status">불러오는 중...</div>
     <div class="zoomhint">드래그로 이동 · 스크롤로 확대/축소 · 클릭으로 세그먼트 선택</div>
     <div class="hover-tooltip" id="hover-tooltip"></div>
+
+    <div class="bottom-panel" id="bottom-panel">
+      <div class="bottom-panel-header">
+        <span class="cap">이 날짜에 새로 올라온 공사 (<span id="active-count">0</span>건)</span>
+        <input class="active-filter" id="active-filter" type="text" placeholder="도로명으로 검색 (예: BROADWAY)">
+      </div>
+      <div class="active-list" id="active-list"></div>
+    </div>
   </div>
 
   <div class="side">
@@ -187,12 +251,6 @@
       <div class="hint" id="date-hint">지도에서 세그먼트를 클릭해도 됩니다. 조회 시각은 현재 시각(America/New_York) 기준으로 자동 적용됩니다. closure_penalty는 선택한 날짜/시각에 실제로 활성인 공사·통제만 반영합니다.</div>
     </div>
 
-    <div class="side-section">
-      <div class="cap" style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); font-weight:600; margin-bottom:8px;">이 날짜에 새로 올라온 공사 (<span id="active-count">0</span>건)</div>
-      <input class="active-filter" id="active-filter" type="text" placeholder="도로명으로 검색 (예: BROADWAY)">
-      <div class="active-list" id="active-list"></div>
-    </div>
-
     <div class="side-section detail" id="detail">
       <div class="empty">세그먼트를 검색하거나 지도에서 클릭하세요.</div>
     </div>
@@ -201,7 +259,7 @@
       <div class="hourly-top">
         <div>
           <div class="hourly-title">시간대별 traffic_score</div>
-          <div class="hourly-desc">막대 하나가 시각 하나입니다(0~23시).</div>
+          <div class="hourly-desc" id="hourly-desc">막대 하나가 시각 하나입니다(0~23시).</div>
         </div>
         <div class="hourly-badges">
           <div class="badge good"><span class="badge-label">권장</span><span class="badge-value" id="best-hour">--:00</span></div>
@@ -213,7 +271,10 @@
     </div>
 
     <div class="side-section" id="nearby-panel" style="display:none;">
-      <div class="cap" style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); font-weight:600; margin-bottom:8px;">현재 영향받는 공사 (<span id="nearby-count">0</span>건)</div>
+      <div class="cap nearby-panel-header" id="nearby-panel-toggle" style="font-size:10px; text-transform:uppercase; letter-spacing:.08em; color:var(--ink-muted); font-weight:600; margin-bottom:8px; cursor:pointer; display:flex; justify-content:space-between; align-items:center;">
+        <span>현재 영향받는 공사 (<span id="nearby-count">0</span>건)</span>
+        <span id="nearby-toggle-arrow">▾</span>
+      </div>
       <div class="nearby-list" id="nearby-list"></div>
     </div>
 
@@ -240,6 +301,42 @@ let buckets = [[],[],[],[],[]];
 let missing = [];
 let selectedSegmentId = null;
 let scored = []; // 유효한 traffic_score 오름차순 정렬본 — 0~100 정규화(percentile) 계산용
+
+let detailExpanded = false;    // 우측 패널 "세부 내용" 펼침 상태 — 재렌더링에도 유지
+
+// "이 날짜에 새로 올라온 공사" 목록에서 특정 공사를 클릭해 들어왔을 때, 그
+// 공사 하나의 work_hours({start_hour, end_hour, days_code} 또는 work_hours가
+// 없으면 null) — 시간대별 그래프의 "공사 시간대" 흐리게 처리 기준으로 쓴다.
+// 그냥 지도 클릭/검색으로 들어왔으면 null(그 세그먼트 전체 합산 영향 기준으로
+// 되돌아감) — selectSegment()가 관리한다.
+let currentPermitWorkHours = null;
+
+// closure_penalty.py의 DAY_CODE_ACTIVE와 동일한 규칙(요일 코드별로 활성인
+// 요일). 여기 없는 코드(OTHER 등)나 코드 자체가 없으면 "항상 활성"(백엔드와
+// 동일 — 모르면 안전하게 넓게 잡음).
+const DAY_CODE_ACTIVE_JS = {
+  WEEKDAY: wd => wd < 5, WEEKEND: wd => wd >= 5, SATURDAY: wd => wd === 5,
+  SUNDAY: wd => wd === 6, DAILY: () => true, EXCEPT_SUNDAY: wd => wd !== 6,
+};
+
+// "YYYY-MM-DD" -> 0(월)~6(일), Python date.weekday()와 동일한 규칙.
+function weekdayOf(dateStr) {
+  const jsDay = new Date(`${dateStr}T00:00:00Z`).getUTCDay(); // 0=일...6=토
+  return (jsDay + 6) % 7;
+}
+
+function isPermitActiveAt(permitWorkHours, dateStr, hour) {
+  const { start_hour, end_hour, days_code } = permitWorkHours;
+  if (days_code) {
+    const check = DAY_CODE_ACTIVE_JS[days_code];
+    if (check && !check(weekdayOf(dateStr))) return false;
+  }
+  if (start_hour === null || end_hour === null) return true; // 시간 제약 없음 = 항상 활성
+  if (start_hour <= end_hour) return start_hour <= hour && hour < end_hour;
+  return hour >= start_hour || hour < end_hour; // 자정 넘는 야간 구간
+}
+
+let nearbyExpanded = true;     // "현재 영향받는 공사" 목록 펼침 상태 — 재렌더링에도 유지
 
 // traffic_score(demand/capacity 비율)는 절대값이 0.001~0.03처럼 작고 감이 안 와서,
 // 현재 로드된 세그먼트 모집단(맨해튼) 내에서의 백분위(0~100)로 변환해 보여준다 —
@@ -432,15 +529,50 @@ function renderLegend() {
 }
 
 // ---------- 상세 패널 (config 컴포넌트 목록을 그대로 순회해서 렌더링) ----------
+
+// innerHTML을 통째로 교체하고 나면 예전 리스너는 사라지므로 렌더링할 때마다
+// 새로 붙여야 한다 — detailExpanded 값은 그대로 유지해서, 펼쳐둔 채로 다른
+// 시간대/세그먼트를 봐도 접히지 않게 한다.
+function wireDetailToggle() {
+  const btn = document.getElementById("detail-toggle");
+  const groups = document.getElementById("comp-groups");
+  if (!btn || !groups) return;
+  groups.classList.toggle("expanded", detailExpanded);
+  btn.textContent = detailExpanded ? "세부 내용 감추기 ▴" : "세부 내용 보기 ▾";
+  btn.addEventListener("click", () => {
+    detailExpanded = !detailExpanded;
+    groups.classList.toggle("expanded", detailExpanded);
+    btn.textContent = detailExpanded ? "세부 내용 감추기 ▴" : "세부 내용 보기 ▾";
+  });
+}
+
+// traffic_score(raw) -> 0~100 정규화 퍼센타일. null-safe 래퍼(표시용 "—" 처리는 호출부에서).
+function scorePct(rawScore) {
+  const pct = percentileScore(rawScore);
+  return pct === null ? null : Math.round(pct);
+}
+
 function renderDetail(data) {
   const el = document.getElementById("detail");
   if (!data) { el.innerHTML = '<div class="empty">세그먼트를 찾을 수 없습니다.</div>'; return; }
 
-  const pct = percentileScore(data.traffic_score);
-  const scoreText = pct === null ? "—" : Math.round(pct);
+  const pct = scorePct(data.traffic_score);
+  const scoreText = pct === null ? "—" : pct;
   const rawText = data.traffic_score === null ? "—" : data.traffic_score.toFixed(6);
   const lanesText = data.lanes_total === null || data.lanes_total === undefined ? "—" : `${data.lanes_total}개`;
-  let html = `
+
+  let compHtml = "";
+  for (const [group, groupLabel] of [["demand","Demand"], ["capacity","Capacity"]]) {
+    const g = data.components[group];
+    compHtml += `<div class="comp-group"><div class="cap">${groupLabel}</div>`;
+    for (const item of g.items) {
+      const label = COMPONENT_LABELS[item.name] || item.name;
+      compHtml += `<div class="comp-row"><span>${label}</span><span class="v">${item.value.toFixed(4)}</span></div>`;
+    }
+    compHtml += `<div class="comp-total"><span>합계</span><span class="v">${g.value.toFixed(4)}</span></div></div>`;
+  }
+
+  el.innerHTML = `
     <div class="seg-id">${data.segment_id}</div>
     <div class="score-label">traffic score (정규화)</div>
     <div class="score">${scoreText}<span class="of100">${pct === null ? "" : " / 100"}</span></div>
@@ -449,22 +581,17 @@ function renderDetail(data) {
       <span class="ts-hour">${data.ts_date ?? "?"} ${String(data.ts_hour ?? "?").padStart(2, "0")}:00</span>
       <span class="lanes">차선 수: <b>${lanesText}</b></span>
     </div>
+    <button class="detail-toggle" id="detail-toggle">세부 내용 보기 ▾</button>
+    <div class="comp-groups" id="comp-groups">${compHtml}</div>
   `;
-
-  for (const [group, groupLabel] of [["demand","Demand"], ["capacity","Capacity"]]) {
-    const g = data.components[group];
-    html += `<div class="comp-group"><div class="cap">${groupLabel}</div>`;
-    for (const item of g.items) {
-      const label = COMPONENT_LABELS[item.name] || item.name;
-      html += `<div class="comp-row"><span>${label}</span><span class="v">${item.value.toFixed(4)}</span></div>`;
-    }
-    html += `<div class="comp-total"><span>합계</span><span class="v">${g.value.toFixed(4)}</span></div></div>`;
-  }
-
-  el.innerHTML = html;
+  wireDetailToggle();
 }
 
-async function selectSegment(segmentId) {
+// permitWorkHours: "새로 올라온 공사" 목록에서 특정 공사를 클릭했을 때만
+// {start_hour, end_hour, days_code}로 넘어온다 — 그 외(지도 클릭/검색)는
+// 안 넘기면 null로 리셋되어 세그먼트 전체 합산 기준으로 돌아간다.
+async function selectSegment(segmentId, permitWorkHours = null) {
+  currentPermitWorkHours = permitWorkHours;
   try {
     const res = await fetch(`/api/traffic_score/${segmentId}${hourQuery()}`);
     if (!res.ok) { renderDetail(null); hideHourlyPanel(); hideNearbyPanel(); return; }
@@ -509,6 +636,23 @@ async function loadHourlyProfile(segmentId) {
   }
 }
 
+// 이 시각에 "공사 시간대"인지 판정한다 — 두 가지 기준 중 하나를 쓴다.
+// 1) currentPermitWorkHours가 있으면("이 날짜에 새로 올라온 공사" 목록에서
+//    특정 공사를 클릭해 들어온 경우): 그 공사 하나의 work_hours만 기준으로
+//    삼는다 — 세그먼트 전체 합산 영향(다른 근처 공사)이 아니라 "이 공사가
+//    실제로 언제 활성인지"를 보여주기 위함. 밀집 구역이라 다른 공사가 24시간
+//    내내 겹쳐 있으면 합산 기준으로는 절대 안 흐려지는 문제가 있었음.
+// 2) 없으면(지도 클릭/검색으로 그냥 세그먼트를 본 경우): data[h].components.
+//    capacity.items의 closure_penalty 값 — 0(또는 결측)이면 그 시각엔 주변에
+//    활성인 공사/통제 영향이 전혀 없다는 뜻(세그먼트 전체 합산 기준).
+function hourHasConstructionImpact(hourData, hour) {
+  if (currentPermitWorkHours) {
+    return isPermitActiveAt(currentPermitWorkHours, hourData.ts_date || selectedDate, hour);
+  }
+  const item = hourData?.components?.capacity?.items?.find(i => i.name === "closure_penalty");
+  return !!item && item.value !== 0;
+}
+
 function renderHourlyPanel(segmentId, data) {
   currentHourlyData = data;
   const validIdx = [];
@@ -517,15 +661,35 @@ function renderHourlyPanel(segmentId, data) {
   }
   if (validIdx.length === 0) { hideHourlyPanel(); return; }
 
-  let bestIdx = validIdx[0], worstIdx = validIdx[0];
-  for (const h of validIdx) {
-    if (data[h].traffic_score < data[bestIdx].traffic_score) bestIdx = h;
-    if (data[h].traffic_score > data[worstIdx].traffic_score) worstIdx = h;
-  }
-  const maxScore = data[worstIdx].traffic_score;
+  // "권장/회피"는 공사 시간대(흐리게 처리되지 않은, 실제로 공사 영향이 있는
+  // 시간) 안에서만 고른다 — 공사와 무관한 시간까지 같이 비교하면 "회피해야
+  // 할 시간"이 사실 공사 영향이 전혀 없는 시간이 되어버려 의미가 없어진다.
+  const constructionIdx = validIdx.filter(h => hourHasConstructionImpact(data[h], h));
 
-  document.getElementById("best-hour").textContent = `${String(bestIdx).padStart(2, "0")}:00`;
-  document.getElementById("worst-hour").textContent = `${String(worstIdx).padStart(2, "0")}:00`;
+  let bestIdx = null, worstIdx = null;
+  if (constructionIdx.length > 0) {
+    bestIdx = constructionIdx[0];
+    worstIdx = constructionIdx[0];
+    for (const h of constructionIdx) {
+      if (data[h].traffic_score < data[bestIdx].traffic_score) bestIdx = h;
+      if (data[h].traffic_score > data[worstIdx].traffic_score) worstIdx = h;
+    }
+  }
+
+  // 막대 높이 스케일은 하루 전체(공사 시간대 밖 포함) 최댓값 기준 — 권장/회피
+  // 선정 범위와 별개로, 흐린 막대도 실제 값 비례로 정확히 그려야 하기 때문.
+  let maxScore = 0;
+  for (const h of validIdx) {
+    if (data[h].traffic_score > maxScore) maxScore = data[h].traffic_score;
+  }
+
+  document.getElementById("best-hour").textContent = bestIdx === null ? "—:00" : `${String(bestIdx).padStart(2, "0")}:00`;
+  document.getElementById("worst-hour").textContent = worstIdx === null ? "—:00" : `${String(worstIdx).padStart(2, "0")}:00`;
+
+  const basisText = currentPermitWorkHours ? "이 공사의 작업 가능 시간 기준" : "이 세그먼트 전체 합산 영향 기준";
+  document.getElementById("hourly-desc").textContent = constructionIdx.length > 0
+    ? `막대 하나가 시각 하나입니다(0~23시, ${basisText}). 흐린 막대 = 공사 시간대 아님. 권장/회피는 공사 시간대 안에서만 고릅니다.`
+    : `막대 하나가 시각 하나입니다(0~23시). 오늘은 활성 공사 영향이 없습니다(${basisText}).`;
 
   const barsEl = document.getElementById("hourly-bars");
   barsEl.innerHTML = "";
@@ -534,6 +698,7 @@ function renderHourlyPanel(segmentId, data) {
     bar.className = "hourly-bar";
     if (h === bestIdx) bar.classList.add("good");
     else if (h === worstIdx) bar.classList.add("bad");
+    if (!hourHasConstructionImpact(data[h], h)) bar.classList.add("no-construction");
 
     const score = data[h].traffic_score;
     const pct = (score !== null && maxScore > 0) ? Math.max(4, (score / maxScore) * 100) : 4;
@@ -545,7 +710,8 @@ function renderHourlyPanel(segmentId, data) {
     bar.addEventListener("pointermove", (e) => {
       const hourPct = percentileScore(score);
       const scoreText = hourPct === null ? "결측" : `${Math.round(hourPct)} / 100`;
-      showHoverTooltip(e, `<b>${String(h).padStart(2, "0")}:00</b><br>traffic score: <b>${scoreText}</b>`);
+      const constructionText = hourHasConstructionImpact(data[h], h) ? "" : "<br><span style=\"color:var(--ink-muted)\">공사 시간대 아님</span>";
+      showHoverTooltip(e, `<b>${String(h).padStart(2, "0")}:00</b><br>traffic score: <b>${scoreText}</b>${constructionText}`);
     });
     bar.addEventListener("pointerleave", hideHoverTooltip);
     bar.addEventListener("click", () => {
@@ -564,6 +730,12 @@ function renderHourlyPanel(segmentId, data) {
 function hideNearbyPanel() {
   document.getElementById("nearby-panel").style.display = "none";
 }
+
+document.getElementById("nearby-panel-toggle").addEventListener("click", () => {
+  nearbyExpanded = !nearbyExpanded;
+  document.getElementById("nearby-list").classList.toggle("collapsed", !nearbyExpanded);
+  document.getElementById("nearby-toggle-arrow").textContent = nearbyExpanded ? "▾" : "▸";
+});
 
 const NEARBY_DISPLAY_LIMIT = 15;
 
@@ -587,12 +759,16 @@ function renderNearbyClosures(items) {
   const panel = document.getElementById("nearby-panel");
   const list = document.getElementById("nearby-list");
   document.getElementById("nearby-count").textContent = items.length.toLocaleString();
+  list.classList.toggle("collapsed", !nearbyExpanded);
+  document.getElementById("nearby-toggle-arrow").textContent = nearbyExpanded ? "▾" : "▸";
 
   if (items.length === 0) {
     list.innerHTML = '<div class="empty" style="font-size:12px; color:var(--ink-muted);">현재 활성인 공사/통제가 없습니다.</div>';
     panel.style.display = "block";
     return;
   }
+
+  const sourceLabel = { construction: "공사", road_closure: "도로 통제" };
 
   list.innerHTML = "";
   for (const item of items.slice(0, NEARBY_DISPLAY_LIMIT)) {
@@ -602,7 +778,14 @@ function renderNearbyClosures(items) {
       <div class="row1"><span class="street">${item.on_street}</span><span class="hop">${item.hop_label}</span></div>
       <div class="cross">${item.from_street} ~ ${item.to_street}</div>
       <div class="range">${formatDate(item.work_start_ts)} ~ ${formatDate(item.work_end_ts)}${item.purpose ? " · " + item.purpose : ""}</div>
+      <div class="expand-hint">클릭해서 자세히 보기 ▾</div>
+      <div class="nearby-detail">
+        segment_id: ${item.segment_id}<br>
+        source: ${sourceLabel[item.source] || item.source}<br>
+        hop: ${item.hop}
+      </div>
     `;
+    div.addEventListener("click", () => div.classList.toggle("expanded"));
     list.appendChild(div);
   }
   if (items.length > NEARBY_DISPLAY_LIMIT) {
@@ -631,6 +814,16 @@ async function loadActiveClosures() {
   renderActiveList();
 }
 
+// work_days_code(closure_penalty의 DAY_CODE_ACTIVE와 동일한 값 집합) -> 한글 표시.
+const DAY_CODE_LABELS = {
+  WEEKDAY: "평일", WEEKEND: "주말", SATURDAY: "토요일", SUNDAY: "일요일",
+  DAILY: "매일", EXCEPT_SUNDAY: "일요일 제외 매일", OTHER: "특정 요일",
+};
+
+function formatHourRange(startHour, endHour) {
+  return `${String(startHour).padStart(2, "0")}~${String(endHour).padStart(2, "0")}시`;
+}
+
 function renderActiveList() {
   document.getElementById("active-count").textContent = NEWLY_ISSUED_CLOSURES.length.toLocaleString();
 
@@ -647,20 +840,46 @@ function renderActiveList() {
     return;
   }
 
-  for (const item of filtered.slice(0, ACTIVE_DISPLAY_LIMIT)) {
+  const shown = filtered.slice(0, ACTIVE_DISPLAY_LIMIT);
+  shown.forEach((item, i) => {
     const div = document.createElement("div");
     div.className = "active-item";
+
+    let detailLines = `
+      <div class="detail-line">발급일: ${formatDate(item.permit_issue_ts)}</div>
+      <div class="detail-line">공사기간: ${formatDate(item.work_start_ts)} ~ ${formatDate(item.work_end_ts)}</div>
+    `;
+    // 작업 가능 시간대(work_hours) — 명시돼 있으면("이 시간대에만 작업 허용") 표시.
+    if (item.work_start_hour !== null && item.work_end_hour !== null) {
+      const dayLabel = DAY_CODE_LABELS[item.work_days_code] || item.work_days_code || "";
+      detailLines += `<div class="detail-line work-hours">작업 가능 시간: ${dayLabel} ${formatHourRange(item.work_start_hour, item.work_end_hour)}</div>`;
+    }
+    // embargo(행사 때문에 작업 임시 중단) — 있으면 전부 표시.
+    for (const em of (item.embargoes || [])) {
+      const dateRange = em.start_date === em.end_date ? em.start_date : `${em.start_date} ~ ${em.end_date}`;
+      detailLines += `<div class="detail-line embargo">⛔ 작업 중단: ${dateRange} ${formatHourRange(em.start_hour, em.end_hour)} — ${em.reason}</div>`;
+    }
+
     div.innerHTML = `
-      <div class="row1"><span class="street">${item.on_street}</span></div>
-      <div class="cross">${item.from_street} ~ ${item.to_street}</div>
-      <div class="range">발급일 ${formatDate(item.permit_issue_ts)} · 공사기간 ${formatDate(item.work_start_ts)} ~ ${formatDate(item.work_end_ts)}</div>
+      <span class="active-item-num">${i + 1}</span>
+      <div class="active-item-body">
+        <div class="row1">
+          <span class="street">${item.on_street}</span>
+          ${item.permit_type ? `<span class="permit-type">${item.permit_type}</span>` : ""}
+        </div>
+        <div class="cross">${item.from_street} ~ ${item.to_street}</div>
+        <div class="detail-lines">${detailLines}</div>
+      </div>
     `;
     div.addEventListener("click", () => {
-      selectSegment(item.segment_id);
+      const workHours = (item.work_start_hour !== null && item.work_end_hour !== null)
+        ? { start_hour: item.work_start_hour, end_hour: item.work_end_hour, days_code: item.work_days_code }
+        : null;
+      selectSegment(item.segment_id, workHours);
       panToSegment(item.segment_id);
     });
     list.appendChild(div);
-  }
+  });
   if (filtered.length > ACTIVE_DISPLAY_LIMIT) {
     const more = document.createElement("div");
     more.className = "nearby-more";
@@ -692,7 +911,9 @@ async function applyDateChange() {
   try {
     await Promise.all([loadMapData(), loadActiveClosures()]);
     if (selectedSegmentId) {
-      await selectSegment(selectedSegmentId);
+      // currentPermitWorkHours를 그대로 넘겨서 날짜만 바뀌어도 "특정 공사
+      // 기준" 보기가 유지되게 한다(selectSegment 인자로 안 넘기면 리셋됨).
+      await selectSegment(selectedSegmentId, currentPermitWorkHours);
     } else {
       draw();
     }

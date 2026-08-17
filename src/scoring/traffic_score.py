@@ -381,6 +381,21 @@ def get_active_closures(ts_hour: int | None = None, ts_date: str | None = None) 
     )
 
 
+def _load_permit_types() -> pd.DataFrame:
+    """공사 permit_id -> permit_type(공사 종류) 매핑. 요청마다 다시 안 읽도록 캐싱."""
+    if "permit_types" not in _cache:
+        _cache["permit_types"] = closure_penalty.load_permit_types()
+    return _cache["permit_types"]
+
+
+def _load_embargoes_by_permit() -> dict[str, list[dict]]:
+    """permit_id -> embargo 기간 목록. extract_work_embargoes()가 Bronze
+    전체를 스캔해 비용이 있어 요청마다 다시 계산하지 않도록 캐싱한다."""
+    if "embargoes_by_permit" not in _cache:
+        _cache["embargoes_by_permit"] = closure_penalty.load_embargoes_by_permit()
+    return _cache["embargoes_by_permit"]
+
+
 def get_newly_issued_closures(ts_date: str | None = None) -> list[dict]:
     """ts_date에 새로 발급된 공사 permit 목록 — get_active_closures()가 "그
     날짜에 진행 중인지"를 보는 것과 달리 "그 날짜에 허가가 올라왔는지"가
@@ -392,6 +407,8 @@ def get_newly_issued_closures(ts_date: str | None = None) -> list[dict]:
     return closure_penalty.get_newly_issued_closures(
         mapping_dt=_latest_mapping_dt(),
         query_date=ts_date,
+        permit_types=_load_permit_types(),
+        embargoes_by_permit=_load_embargoes_by_permit(),
     )
 
 

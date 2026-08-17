@@ -68,9 +68,10 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import SILVER_DIR
+from src.common.config import GOLD_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
+from src.construction_stipulations.silver import extract_work_embargoes
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.lion.silver import DIM_SEGMENT_PATH
 
@@ -79,6 +80,7 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="closure_penalty")
 OUT_SOURCE = "dim_segment_closure_penalty"
 MAP_ROAD_CONTROL_SEGMENT_DIR = SILVER_DIR / "map_road_control_segment"
 MAP_ROAD_CLOSURE_SEGMENT_DIR = SILVER_DIR / "map_road_closure_segment"
+CONSTRUCTION_GOLD_DIR = GOLD_DIR / "construction"
 
 MAX_HOPS = 3
 # TODO(팀 검토 필요): 근거 없는 초안 — "홉이 멀수록 영향이 줄어든다"는 정성적
@@ -117,12 +119,24 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     construction = pd.read_parquet(
         construction_path,
         columns=[
-            "permit_id", "segment_id", "work_start_ts", "work_end_ts",
-            "work_start_hour", "work_end_hour", "work_days_code",
+            "permit_id", "segment_id", "on_street", "from_street", "to_street",
+            "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
         ],
     )
     construction = construction[construction["segment_id"].notna()]
-    construction = construction.drop_duplicates(subset=["permit_id", "segment_id"])
+    # permit_id만으로 중복 제거하면 안 된다 — NYC DOT는 같은 물리적 공사 현장도
+    # 규제 항목(장비 배치/자재 적치/도로·보도 점용 등)마다 permit_id를 따로
+    # 발급해서, 한 현장이 permit_id 5~30개로 쪼개진 경우가 흔하다(get_newly_issued_
+    # closures()에서 먼저 발견한 문제와 동일 원인). 이걸 그대로 두면 "물리적으로
+    # 하나인 공사"가 intensity 계산에서 여러 건으로 잡혀 closure_penalty가
+    # 실제보다 부풀려진다(실측: 세그먼트 하나에서 permit_id 기준 intensity가
+    # 현장 기준의 2배 이상, 극단적으로는 658 vs 178까지 벌어짐 — 그 결과
+    # 이미 대부분 세그먼트가 포화 곡선 상단에 몰려 있어서 신규 permit 하나를
+    # 추가해도 marginal 영향이 거의 안 보였음). road_closures 쪽과 동일하게
+    # (주소+기간+segment) 기준으로 묶어서 "물리적으로 같은 현장"을 하나로 취급한다.
+    construction = construction.drop_duplicates(
+        subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
+    )
     construction = construction[
         ["segment_id", "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
     ]
@@ -361,7 +375,46 @@ def get_active_closures(mapping_dt: str, query_date: str, hour: int) -> list[dic
     return rows
 
 
-def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
+def load_permit_types() -> pd.DataFrame:
+    """공사 permit_id -> permit_type(공사 종류, 예: "PLACE EQUIPMENT OTHER THAN
+    CRANE OR SHOV") 매핑 — construction Gold 최신 파티션에서 가져온다.
+    "이 날짜에 새로 올라온 공사" 목록에서 어떤 공사인지 보여주는 용도.
+    permit_series(대분류, 4종류뿐)보다 permit_type(154종류)이 더 구체적이라
+    이쪽을 쓴다."""
+    partitions = sorted(CONSTRUCTION_GOLD_DIR.glob("dt=*/data.parquet"))
+    if not partitions:
+        return pd.DataFrame(columns=["permit_id", "permit_type"])
+    return pd.read_parquet(partitions[-1], columns=["permit_id", "permit_type"]).drop_duplicates()
+
+
+def load_embargoes_by_permit() -> dict[str, list[dict]]:
+    """permitnumber -> 그 permit의 embargo(행사 때문에 작업 일시 중단) 기간
+    목록. "이 날짜에 새로 올라온 공사" 상세 표시(참고 정보)용이다 — embargo는
+    연중 특정 날짜에만 있는 예외적인 사건이라 closure_penalty/traffic_score
+    계산에는 반영하지 않는다(compute_hourly_penalty() docstring 참고). 하나의
+    permit이 여러 embargo 기간을 가질 수 있어 permit 기준으로 그룹핑한다."""
+    embargoes = extract_work_embargoes()
+    if embargoes.empty:
+        return {}
+
+    result: dict[str, list[dict]] = {}
+    for row in embargoes.itertuples(index=False):
+        result.setdefault(row.permitnumber, []).append({
+            "start_date": row.embargo_start_date.isoformat(),
+            "end_date": row.embargo_end_date.isoformat(),
+            "start_hour": int(row.embargo_start_hour),
+            "end_hour": int(row.embargo_end_hour),
+            "reason": row.embargo_reason,
+        })
+    return result
+
+
+def get_newly_issued_closures(
+    mapping_dt: str,
+    query_date: str,
+    permit_types: pd.DataFrame | None = None,
+    embargoes_by_permit: dict[str, list[dict]] | None = None,
+) -> list[dict]:
     """
     query_date에 새로 발급된(permit_issue_ts) 공사 permit 목록 —
     get_active_closures()가 "그 날짜에 공사가 진행 중인지"를 보는 것과 달리
@@ -376,9 +429,16 @@ def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
     보도 점용/폐기물 컨테이너 등)마다 permit_id를 따로 발급한다 — 그래서
     (on_street, from_street, to_street, work_start_ts, work_end_ts,
     segment_id)가 완전히 같은 permit이 5~6건씩 나오는 경우가 흔하다(전체
-    데이터 기준 4만7천여 그룹, 심하면 한 그룹에 30건 이상). permit_type을
-    보여주지 않는 이 목록에서는 사용자에게 "완전 중복"으로 보이므로, 이
-    조합이 같은 permit들은 가장 먼저 발급된 1건만 대표로 남긴다.
+    데이터 기준 4만7천여 그룹, 심하면 한 그룹에 30건 이상). 이 조합이 같은
+    permit들은 가장 먼저 발급된 1건만 대표로 남긴다 — 대신 permit_type을
+    같이 내려줘서 "왜 여러 건처럼 보였는지"(규제 항목이 다름)를 사용자가
+    확인할 수 있게 한다.
+
+    permit_types/embargoes_by_permit을 넘기면 각각 permit_type(공사 종류),
+    embargoes(행사로 인한 임시 중단 기간 목록)를 결과에 붙인다 — 둘 다
+    load에 비용이 있어(embargoes는 특히 Bronze 전체 스캔) 호출부가 캐싱해서
+    넘기는 걸 전제로 한다(traffic_score.py 참고). 안 넘기면(None) 각각
+    permit_type=None, embargoes=[]로 채운다.
 
     발급 시각 오름차순으로 정렬해서 반환한다.
     """
@@ -401,17 +461,29 @@ def get_newly_issued_closures(mapping_dt: str, query_date: str) -> list[dict]:
         as_index=False,
     ).first()
 
+    if permit_types is not None and not permit_types.empty:
+        representative = representative.merge(permit_types, on="permit_id", how="left")
+    else:
+        representative["permit_type"] = None
+
+    embargoes_by_permit = embargoes_by_permit or {}
+
     rows = []
     for row in representative.itertuples(index=False):
         rows.append({
             "segment_id": row.segment_id,
             "permit_id": row.permit_id,
+            "permit_type": None if pd.isna(row.permit_type) else row.permit_type,
             "on_street": row.on_street,
             "from_street": row.from_street,
             "to_street": row.to_street,
             "work_start_ts": None if pd.isna(row.work_start_ts) else str(row.work_start_ts),
             "work_end_ts": None if pd.isna(row.work_end_ts) else str(row.work_end_ts),
             "permit_issue_ts": None if pd.isna(row.permit_issue_ts) else str(row.permit_issue_ts),
+            "work_start_hour": None if pd.isna(row.work_start_hour) else int(row.work_start_hour),
+            "work_end_hour": None if pd.isna(row.work_end_hour) else int(row.work_end_hour),
+            "work_days_code": row.work_days_code,
+            "embargoes": embargoes_by_permit.get(row.permit_id, []),
         })
 
     rows.sort(key=lambda r: r["permit_issue_ts"] or "")
@@ -493,7 +565,16 @@ def compute_hourly_penalty(
     capacity_by_segment: dict,
 ) -> pd.DataFrame:
     """query_date 기준 날짜 범위로 먼저 걸러낸 뒤, 0~23시 각각에 대해 그 시각
-    기준 활성인 레코드만으로 감쇠/합산/용량감소를 계산한다."""
+    기준 활성인 레코드만으로 감쇠/합산/용량감소를 계산한다.
+
+    embargo(행사 때문에 작업이 일시 중단되는 기간)는 여기서 반영하지 않는다 —
+    한 번 시도했다가 되돌렸다. embargo는 연중 특정 날짜에만 있는 예외적인
+    사건인데, 이걸 traffic_score(평소 언제 공사 영향이 있는지 보여주는 지표)에
+    바로 반영하면 "그날 마침 대형 행사가 있었는지"에 따라 평소 패턴이 왜곡돼
+    보인다(실측: Summer Streets embargo가 걸린 날 하루 전체 공사 영향이
+    0으로 보였음). embargo 정보는 대신 get_newly_issued_closures()에서
+    "이 permit에 이런 embargo 기간이 있다"는 참고 정보로만 보여준다.
+    """
     weekday = date.fromisoformat(query_date).weekday()
     in_range = records[_date_mask(query_date, records["work_start_ts"], records["work_end_ts"])]
 
