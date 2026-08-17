@@ -24,6 +24,12 @@ from src.tlc.transform import transform
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver")
 
 
+# 청크 실행 순서. 동시에 돌 수 있는 청크 수보다 taxi_type이 많으면 누군가는
+# 대기하게 되므로, 제일 오래 걸리는 FHVHV를 맨 앞에 둬서 대기 없이 먼저
+# 시작하게 한다.
+TAXI_TYPE_PRIORITY = ["fhvhv", "yellow", "green", "fhv"]
+
+
 @task
 def chunk_bronze_files(
     bronze_files: list[dict],
@@ -40,7 +46,11 @@ def chunk_bronze_files(
     for bronze_result in bronze_files:
         grouped.setdefault(bronze_result["taxi_type"], []).append(bronze_result)
 
-    chunks = list(grouped.values())
+    chunks = [
+        grouped[taxi_type]
+        for taxi_type in TAXI_TYPE_PRIORITY
+        if taxi_type in grouped
+    ]
 
     logger.info(
         f"Silver 청크 {len(chunks)}개 생성 (파일 {len(bronze_files)}개)"
