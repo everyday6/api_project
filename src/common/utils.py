@@ -26,14 +26,24 @@ def make_session():
 
 
 def save_parquet(df, out_dir, filename="data.parquet"):
-    """임시 파일로 쓰고 성공하면 이름을 바꾼다."""
+    """임시 파일로 쓰고 성공하면 이름을 바꾼다.
+
+    쓰다가 실패하면(디스크 부족 등) tmp 파일을 지우고 예외를 그대로
+    다시 던진다 — 실패를 감추지 않으면서, 다음 실행 때 이전 실패의
+    잔여물이 안 남게 한다.
+    """
     out_dir.mkdir(parents=True, exist_ok=True)
 
     tmp = out_dir / f"_tmp_{filename}"
     final = out_dir / filename
 
-    df.to_parquet(tmp, index=False)
-    tmp.replace(final)
+    try:
+        df.to_parquet(tmp, index=False)
+        tmp.replace(final)
+    except Exception:
+        if tmp.exists():
+            tmp.unlink()
+        raise
 
     return final
 

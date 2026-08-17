@@ -35,7 +35,11 @@ from common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_bronze")
 
 SOURCE = "construction"
-ORDER = "permitnumber"
+# permitnumber만으로는 페이지 경계에서 tie-breaker가 없어서, 같은
+# permitnumber를 가진 행이 누락되거나 중복될 수 있다(construction_stipulations,
+# road_closures에서 이미 겪은 문제와 동일 원인). Socrata 내부 고유 행 식별자인
+# :id를 같이 걸어서 경계에서 행이 새지 않게 한다.
+ORDER = "permitnumber, :id"
 
 # 프로젝트에서 필요한 범위 (road_closures/stipulations와 동일 기준)
 WHERE = "issuedworkstartdate >= '2025-01-01T00:00:00'"
