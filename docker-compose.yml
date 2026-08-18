@@ -32,6 +32,8 @@ x-airflow-env: &airflow-env
 
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
 
+  GEMINI_API_KEY: ${GEMINI_API_KEY}
+
   PYTHONPATH: /opt/airflow
 
 x-airflow-volumes: &airflow-volumes

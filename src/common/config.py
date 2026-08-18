@@ -129,6 +129,11 @@ DATASETS = {
 # build())에서만 검증한다.
 TICKETMASTER_API_KEY = os.getenv("TICKETMASTER_API_KEY")
 
+# Gemini API Key (.env에서 불러옴) — construction_stipulations의 WORK EMBARGO
+# 정규식 파싱 실패건을 LLM으로 한 번 더 시도할 때 씀(src/common/gemini.py).
+# 위와 동일한 이유로 여기서 없다고 바로 에러내지 않는다.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 # Ticketmaster Discovery API URL
 TICKETMASTER_URL = (
     "https://app.ticketmaster.com/discovery/v2/events.json"
