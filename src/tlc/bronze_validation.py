@@ -55,3 +55,66 @@ def validate_bronze_file(spark, bronze_path: str, taxi_type: str) -> list[dict]:
         asset_name=f"tlc_bronze_logonly_{asset_id}",
     )
     return [r for r in log_results if not r["success"]]
+
+
+def _validate_chunk_files(spark, bronze_chunk: list[dict]) -> list[dict]:
+    """청크(taxi_type 하나) 안 파일을 순회하며 개별 판정한다.
+
+    한 파일의 예외가 루프 밖으로 전파되지 않게 파일마다 개별 try/except로
+    감싸서, critical 실패 파일만 결과에서 제외되고 나머지는 계속 처리된다.
+    """
+
+    passed = []
+
+    for bronze_result in bronze_chunk:
+        filename = bronze_result["filename"]
+        taxi_type = bronze_result["taxi_type"]
+        bronze_path = bronze_result["bronze_path"]
+
+        try:
+            failed_checks = validate_bronze_file(spark, bronze_path, taxi_type)
+
+            for check in failed_checks:
+                logger.warning(
+                    f"검증 실패(로그만) - {filename} : "
+                    f"{check['expectation_type']} {check['kwargs']} → {check['result']}"
+                )
+
+            passed.append(bronze_result)
+
+        except CriticalValidationError as error:
+            logger.error(f"Critical 검증 실패 - {filename} : {error}")
+            notify_slack_message(
+                f":warning: TLC Bronze 검증 실패로 파일 제외\n"
+                f"*파일*: `{filename}`\n*사유*: {error}"
+            )
+
+        except Exception as error:
+            logger.error(f"Bronze 파일 검증 중 오류 - {filename} : {error}")
+            notify_slack_message(
+                f":warning: TLC Bronze 검증 중 오류로 파일 제외\n"
+                f"*파일*: `{filename}`\n*사유*: {error}"
+            )
+
+    return passed
+
+
+@task(pool="silver_pool")
+def validate_bronze_quality(bronze_chunk: list[dict]) -> list[dict]:
+    """청크(taxi_type 하나) 안 파일들을 검증하고, 통과한 파일만 반환한다.
+
+    build_silver와 같은 이유로 taxi_type당 Spark 세션 하나를 재사용하고
+    같은 silver_pool을 공유한다 — spark-worker가 1대(10코어)뿐인 유한
+    자원이라, Bronze 검증과 Silver 변환이 각자 다른 풀로 동시에 실행되면
+    풀 슬롯 상한(3개)과 무관하게 Spark 클러스터 코어가 초과 예약될 수 있다.
+    """
+
+    if not bronze_chunk:
+        return []
+
+    spark = get_spark()
+
+    try:
+        return _validate_chunk_files(spark, bronze_chunk)
+    finally:
+        spark.stop()

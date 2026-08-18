@@ -1,9 +1,11 @@
 from datetime import datetime
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from pyspark.sql import SparkSession
 
+from src.tlc import bronze_validation
 from src.tlc.bronze_validation import CriticalValidationError, validate_bronze_file
 
 
@@ -84,3 +86,33 @@ def test_validate_bronze_file_fhv_skips_passenger_count_check(tmp_path, spark):
     failed_checks = validate_bronze_file(spark, path, "fhv")
 
     assert failed_checks == []
+
+
+def test_validate_chunk_files_excludes_only_critical_failure(tmp_path, spark):
+    good_path = _write_bronze_fixture(tmp_path, "good.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+    critical_path = _write_bronze_fixture(tmp_path, "critical2.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+
+    chunk = [
+        {"filename": "good.parquet", "taxi_type": "yellow", "bronze_path": good_path},
+        {"filename": "critical2.parquet", "taxi_type": "yellow", "bronze_path": critical_path},
+    ]
+
+    with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+        passed = bronze_validation._validate_chunk_files(spark, chunk)
+
+    assert [f["filename"] for f in passed] == ["good.parquet"]
+    mock_notify.assert_called_once()
+    assert "critical2.parquet" in mock_notify.call_args.args[0]
+
+
+def test_validate_chunk_files_empty_chunk_returns_empty(spark):
+    assert bronze_validation._validate_chunk_files(spark, []) == []
