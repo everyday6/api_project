@@ -150,3 +150,85 @@ def test_validate_chunk_files_continues_after_middle_file_fails(tmp_path, spark)
     # continues past the middle failure, not just that the failure is excluded.
     assert [f["filename"] for f in passed] == ["first.parquet", "third.parquet"]
     mock_notify.assert_called_once()
+
+
+def test_validate_chunk_files_aggregates_multiple_critical_failures_into_one_message(
+    tmp_path, spark
+):
+    """critical 실패가 여러 개여도 Slack 알림은 청크당 한 번만 보내야 한다.
+
+    파일마다 알림을 보내면 Slack 웹훅 rate limit(초당 약 1개)에 걸려 알림이
+    조용히 사라질 수 있으므로, 실패한 파일들을 모아 하나의 메시지로 보낸다.
+    """
+    good_path = _write_bronze_fixture(tmp_path, "good_multi.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+    critical_path_1 = _write_bronze_fixture(tmp_path, "critical_multi_1.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+    critical_path_2 = _write_bronze_fixture(tmp_path, "critical_multi_2.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+
+    chunk = [
+        {"filename": "good_multi.parquet", "taxi_type": "yellow", "bronze_path": good_path},
+        {
+            "filename": "critical_multi_1.parquet",
+            "taxi_type": "yellow",
+            "bronze_path": critical_path_1,
+        },
+        {
+            "filename": "critical_multi_2.parquet",
+            "taxi_type": "yellow",
+            "bronze_path": critical_path_2,
+        },
+    ]
+
+    with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+        passed = bronze_validation._validate_chunk_files(spark, chunk)
+
+    assert [f["filename"] for f in passed] == ["good_multi.parquet"]
+    mock_notify.assert_called_once()
+
+    message = mock_notify.call_args.args[0]
+    assert "critical_multi_1.parquet" in message
+    assert "critical_multi_2.parquet" in message
+
+
+def test_validate_chunk_files_log_only_failure_survives_and_is_not_alerted(
+    tmp_path, spark, caplog
+):
+    """log-only 실패만 있는 파일은 알림 없이 passed에 남아야 한다."""
+    path = _write_bronze_fixture(tmp_path, "chunk_out_of_range.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "PULocationID": 999,  # 유효 범위(1~265) 밖
+        "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+
+    chunk = [
+        {
+            "filename": "chunk_out_of_range.parquet",
+            "taxi_type": "yellow",
+            "bronze_path": path,
+        },
+    ]
+
+    with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+        with caplog.at_level("WARNING"):
+            passed = bronze_validation._validate_chunk_files(spark, chunk)
+
+    assert [f["filename"] for f in passed] == ["chunk_out_of_range.parquet"]
+    mock_notify.assert_not_called()
+    assert any(
+        record.levelname == "WARNING" and "chunk_out_of_range.parquet" in record.message
+        for record in caplog.records
+    )

@@ -27,7 +27,7 @@ class CriticalValidationError(Exception):
 def validate_bronze_file(spark, bronze_path: str, taxi_type: str) -> list[dict]:
     """Bronze 파일 하나를 검증한다.
 
-    critical 검증(dropoff_datetime/dropoff_location_id 원본 컬럼 존재)이
+    critical 검증(taxi_type이 요구하는 원본 컬럼 전부의 존재 여부)이
     실패하면 CriticalValidationError를 던진다. 통과하면 log-only 검증 중
     실패한 항목들의 결과 dict 리스트를 반환한다(전부 통과면 빈 리스트).
     """
@@ -57,14 +57,29 @@ def validate_bronze_file(spark, bronze_path: str, taxi_type: str) -> list[dict]:
     return [r for r in log_results if not r["success"]]
 
 
+# 청크 하나에 대한 집계 Slack 메시지에 파일별 사유를 나열할 때, 목록이
+# 지나치게 길어지지 않도록 여기까지만 나열하고 나머지는 "...외 N건"으로
+# 줄인다.
+MAX_EXCLUDED_FILES_IN_MESSAGE = 20
+
+
 def _validate_chunk_files(spark, bronze_chunk: list[dict]) -> list[dict]:
     """청크(taxi_type 하나) 안 파일을 순회하며 개별 판정한다.
 
     한 파일의 예외가 루프 밖으로 전파되지 않게 파일마다 개별 try/except로
     감싸서, critical 실패 파일만 결과에서 제외되고 나머지는 계속 처리된다.
+
+    파일 하나가 제외될 때마다 Slack 메시지를 바로 보내지 않는다 — 초기
+    적재처럼 청크 하나에 파일이 수십 개일 수 있는 상황에서, TLC가 컬럼
+    형식을 바꾸면 같은 taxi_type의 모든 파일이 한꺼번에 critical 실패를
+    낼 수 있다. Slack Incoming Webhook은 초당 약 1개로 제한되고
+    _post_to_slack은 실패를 그대로 삼키므로, 파일마다 알림을 보내면 한도를
+    넘는 순간부터 알림이 조용히 사라진다. 그래서 제외된 파일을 모아뒀다가
+    청크가 끝난 뒤 하나로 합쳐서 보낸다.
     """
 
     passed = []
+    excluded = []
 
     for bronze_result in bronze_chunk:
         filename = bronze_result["filename"]
@@ -74,29 +89,51 @@ def _validate_chunk_files(spark, bronze_chunk: list[dict]) -> list[dict]:
         try:
             failed_checks = validate_bronze_file(spark, bronze_path, taxi_type)
 
+            passed.append(bronze_result)
+
             for check in failed_checks:
                 logger.warning(
                     f"검증 실패(로그만) - {filename} : "
-                    f"{check['expectation_type']} {check['kwargs']} → {check['result']}"
+                    f"{check['expectation_type']} {check['kwargs']} → {check['result']} "
+                    f"→ exception_info: {check['exception_info']}"
                 )
-
-            passed.append(bronze_result)
 
         except CriticalValidationError as error:
             logger.error(f"Critical 검증 실패 - {filename} : {error}")
-            notify_slack_message(
-                f":warning: TLC Bronze 검증 실패로 파일 제외\n"
-                f"*파일*: `{filename}`\n*사유*: {error}"
-            )
+            excluded.append({"filename": filename, "reason": str(error)})
 
         except Exception as error:
             logger.error(f"Bronze 파일 검증 중 오류 - {filename} : {error}")
-            notify_slack_message(
-                f":warning: TLC Bronze 검증 중 오류로 파일 제외\n"
-                f"*파일*: `{filename}`\n*사유*: {error}"
-            )
+            excluded.append({"filename": filename, "reason": str(error)})
+
+    if excluded:
+        notify_slack_message(_build_excluded_files_message(excluded))
 
     return passed
+
+
+def _build_excluded_files_message(excluded: list[dict]) -> str:
+    """제외된 파일 목록을 청크당 하나의 Slack 메시지로 합친다.
+
+    파일마다 개별 알림을 보내지 않고 청크가 끝난 뒤 한 번만 보내기 위한
+    메시지 포맷팅. 목록이 너무 길면 일부만 보여주고 나머지는 개수로
+    요약한다.
+    """
+
+    lines = [
+        ":warning: TLC Bronze 검증 실패로 파일 제외",
+        f"*제외된 파일 수*: {len(excluded)}건",
+    ]
+
+    shown = excluded[:MAX_EXCLUDED_FILES_IN_MESSAGE]
+    for item in shown:
+        lines.append(f"- `{item['filename']}`: {item['reason']}")
+
+    remaining = len(excluded) - len(shown)
+    if remaining > 0:
+        lines.append(f"...외 {remaining}건")
+
+    return "\n".join(lines)
 
 
 @task(pool="silver_pool")
