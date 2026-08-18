@@ -116,3 +116,37 @@ def test_validate_chunk_files_excludes_only_critical_failure(tmp_path, spark):
 
 def test_validate_chunk_files_empty_chunk_returns_empty(spark):
     assert bronze_validation._validate_chunk_files(spark, []) == []
+
+
+def test_validate_chunk_files_continues_after_middle_file_fails(tmp_path, spark):
+    first_path = _write_bronze_fixture(tmp_path, "first.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+    critical_path = _write_bronze_fixture(tmp_path, "critical3.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "PULocationID": 10, "DOLocationID": 20,
+        "passenger_count": 1, "trip_distance": 5.0,
+    }])
+    third_path = _write_bronze_fixture(tmp_path, "third.parquet", [{
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 9, 0),
+        "tpep_dropoff_datetime": datetime(2024, 1, 1, 9, 30),
+        "PULocationID": 30, "DOLocationID": 40,
+        "passenger_count": 2, "trip_distance": 3.0,
+    }])
+
+    chunk = [
+        {"filename": "first.parquet", "taxi_type": "yellow", "bronze_path": first_path},
+        {"filename": "critical3.parquet", "taxi_type": "yellow", "bronze_path": critical_path},
+        {"filename": "third.parquet", "taxi_type": "yellow", "bronze_path": third_path},
+    ]
+
+    with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+        passed = bronze_validation._validate_chunk_files(spark, chunk)
+
+    # first.parquet and third.parquet must BOTH survive — proving the loop
+    # continues past the middle failure, not just that the failure is excluded.
+    assert [f["filename"] for f in passed] == ["first.parquet", "third.parquet"]
+    mock_notify.assert_called_once()
