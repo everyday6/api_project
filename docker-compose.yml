@@ -53,6 +53,10 @@ services:
     image: postgres:16
     container_name: traffic-postgres
 
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
     environment:
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
@@ -78,6 +82,10 @@ services:
   redis:
     image: redis:7
     container_name: traffic-redis
+
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
 
     networks:
       - airflow-network
@@ -140,6 +148,10 @@ services:
 
     container_name: traffic-airflow-apiserver
 
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -167,6 +179,13 @@ services:
 
     container_name: traffic-airflow-scheduler
 
+    # 컨테이너가 예상 못 한 이유로 죽으면(OOM 등) Docker가 자동으로 다시
+    # 띄운다 — 이게 없으면 스케줄러/워커가 죽어도 아무도 모르고 파이프라인이
+    # 통째로 멈춘 채 방치된다(이 죽음 자체는 Slack 알림 대상이 아님 — 알림이
+    # Airflow 태스크 실행 경로 안에서 도는 코드라 스케줄러/워커가 죽으면 그
+    # 경로 자체가 멈춘다).
+    restart: unless-stopped
+
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -193,6 +212,10 @@ services:
 
     container_name: traffic-airflow-dag-processor
 
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
     depends_on:
       airflow-init:
         condition: service_completed_successfully
@@ -217,6 +240,13 @@ services:
       dockerfile: Dockerfile
 
     container_name: traffic-airflow-worker
+
+    # 컨테이너가 예상 못 한 이유로 죽으면(OOM 등) Docker가 자동으로 다시
+    # 띄운다 — 이게 없으면 스케줄러/워커가 죽어도 아무도 모르고 파이프라인이
+    # 통째로 멈춘 채 방치된다(이 죽음 자체는 Slack 알림 대상이 아님 — 알림이
+    # Airflow 태스크 실행 경로 안에서 도는 코드라 스케줄러/워커가 죽으면 그
+    # 경로 자체가 멈춘다).
+    restart: unless-stopped
 
     depends_on:
       airflow-init:
@@ -253,6 +283,10 @@ services:
 
     container_name: traffic-score-api
 
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
     environment:
       PYTHONPATH: /opt/airflow
 
@@ -285,6 +319,10 @@ services:
 
     container_name: traffic-spark-master
 
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
     environment:
       SPARK_NO_DAEMONIZE: "true"
 
@@ -316,6 +354,10 @@ services:
   spark-worker:
     image: apache/spark:4.0.4
 
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
     depends_on:
       - spark-master
 
@@ -336,6 +378,41 @@ services:
 
     networks:
       - spark-network
+
+
+  # =========================================================
+  # 컨테이너 크래시 감시
+  #
+  # restart 정책은 "죽으면 다시 살리기"만 할 뿐, 죽었다는 사실 자체는
+  # 아무도 모른다 — 특히 airflow-scheduler/airflow-worker가 죽으면
+  # on_failure_callback(Slack 실패 알림)도 그 프로세스 안에서 도는
+  # 코드라 같이 멈춘다("파이프라인이 통째로 죽었는데 알림도 안 오는"
+  # 시나리오). Docker 이벤트 스트림을 구독하다가 die 이벤트를 잡아서
+  # 대신 Slack으로 알려준다(scripts/docker_crash_monitor.py 참고).
+  #
+  # docker.sock을 마운트해야 해서(호스트 Docker 데몬에 대한 사실상
+  # 전체 권한) 신뢰할 수 있는 이미지/스크립트만 올린다 — 표준 라이브러리만
+  # 쓰는 순수 Python 스크립트 하나뿐이라 python:3.11-alpine 그대로 쓴다.
+  # =========================================================
+  crash-monitor:
+    image: docker:27-cli
+    container_name: traffic-crash-monitor
+    restart: unless-stopped
+
+    environment:
+      SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      WATCH_CONTAINERS: traffic-postgres,traffic-redis,traffic-airflow-apiserver,traffic-airflow-scheduler,traffic-airflow-dag-processor,traffic-airflow-worker,traffic-score-api,traffic-spark-master
+      POLL_INTERVAL_SECONDS: 30
+
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - ./scripts:/scripts:ro
+
+    entrypoint: []
+    command: sh /scripts/docker_crash_monitor.sh
+
+    networks:
+      - airflow-network
 
 
 # =========================================================
