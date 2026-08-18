@@ -131,6 +131,18 @@ def construction_pipeline():
         context = get_current_context()
         return validate_output(path, context["ds"])
 
+    @task(task_id="build_embargoes")
+    def build_embargoes():
+        from src.construction_stipulations.silver import build_embargoes as _build_embargoes
+        context = get_current_context()
+        return _build_embargoes(context["ds"])
+
+    @task(task_id="validate_embargoes")
+    def validate_embargoes(path: str):
+        from src.construction_stipulations.silver import validate_embargoes_output
+        context = get_current_context()
+        return validate_embargoes_output(path, context["ds"])
+
     @task(task_id="build_road_control_events")
     def build_road_control_events():
         from src.road_closures.silver import build
@@ -192,6 +204,10 @@ def construction_pipeline():
     work_hours_path = build_work_hours()
     [construction_gold_validated, stipulations_validated] >> work_hours_path
     work_hours_validated = validate_work_hours(work_hours_path)
+
+    embargoes_path = build_embargoes()
+    stipulations_validated >> embargoes_path
+    validate_embargoes(embargoes_path)
 
     road_control_events_path = build_road_control_events()
     work_hours_validated >> road_control_events_path

@@ -71,7 +71,7 @@ import pandas as pd
 from src.common.config import GOLD_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
-from src.construction_stipulations.silver import extract_work_embargoes
+from src.construction_stipulations.silver import load_built_embargoes
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.lion.silver import DIM_SEGMENT_PATH
 
@@ -400,8 +400,13 @@ def load_embargoes_by_permit() -> dict[str, list[dict]]:
     목록. "이 날짜에 새로 올라온 공사" 상세 표시(참고 정보)용이다 — embargo는
     연중 특정 날짜에만 있는 예외적인 사건이라 closure_penalty/traffic_score
     계산에는 반영하지 않는다(compute_hourly_penalty() docstring 참고). 하나의
-    permit이 여러 embargo 기간을 가질 수 있어 permit 기준으로 그룹핑한다."""
-    embargoes = extract_work_embargoes()
+    permit이 여러 embargo 기간을 가질 수 있어 permit 기준으로 그룹핑한다.
+
+    load_built_embargoes()를 쓴다 — construction_pipeline.py의
+    extract_embargoes 태스크(build_embargoes())가 정규식+LLM 폴백까지 미리
+    다 처리해서 저장해 둔 결과라, 이 온디맨드 API 경로에서는 동기 LLM 호출이
+    전혀 일어나지 않는다."""
+    embargoes = load_built_embargoes()
     if embargoes.empty:
         return {}
 
