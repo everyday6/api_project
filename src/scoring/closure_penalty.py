@@ -114,6 +114,13 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     query_date에 실제로 활성인지는 여기서 거르지 않는다(compute_hourly_penalty
     에서 처리) — 후보 목록 자체는 날짜와 무관하게 한 번만 로드해서 여러
     query_date에 재사용할 수 있게 하기 위함.
+
+    on_street/from_street/to_street도 (집계 자체엔 안 쓰이지만) 남겨둔다 —
+    permit_id는 물리적 현장 중복 제거 과정에서 이미 버려져서, "이 현장 하나만
+    빼고 계산" 같은 요청은 permit_id로는 할 수가 없다. 대신 이 세 필드 +
+    work_start_ts/work_end_ts/segment_id 조합이 get_newly_issued_closures()가
+    쓰는 것과 동일한 "물리적 현장" 식별 기준이라, compute_site_exclusion_delta()가
+    이 조합으로 매칭한다.
     """
     construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
     construction = pd.read_parquet(
@@ -138,7 +145,8 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
         subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
     )
     construction = construction[
-        ["segment_id", "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
+        ["segment_id", "on_street", "from_street", "to_street",
+         "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
     ]
 
     closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
@@ -150,7 +158,7 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     closures = closures.drop_duplicates(
         subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
     )
-    closures = closures[["segment_id", "work_start_ts", "work_end_ts"]].copy()
+    closures = closures[["segment_id", "on_street", "from_street", "to_street", "work_start_ts", "work_end_ts"]].copy()
     # road_closures 원본엔 시간대 제약 자체가 없다 — NaN으로 두면 아래
     # _hour_mask/_day_mask에서 "항상 활성"으로 처리된다. construction 쪽과
     # 동일한 dtype으로 명시해서 concat 시 전부-NA 컬럼 dtype 추론 경고를 피한다.
@@ -574,6 +582,13 @@ def compute_hourly_penalty(
     보인다(실측: Summer Streets embargo가 걸린 날 하루 전체 공사 영향이
     0으로 보였음). embargo 정보는 대신 get_newly_issued_closures()에서
     "이 permit에 이런 embargo 기간이 있다"는 참고 정보로만 보여준다.
+
+    "이 현장 하나만 빼고 계산" 같은 요청은 이 함수를 다시 통째로 돌리지 않고
+    compute_site_exclusion_delta()로 처리한다 — records가 17만 건이 넘어
+    도시 전체 hop 전파 자체가 무겁다(실측 ~5초). 대시보드에서 카드를 클릭할
+    때마다 이 함수를 다시 부르면 그때마다 5초씩 걸린다 — 대신 이미 계산된
+    전체 결과에서 그 사이트 하나의 기여분만 빼는 쪽이 훨씬 싸다(아래 함수
+    참고).
     """
     weekday = date.fromisoformat(query_date).weekday()
     in_range = records[_date_mask(query_date, records["work_start_ts"], records["work_end_ts"])]
@@ -600,6 +615,65 @@ def compute_hourly_penalty(
         return pd.DataFrame(columns=["segment_id", "closure_intensity", "closure_capacity_reduction", "hour"])
 
     return pd.concat(frames, ignore_index=True)
+
+
+def compute_site_exclusion_delta(
+    records: pd.DataFrame,
+    exclude_site: dict,
+    query_date: str,
+    hour: int,
+    adjacency: dict,
+    target_segment_id: str,
+    max_hops: int = MAX_HOPS,
+    decay: dict[int, float] = HOP_DECAY,
+) -> float:
+    """exclude_site 진앙 레코드 하나가 (query_date, hour)에 활성이면서
+    target_segment_id에 hop 감쇠로 기여하는 intensity량 — "도시 전체 결과에서
+    이 사이트 하나만 뺀 값"을 얻기 위한 저비용 헬퍼다.
+
+    compute_hourly_penalty()에 exclude_site를 넘겨서 records에서 그 한 행만
+    뺀 뒤 처음부터 다시 계산해도 결과는 동일하지만, records가 17만 건이 넘어
+    도시 전체 hop 전파 자체가 무겁다(실측 ~5초). intensity 누적
+    (spread_with_decay)이 진앙별로 독립적으로 더해지는 선형 합이라는 점을
+    이용하면, "전체 결과 - 이 사이트 하나의 기여분"이 "이 사이트를 뺀 전체
+    재계산"과 수학적으로 완전히 동일하다. 그래서 이 함수는 그 사이트 하나가
+    실제로 활성인지만 확인하고(boolean mask, 벡터 연산이라 빠름) hop 거리를
+    구해서(BFS가 max_hops로 깊이 제한돼 있어 그래프 크기와 무관하게 빠름)
+    감쇠값 하나만 돌려준다 — 호출부(get_traffic_score)가 캐싱된 전체
+    intensity에서 이 값을 빼기만 하면 된다.
+
+    exclude_site와 매칭되는 레코드가 없거나(이미 지워졌거나 오타 등), 그
+    시각에 비활성이거나, target_segment_id가 hop 범위 밖이면 0.0을 반환한다
+    (= 뺄 게 없다 = 전체 결과 그대로).
+    """
+    match = (
+        (records["on_street"] == exclude_site["on_street"])
+        & (records["from_street"] == exclude_site["from_street"])
+        & (records["to_street"] == exclude_site["to_street"])
+        & (records["work_start_ts"] == pd.Timestamp(exclude_site["work_start_ts"]))
+        & (records["work_end_ts"] == pd.Timestamp(exclude_site["work_end_ts"]))
+        & (records["segment_id"] == exclude_site["segment_id"])
+    )
+    site_row = records[match].head(1)
+    if site_row.empty:
+        return 0.0
+
+    weekday = date.fromisoformat(query_date).weekday()
+    in_range = site_row[_date_mask(query_date, site_row["work_start_ts"], site_row["work_end_ts"])]
+    if in_range.empty:
+        return 0.0
+    active = in_range[
+        _hour_mask(hour, in_range["work_start_hour"], in_range["work_end_hour"])
+        & _day_mask(weekday, in_range["work_days_code"])
+    ]
+    if active.empty:
+        return 0.0
+
+    hops = _segments_within_hops(exclude_site["segment_id"], adjacency, max_hops)
+    hop = hops.get(target_segment_id)
+    if hop is None:
+        return 0.0
+    return decay[hop]
 
 
 def validate(df: pd.DataFrame) -> None:
