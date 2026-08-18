@@ -26,8 +26,7 @@ ingest_daily / ingest_weekly로 이미 적재돼 있어야 한다.
 from datetime import timedelta
 
 import pandas as pd
-from airflow import DAG
-from airflow.operators.python import PythonOperator, get_current_context
+from airflow.decorators import dag, task
 
 from src.common.alerts import notify_slack_failure
 from src.common.spark import get_spark
@@ -49,8 +48,9 @@ default_args = {
 ZONE_HOUR_COUNTS_COLUMNS = ["zone_id", "hour", "dropoff_count"]
 
 
-def _collect_zone_hour_counts():
-    """PythonOperator에서 Spark 세션 생명주기를 관리하며 집계 함수를 호출한다.
+@task
+def _collect_zone_hour_counts() -> list[dict]:
+    """태스크에서 Spark 세션 생명주기를 관리하며 집계 함수를 호출한다.
 
     반환값(zone x hour, 최대 수천 행)은 작아서 XCom으로 그대로 넘긴다.
     """
@@ -64,46 +64,32 @@ def _collect_zone_hour_counts():
     return df.to_dict(orient="records")
 
 
-def _build_dim_segment_tlc_volume():
-    """앞 태스크가 XCom으로 넘긴 zone x hour 집계 결과를 받아 Gold를 만든다."""
-
-    context = get_current_context()
-    records = context["ti"].xcom_pull(task_ids="collect_zone_hour_counts")
+@task
+def _build_dim_segment_tlc_volume(records: list[dict]) -> str:
+    """앞 태스크가 넘긴 zone x hour 집계 결과를 받아 Gold를 만든다."""
 
     zone_hour_counts = pd.DataFrame(records, columns=ZONE_HOUR_COUNTS_COLUMNS)
 
     return build_dim_segment_tlc_volume(zone_hour_counts)
 
 
-with DAG(
+@task
+def _validate_dim_segment_tlc_volume(path: str) -> str:
+    return validate_dim_segment_tlc_volume(path)
+
+
+@dag(
     dag_id="tlc_gold_volume",
     description="TLC 세그먼트x평일시간대 통행량 Gold 테이블 생성 (맨해튼 한정)",
     schedule=None,
     catchup=False,
     default_args=default_args,
     tags=["gold", "tlc", "manual"],
-) as dag:
+)
+def tlc_gold_volume():
+    counts = _collect_zone_hour_counts()
+    out_path = _build_dim_segment_tlc_volume(counts)
+    _validate_dim_segment_tlc_volume(out_path)
 
-    task_collect_zone_hour_counts = PythonOperator(
-        task_id="collect_zone_hour_counts",
-        python_callable=_collect_zone_hour_counts,
-    )
 
-    task_build_dim_segment_tlc_volume = PythonOperator(
-        task_id="build_dim_segment_tlc_volume",
-        python_callable=_build_dim_segment_tlc_volume,
-    )
-
-    task_validate_dim_segment_tlc_volume = PythonOperator(
-        task_id="validate_dim_segment_tlc_volume",
-        python_callable=validate_dim_segment_tlc_volume,
-        op_kwargs={
-            "path": "{{ ti.xcom_pull(task_ids='build_dim_segment_tlc_volume') }}",
-        },
-    )
-
-    (
-        task_collect_zone_hour_counts
-        >> task_build_dim_segment_tlc_volume
-        >> task_validate_dim_segment_tlc_volume
-    )
+tlc_gold_volume()

@@ -36,6 +36,7 @@ from src.tlc.bronze import (
 
 from src.tlc.silver import (
     build_silver,
+    chunk_bronze_files,
 )
 
 # download_file.expand()가 파일 개수만큼 태스크 인스턴스를 만드는 mapped
@@ -56,7 +57,9 @@ default_args = {
 @dag(
     dag_id="tlc_pipeline",
     start_date=datetime(2025, 8, 1),
-    schedule="@monthly",
+    # 과거~현재 데이터를 한 번에 받아오는 초기 적재용 — AWS에 올린 뒤 1회만
+    # 트리거하고, 이후 신규 데이터 확인은 tlc_daily(@daily)가 전담한다.
+    schedule=None,
     catchup=False,
     default_args=default_args,
     on_failure_callback=notify_slack_failure,
@@ -95,11 +98,19 @@ def tlc_pipeline():
     )
 
     # -----------------------------------------
-    # 5. 전체 Silver 변환
+    # 5. taxi_type별 청크로 묶기
+    # -----------------------------------------
+
+    bronze_chunks = chunk_bronze_files(
+        bronze_files=bronze_files,
+    )
+
+    # -----------------------------------------
+    # 6. 청크별 Silver 변환 (청크당 Spark 세션 1개)
     # -----------------------------------------
 
     build_silver.expand(
-        bronze_result=bronze_files,
+        bronze_chunk=bronze_chunks,
     )
 
 
