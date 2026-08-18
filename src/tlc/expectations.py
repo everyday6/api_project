@@ -10,14 +10,11 @@ import great_expectations as gx
 from src.tlc.transform import COLUMN_MAPPING
 
 
-# dropoff_datetime/dropoff_location_id는 Silver의 traffic score 분석(세그먼트별
-# 하차 위치·시각 집계)에 직접 쓰이는 핵심 값이라, 원본 컬럼 자체가 없으면
-# critical로 다룬다. 그 외 컬럼이 없거나 값이 이상한 경우는 로그만 남긴다.
-CRITICAL_COLUMNS = ["dropoff_datetime", "dropoff_location_id"]
-
-
 def _raw_columns(taxi_type: str) -> dict:
     """taxi_type의 Silver 컬럼명 → 원본 컬럼명 매핑 (COLUMN_MAPPING의 역방향)."""
+
+    if taxi_type not in COLUMN_MAPPING:
+        raise ValueError(f"지원하지 않는 택시 종류입니다 : {taxi_type}")
 
     return {
         silver_name: raw_name
@@ -26,17 +23,26 @@ def _raw_columns(taxi_type: str) -> dict:
 
 
 def critical_expectations(taxi_type: str) -> list:
-    """실패 시 파일을 Silver로 넘기지 않고 제외해야 하는 검증."""
+    """실패 시 파일을 Silver로 넘기지 않고 제외해야 하는 검증.
+
+    이 taxi_type이 요구하는 모든 원본 컬럼(COLUMN_MAPPING 기준)의 존재
+    여부를 검사한다. rename_columns()는 이 중 하나라도 없으면 ValueError를
+    던지고, build_silver는 청크 전체를 실패 처리하므로 — 컬럼 존재 여부는
+    "일부만 critical"이 아니라 요구되는 컬럼 전부가 critical이어야 한다.
+    """
 
     columns = _raw_columns(taxi_type)
     return [
-        gx.expectations.ExpectColumnToExist(column=columns[name])
-        for name in CRITICAL_COLUMNS
+        gx.expectations.ExpectColumnToExist(column=raw_name)
+        for raw_name in columns.values()
     ]
 
 
 def log_only_expectations(taxi_type: str) -> list:
     """실패해도 로그만 남기고 파일은 계속 Silver로 진행하는 검증.
+
+    컬럼 존재 여부는 더 이상 여기서 다루지 않는다(critical_expectations로
+    이동) — 값 범위/결측치 등 "컬럼은 있지만 값이 이상한" 경우만 다룬다.
 
     passenger_count/trip_distance는 taxi_type에 따라 원본에 아예 없을 수
     있으므로(COLUMN_MAPPING 참고), 그 taxi_type에 실제로 존재하는 컬럼에
@@ -47,15 +53,15 @@ def log_only_expectations(taxi_type: str) -> list:
 
     expectations = [
         gx.expectations.ExpectTableRowCountToBeBetween(min_value=1, max_value=None),
-        gx.expectations.ExpectColumnToExist(column=columns["pickup_datetime"]),
-        gx.expectations.ExpectColumnToExist(column=columns["pickup_location_id"]),
         gx.expectations.ExpectColumnValuesToNotBeNull(column=columns["pickup_datetime"]),
         gx.expectations.ExpectColumnValuesToNotBeNull(column=columns["dropoff_datetime"]),
+        gx.expectations.ExpectColumnValuesToNotBeNull(column=columns["pickup_location_id"]),
+        gx.expectations.ExpectColumnValuesToNotBeNull(column=columns["dropoff_location_id"]),
         gx.expectations.ExpectColumnValuesToBeBetween(
-            column=columns["pickup_location_id"], min_value=1, max_value=263,
+            column=columns["pickup_location_id"], min_value=1, max_value=265,
         ),
         gx.expectations.ExpectColumnValuesToBeBetween(
-            column=columns["dropoff_location_id"], min_value=1, max_value=263,
+            column=columns["dropoff_location_id"], min_value=1, max_value=265,
         ),
     ]
 
