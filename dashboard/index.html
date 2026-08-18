@@ -14,7 +14,12 @@
     --ink-muted: #8b96ac;
     --rule: #263454;
     --accent: #f2a341;
-    --r0: #7a3b3b; --r1: #9c4040; --r2: #c04a3a; --r3: #e0522f; --r4: #ff7a4d;
+    /* traffic_score 5분위 색상 — 0(가장 좋음)에서 4(가장 나쁨)로 갈수록
+       초록 -> 노랑/주황 -> 빨강으로 색상 자체가 바뀌는 신호등 계열 팔레트.
+       예전엔 전부 빨강 계열(밝기/채도로만 구분)이라 인접 분위끼리 구분이
+       잘 안 됐다(피드백) — 색상 자체가 바뀌면 한눈에 훨씬 잘 들어온다.
+       r0을 --good과 같은 색으로 맞춰서 "최저 분위 = 좋음" 의미가 이어지게 했다. */
+    --r0: #2f8f6f; --r1: #7c9d4a; --r2: #d1a23a; --r3: #e0752f; --r4: #e0483a;
     --good: #2f8f6f;
   }
   * { box-sizing: border-box; }
@@ -105,6 +110,22 @@
   .hourly-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 10px; margin-bottom: 10px; }
   .hourly-title { font-size: 11px; text-transform: uppercase; letter-spacing: .08em; color: var(--ink-muted); font-weight: 600; }
   .hourly-desc { font-size: 11px; color: var(--ink-muted); margin-top: 4px; }
+  .hourly-top-right { display: flex; flex-direction: column; align-items: flex-end; gap: 8px; flex: none; }
+  .construction-toggle {
+    display: flex; align-items: center; gap: 6px; cursor: pointer; user-select: none;
+    font-size: 10.5px; color: var(--ink-muted);
+  }
+  .construction-toggle input[type="checkbox"] {
+    appearance: none; -webkit-appearance: none; margin: 0; flex: none; position: relative;
+    width: 13px; height: 13px; border: 1.5px solid var(--rule); border-radius: 4px;
+    background: var(--panel-2); cursor: pointer;
+  }
+  .construction-toggle input[type="checkbox"]:checked { background: var(--accent); border-color: var(--accent); }
+  .construction-toggle input[type="checkbox"]:checked::after {
+    content: ""; position: absolute; left: 3.5px; top: 0.5px; width: 3px; height: 6.5px;
+    border: solid var(--bg); border-width: 0 2px 2px 0; transform: rotate(45deg);
+  }
+  .construction-toggle span { white-space: nowrap; font-weight: 600; color: var(--ink); }
   .hourly-badges { display: flex; gap: 14px; flex: none; }
   .badge { text-align: center; }
   .badge-label { display: block; font-size: 9px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .06em; margin-bottom: 2px; }
@@ -185,11 +206,17 @@
   }
   .active-item .active-item-body { flex: 1; min-width: 0; }
   .active-item .row1 { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; }
+  .active-item .row1-left { display: flex; align-items: baseline; gap: 6px; flex-wrap: wrap; min-width: 0; }
   .active-item .street { font-size: 13px; font-weight: 600; }
   .active-item .permit-type {
     font-size: 9.5px; color: var(--ink-muted); text-transform: uppercase; letter-spacing: .02em;
     background: var(--panel); border: 1px solid var(--rule); border-radius: 999px; padding: 2px 9px;
     white-space: nowrap; flex: none; max-width: 50%; overflow: hidden; text-overflow: ellipsis;
+  }
+  .active-item .embargo-badge {
+    font-size: 9.5px; font-weight: 700; color: var(--r4);
+    background: rgba(224, 72, 58, .16); border: 1px solid var(--r4); border-radius: 999px;
+    padding: 2px 8px; white-space: nowrap; flex: none;
   }
   .active-item .cross { font-size: 11.5px; color: var(--ink-muted); margin-top: 3px; }
   .active-item .detail-lines {
@@ -198,7 +225,15 @@
   }
   .active-item .detail-line { font-size: 11px; color: var(--ink-muted); font-variant-numeric: tabular-nums; }
   .active-item .detail-line.work-hours { color: var(--ink); }
-  .active-item .detail-line.embargo { color: var(--r4); }
+  .active-item .embargo-item {
+    border-left: 2px solid var(--r4); padding-left: 7px; margin-top: 4px;
+  }
+  .active-item .embargo-range {
+    font-size: 11px; font-weight: 700; color: var(--r4); font-variant-numeric: tabular-nums;
+  }
+  .active-item .embargo-reason {
+    font-size: 10.5px; color: var(--ink-muted); margin-top: 1px;
+  }
   .active-list .nearby-more { text-align: center; padding: 6px 0; }
 
   .zoomhint {
@@ -261,9 +296,15 @@
           <div class="hourly-title">시간대별 traffic_score</div>
           <div class="hourly-desc" id="hourly-desc">막대 하나가 시각 하나입니다(0~23시).</div>
         </div>
-        <div class="hourly-badges">
-          <div class="badge good"><span class="badge-label">권장</span><span class="badge-value" id="best-hour">--:00</span></div>
-          <div class="badge bad"><span class="badge-label">회피</span><span class="badge-value" id="worst-hour">--:00</span></div>
+        <div class="hourly-top-right">
+          <label class="construction-toggle" title="체크 해제하면 가상의 점수를 보여줍니다 — 공사 카드를 클릭해 들어왔으면 그 현장 하나만, 지도/검색으로 들어왔으면 모든 공사/통제 영향을 없앤 값입니다.">
+            <input type="checkbox" id="construction-toggle" checked>
+            <span id="construction-toggle-text">공사 후</span>
+          </label>
+          <div class="hourly-badges">
+            <div class="badge good"><span class="badge-label">권장</span><span class="badge-value" id="best-hour">--:00</span></div>
+            <div class="badge bad"><span class="badge-label">회피</span><span class="badge-value" id="worst-hour">--:00</span></div>
+          </div>
         </div>
       </div>
       <div class="hourly-bars" id="hourly-bars"></div>
@@ -310,6 +351,14 @@ let detailExpanded = false;    // 우측 패널 "세부 내용" 펼침 상태 �
 // 그냥 지도 클릭/검색으로 들어왔으면 null(그 세그먼트 전체 합산 영향 기준으로
 // 되돌아감) — selectSegment()가 관리한다.
 let currentPermitWorkHours = null;
+
+// "이 날짜에 새로 올라온 공사" 카드 클릭으로 들어왔을 때만 채워짐 — 공사
+// 전/후 비교 토글에서 "이 현장 하나만 없었다면"을 계산하기 위한 6개 필드
+// 키(on_street/from_street/to_street/work_start_ts/work_end_ts/segment_id).
+// null이면(지도 클릭/검색) "모든 공사 없을 때"로 폴백한다 — 이 세그먼트에
+// 영향 주는 공사가 여러 개일 수 있어서 "특정 현장 하나"를 지목할 수 없기
+// 때문이다. 두 계산은 기준이 달라서 화면에 보여줄 라벨도 다르게 써야 한다.
+let currentExcludeSite = null;
 
 // closure_penalty.py의 DAY_CODE_ACTIVE와 동일한 규칙(요일 코드별로 활성인
 // 요일). 여기 없는 코드(OTHER 등)나 코드 자체가 없으면 "항상 활성"(백엔드와
@@ -466,6 +515,11 @@ function draw() {
 
   ctx.lineCap = "round";
 
+  // 지도 색 자체는 nearbySegmentScores 유무와 무관하게 항상 도시 전체를
+  // 평소와 동일하게(전부 같은 강도로) 그린다 — 선택한 세그먼트 주변만
+  // 강조하려고 나머지를 흐리게 죽였더니 도시 전체 그림이 안 보여서
+  // 오히려 안 좋다는 피드백을 받았다. "주변 도로 강조"는 대신 아래
+  // 배지(숫자)로만 표현한다.
   ctx.beginPath(); ctx.strokeStyle = cssVar("--ink-muted"); ctx.lineWidth = 0.4;
   for (const i of missing) drawSeg(ctx, SEGMENTS[i]);
   ctx.stroke();
@@ -494,6 +548,8 @@ function draw() {
     ctx.stroke();
   }
 
+  if (nearbySegmentScores) drawNearbyScoreBadges(ctx);
+
   ctx.restore(); pickCtx.restore();
 }
 function drawSeg(context, seg) {
@@ -502,6 +558,82 @@ function drawSeg(context, seg) {
     const [sx1,sy1] = toScreen(c[i],c[i+1]);
     const [sx2,sy2] = toScreen(c[i+2],c[i+3]);
     context.moveTo(sx1,sy1); context.lineTo(sx2,sy2);
+  }
+}
+
+// 세그먼트 정중앙(모든 정점의 평균 — panToSegment()와 동일한 근사) 위에
+// traffic_score percentile을 작은 배지로 얹는다. 지도 색은 손대지 않고
+// 이 숫자만 얹는 방식 — 도시 전체 그림은 그대로 보이면서 "주변 도로 상태"는
+// 숫자로 바로 읽힌다. 우측 패널의 "공사 후/전" 토글에 맞는 값을 보여준다
+// (showAfterConstruction — hourly-panel이 없는 초기 상태에도 기본값
+// true라 "공사 후"부터 보인다).
+function segmentCentroid(seg) {
+  const c = seg.coords;
+  let sx = 0, sy = 0, n = 0;
+  for (let i = 0; i < c.length; i += 2) { sx += c[i]; sy += c[i+1]; n++; }
+  return n ? [sx/n, sy/n] : null;
+}
+
+// 라운드 사각형(pill) 패스 — 캔버스엔 roundRect 폴리필이 필요한 구형 브라우저도
+// 있어서 직접 그린다.
+function roundRectPath(context, x, y, w, h, r) {
+  context.beginPath();
+  context.moveTo(x + r, y);
+  context.arcTo(x + w, y, x + w, y + h, r);
+  context.arcTo(x + w, y + h, x, y + h, r);
+  context.arcTo(x, y + h, x, y, r);
+  context.arcTo(x, y, x + w, y, r);
+  context.closePath();
+}
+
+// 단색 원 대신 "어두운 유리질 배경 + 컬러 테두리/점 + 밝은 숫자" 조합의
+// pill 배지 — 평면적인 원보다 지도 위에서 붕 뜨는 느낌 없이 자연스럽게
+// 얹히면서도 색 정보(5분위)는 테두리+점으로 그대로 유지한다.
+function drawNearbyScoreBadges(context) {
+  context.font = "700 11px system-ui, -apple-system, sans-serif";
+  context.textAlign = "left";
+  context.textBaseline = "middle";
+
+  for (const [segId, scores] of nearbySegmentScores) {
+    const idx = idToIndex[segId];
+    if (idx === undefined) continue;
+    const centroid = segmentCentroid(SEGMENTS[idx]);
+    if (!centroid) continue;
+    const raw = showAfterConstruction ? scores.after : scores.before;
+    const pct = scorePct(raw);
+    if (pct === null) continue;
+
+    const [sx, sy] = toScreen(centroid[0], centroid[1]);
+    const bucket = Math.min(4, Math.floor(pct / 20));
+    const color = cssVar(RAMP[bucket]);
+    const text = String(pct);
+    const textW = context.measureText(text).width;
+
+    const dotR = 3.5, gap = 6, padX = 9, pillH = 21;
+    const pillW = padX * 2 + dotR * 2 + gap + textW;
+    const x0 = sx - pillW / 2, y0 = sy - pillH / 2;
+
+    context.save();
+    context.shadowColor = "rgba(0, 0, 0, 0.5)";
+    context.shadowBlur = 6;
+    context.shadowOffsetY = 1.5;
+    roundRectPath(context, x0, y0, pillW, pillH, pillH / 2);
+    context.fillStyle = "rgba(13, 19, 32, 0.88)";
+    context.fill();
+    context.restore();
+
+    roundRectPath(context, x0, y0, pillW, pillH, pillH / 2);
+    context.lineWidth = 1.2;
+    context.strokeStyle = color;
+    context.stroke();
+
+    context.beginPath();
+    context.arc(x0 + padX + dotR, sy, dotR, 0, Math.PI * 2);
+    context.fillStyle = color;
+    context.fill();
+
+    context.fillStyle = "#eaeef6";
+    context.fillText(text, x0 + padX + dotR * 2 + gap, sy + 0.5);
   }
 }
 function indexToColor(i) {
@@ -590,8 +722,15 @@ function renderDetail(data) {
 // permitWorkHours: "새로 올라온 공사" 목록에서 특정 공사를 클릭했을 때만
 // {start_hour, end_hour, days_code}로 넘어온다 — 그 외(지도 클릭/검색)는
 // 안 넘기면 null로 리셋되어 세그먼트 전체 합산 기준으로 돌아간다.
-async function selectSegment(segmentId, permitWorkHours = null) {
+async function selectSegment(segmentId, permitWorkHours = null, excludeSite = null, { keepPinnedHour = false } = {}) {
   currentPermitWorkHours = permitWorkHours;
+  currentExcludeSite = excludeSite;
+  // 진짜 새로 세그먼트를 고른 경우(지도 클릭/검색/카드 클릭)에만 pinnedHour를
+  // 리셋한다 — 그래야 renderHourlyPanel()이 권장 시간을 다시 자동으로
+  // 골라준다. 날짜 변경으로 같은 세그먼트를 다시 그릴 때는 keepPinnedHour:
+  // true로 호출해서, 사용자가 이미 눌러둔 시간이 그대로 유지되고 그 시간의
+  // 새 데이터로만 갱신되게 한다.
+  if (!keepPinnedHour) pinnedHour = null;
   try {
     const res = await fetch(`/api/traffic_score/${segmentId}${hourQuery()}`);
     if (!res.ok) { renderDetail(null); hideHourlyPanel(); hideNearbyPanel(); return; }
@@ -602,10 +741,12 @@ async function selectSegment(segmentId, permitWorkHours = null) {
     draw();
     loadHourlyProfile(segmentId);
     loadNearbyClosures(segmentId);
+    loadNearbySegments(segmentId);
   } catch (e) {
     renderDetail(null);
     hideHourlyPanel();
     hideNearbyPanel();
+    nearbySegmentScores = null;
   }
 }
 
@@ -618,23 +759,74 @@ for (let h = 0; h < 24; h++) {
   hourlyAxis.appendChild(span);
 }
 
-let currentHourlyData = null; // 선택된 세그먼트의 0~23시 전체 조회 결과 — 막대 클릭 시 재조회 없이 그대로 씀
+let currentHourlyData = null; // 현재 화면에 그려진(토글 상태 기준) 0~23시 데이터 — 막대 클릭 시 재조회 없이 그대로 씀
+let hourlyDataAfter = null;   // 공사/통제 영향 반영(실제 값, include_closure_penalty=true)
+let hourlyDataBefore = null;  // 공사/통제 영향 없다고 가정(가상 기준선, include_closure_penalty=false)
+let showAfterConstruction = true; // 토글 상태 — 기본값은 기존과 동일한 "공사 후"(실제 값)
+
+// 사용자가 마지막으로 고정(클릭 또는 자동 권장)한 시각. null이면 "아직 아무
+// 시각도 안 골랐다"는 뜻 — renderHourlyPanel()이 이때만 권장 시간을 자동
+// 고정한다. 세그먼트를 새로 선택하면 selectSegment()가 null로 리셋하고,
+// 토글/날짜 변경처럼 같은 세그먼트를 다시 그릴 때는 그대로 유지된다.
+let pinnedHour = null;
 
 function hideHourlyPanel() {
   hourlyPanel.classList.remove("visible");
   currentHourlyData = null;
+  hourlyDataAfter = null;
+  hourlyDataBefore = null;
+  pinnedHour = null;
 }
 
+// currentExcludeSite 6개 필드를 쿼리스트링으로 직렬화한다. api.py의
+// _build_exclude_site()가 6개 다 오거나 하나도 없어야만 받아주므로, 여기서도
+// currentExcludeSite가 있을 때만(=null이면 아예 호출 안 함) 붙인다.
+function excludeSiteQuery(site) {
+  if (!site) return "";
+  const fields = ["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"];
+  return fields.map(f => `&exclude_${f}=${encodeURIComponent(site[f])}`).join("");
+}
+
+// "공사 전" 쪽이 currentExcludeSite 유무에 따라 계산 기준이 달라진다 —
+// 카드 클릭으로 들어왔으면(currentExcludeSite 있음) "이 현장 하나만 없을 때"
+// (include_closure_penalty=true + exclude_site), 지도/검색으로 들어왔으면
+// (없음) "모든 공사 없을 때"(include_closure_penalty=false). 화면에 같이
+// 나오는 두 가지 다른 계산이라 라벨도 반드시 구분해서 보여준다.
+function beforeModeLabel() {
+  return currentExcludeSite ? "이 현장 없을 때" : "모든 공사 없을 때";
+}
+
+function updateToggleLabel() {
+  document.getElementById("construction-toggle-text").textContent = showAfterConstruction
+    ? "공사 후"
+    : beforeModeLabel();
+}
+
+// 공사 전/후를 나란히 비교하려고 두 번 동시에 조회한다 — 토글을 눌렀을 때
+// 재조회 없이 즉시 바뀐 걸 보여주기 위함(하루 24시간치라도 이미 프로세스 내
+// 캐싱된 값이라 두 번 불러도 가볍다).
 async function loadHourlyProfile(segmentId) {
   try {
-    const res = await fetch(`/api/traffic_score/${segmentId}/hourly?ts_date=${selectedDate}`);
-    if (!res.ok) { hideHourlyPanel(); return; }
-    const data = await res.json();
-    renderHourlyPanel(segmentId, data);
+    const afterUrl = `/api/traffic_score/${segmentId}/hourly?ts_date=${selectedDate}&include_closure_penalty=true`;
+    const beforeUrl = currentExcludeSite
+      ? `/api/traffic_score/${segmentId}/hourly?ts_date=${selectedDate}&include_closure_penalty=true${excludeSiteQuery(currentExcludeSite)}`
+      : `/api/traffic_score/${segmentId}/hourly?ts_date=${selectedDate}&include_closure_penalty=false`;
+    const [resAfter, resBefore] = await Promise.all([fetch(afterUrl), fetch(beforeUrl)]);
+    if (!resAfter.ok || !resBefore.ok) { hideHourlyPanel(); return; }
+    hourlyDataAfter = await resAfter.json();
+    hourlyDataBefore = await resBefore.json();
+    updateToggleLabel();
+    renderHourlyPanel(segmentId);
   } catch (e) {
     hideHourlyPanel();
   }
 }
+
+document.getElementById("construction-toggle").addEventListener("change", (e) => {
+  showAfterConstruction = e.target.checked;
+  updateToggleLabel();
+  if (hourlyDataAfter && hourlyDataBefore) renderHourlyPanel(selectedSegmentId);
+});
 
 // 이 시각에 "공사 시간대"인지 판정한다 — 두 가지 기준 중 하나를 쓴다.
 // 1) currentPermitWorkHours가 있으면("이 날짜에 새로 올라온 공사" 목록에서
@@ -642,18 +834,27 @@ async function loadHourlyProfile(segmentId) {
 //    삼는다 — 세그먼트 전체 합산 영향(다른 근처 공사)이 아니라 "이 공사가
 //    실제로 언제 활성인지"를 보여주기 위함. 밀집 구역이라 다른 공사가 24시간
 //    내내 겹쳐 있으면 합산 기준으로는 절대 안 흐려지는 문제가 있었음.
-// 2) 없으면(지도 클릭/검색으로 그냥 세그먼트를 본 경우): data[h].components.
-//    capacity.items의 closure_penalty 값 — 0(또는 결측)이면 그 시각엔 주변에
-//    활성인 공사/통제 영향이 전혀 없다는 뜻(세그먼트 전체 합산 기준).
-function hourHasConstructionImpact(hourData, hour) {
+// 2) 없으면(지도 클릭/검색으로 그냥 세그먼트를 본 경우): hourlyDataAfter[h].
+//    components.capacity.items의 closure_penalty 값 — 0(또는 결측)이면 그
+//    시각엔 주변에 활성인 공사/통제 영향이 전혀 없다는 뜻(세그먼트 전체 합산
+//    기준).
+//
+// 항상 hourlyDataAfter(공사 반영 실제 값) 기준으로 판정한다 — "공사 전" 토글로
+// 보고 있을 때는 hourlyDataBefore에 애초에 closure_penalty 항목 자체가 없어서
+// (일부러 뺀 가상의 값이라) 이걸로 판정하면 매 시간이 전부 "공사 아님"으로
+// 나온다. 어느 쪽을 보고 있든 "실제로 언제 공사 영향이 있었는지"는 바뀌지
+// 않으므로 흐림 처리 기준은 고정해 둔다.
+function hourHasConstructionImpact(hour) {
+  const afterHourData = hourlyDataAfter[hour];
   if (currentPermitWorkHours) {
-    return isPermitActiveAt(currentPermitWorkHours, hourData.ts_date || selectedDate, hour);
+    return isPermitActiveAt(currentPermitWorkHours, afterHourData.ts_date || selectedDate, hour);
   }
-  const item = hourData?.components?.capacity?.items?.find(i => i.name === "closure_penalty");
+  const item = afterHourData?.components?.capacity?.items?.find(i => i.name === "closure_penalty");
   return !!item && item.value !== 0;
 }
 
-function renderHourlyPanel(segmentId, data) {
+function renderHourlyPanel(segmentId) {
+  const data = showAfterConstruction ? hourlyDataAfter : hourlyDataBefore;
   currentHourlyData = data;
   const validIdx = [];
   for (let h = 0; h < 24; h++) {
@@ -664,7 +865,7 @@ function renderHourlyPanel(segmentId, data) {
   // "권장/회피"는 공사 시간대(흐리게 처리되지 않은, 실제로 공사 영향이 있는
   // 시간) 안에서만 고른다 — 공사와 무관한 시간까지 같이 비교하면 "회피해야
   // 할 시간"이 사실 공사 영향이 전혀 없는 시간이 되어버려 의미가 없어진다.
-  const constructionIdx = validIdx.filter(h => hourHasConstructionImpact(data[h], h));
+  const constructionIdx = validIdx.filter(h => hourHasConstructionImpact(h));
 
   let bestIdx = null, worstIdx = null;
   if (constructionIdx.length > 0) {
@@ -676,33 +877,32 @@ function renderHourlyPanel(segmentId, data) {
     }
   }
 
-  // 막대 높이/마우스오버 수치는 도시 전체 percentile이 아니라 "이 세그먼트의
-  // 오늘 하루 안에서" 최저=0%, 최고=100%로 min-max 정규화한다. 도시 전체
-  // percentile로 보면 도로 종류(간선도로 vs 골목길)에 따른 정적 차이가 워낙
-  // 커서, 하루 안의 시간대별 변화가 실제로는 있어도 늘 10~25점 정도로만
-  // 눌려 보였다(실측). 다른 세그먼트와 절대 비교는 안 되지만, "오늘 이
-  // 구간은 언제가 낫고 언제가 나쁜지"가 목적인 그래프라 이쪽이 더 유용하다
-  // (우측 패널 메인 점수는 도시 전체 percentile 그대로 유지 — 세그먼트 간
-  // 비교는 거기서 한다).
-  let minScore = Infinity, maxScore = -Infinity;
-  for (const h of validIdx) {
-    if (data[h].traffic_score < minScore) minScore = data[h].traffic_score;
-    if (data[h].traffic_score > maxScore) maxScore = data[h].traffic_score;
-  }
-  const scoreRange = maxScore - minScore;
-  function relativeScore(score) {
-    if (score === null) return null;
-    if (scoreRange <= 0) return 50; // 하루종일 값이 똑같으면 애매하게 중간
-    return Math.round(((score - minScore) / scoreRange) * 100);
-  }
+  // 막대 높이/마우스오버 수치는 scorePct()(도시 전체 percentile, 우측 메인
+  // 패널의 "TRAFFIC SCORE (정규화)"와 동일한 계산)를 그대로 쓴다 — 절댓값
+  // 기준 0~100 고정 스케일이라 "100은 항상 도시 전체 상위, 0은 항상 도시
+  // 전체 하위"가 유지된다.
+  //
+  // 예전엔 "이 세그먼트 오늘 하루 안에서" min-max로 따로 정규화했었는데,
+  // 그러면 두 가지 문제가 생겼다: ① 공사 후/전을 각자 자기 범위 안에서
+  // 정규화하면 "공사 전 67"이 "공사 후 99"보다 막대가 더 길어 보이는
+  // 착시가 생기고, ② 공유 스케일로 합쳐도 여전히 "이 세그먼트, 이 날짜"
+  // 한정 상대값이라 숫자가 절댓값처럼 안 느껴진다는 문제가 남았다.
+  // scorePct()는 이 세그먼트/날짜/토글과 무관하게 항상 같은 도시 전체
+  // 분포를 기준으로 삼아서 두 문제 다 해결한다.
+  const relativeScore = scorePct;
 
   document.getElementById("best-hour").textContent = bestIdx === null ? "—:00" : `${String(bestIdx).padStart(2, "0")}:00`;
   document.getElementById("worst-hour").textContent = worstIdx === null ? "—:00" : `${String(worstIdx).padStart(2, "0")}:00`;
 
   const basisText = currentPermitWorkHours ? "이 공사의 작업 가능 시간 기준" : "이 세그먼트 전체 합산 영향 기준";
-  document.getElementById("hourly-desc").textContent = constructionIdx.length > 0
+  const modeText = showAfterConstruction
+    ? ""
+    : currentExcludeSite
+      ? " 지금은 이 현장의 공사 영향만 없었다고 가정한 가상의 점수입니다(다른 공사/통제는 그대로 반영)."
+      : " 지금은 공사/통제 영향이 전혀 없었다고 가정한 가상의 점수입니다.";
+  document.getElementById("hourly-desc").textContent = (constructionIdx.length > 0
     ? `막대 하나가 시각 하나입니다(0~23시, ${basisText}). 흐린 막대 = 공사 시간대 아님. 권장/회피는 공사 시간대 안에서만 고릅니다.`
-    : `막대 하나가 시각 하나입니다(0~23시). 오늘은 활성 공사 영향이 없습니다(${basisText}).`;
+    : `막대 하나가 시각 하나입니다(0~23시). 오늘은 활성 공사 영향이 없습니다(${basisText}).`) + modeText;
 
   const barsEl = document.getElementById("hourly-bars");
   barsEl.innerHTML = "";
@@ -711,34 +911,61 @@ function renderHourlyPanel(segmentId, data) {
     bar.className = "hourly-bar";
     if (h === bestIdx) bar.classList.add("good");
     else if (h === worstIdx) bar.classList.add("bad");
-    if (!hourHasConstructionImpact(data[h], h)) bar.classList.add("no-construction");
+    if (!hourHasConstructionImpact(h)) bar.classList.add("no-construction");
 
     const score = data[h].traffic_score;
     const rel = relativeScore(score);
     const pct = rel === null ? 4 : Math.max(4, rel);
     bar.style.height = `${pct}%`;
 
-    // 막대에 마우스를 올리면 그 시각의 "이 세그먼트 오늘 하루 내 상대값"을
-    // 툴팁으로 보여준다(현재 값과 무관하게 그 시각 데이터를 그대로 보여줌).
-    // 클릭하면 스코어 패널 자체를 그 시각 데이터로 고정 표시한다(재조회
-    // 없이 currentHourlyData 재사용, 단 그 패널의 메인 점수는 도시 전체
-    // percentile 그대로 — 세그먼트 간 비교용이라 여기서 안 바꿈).
+    // 막대에 마우스를 올리면 그 시각의 도시 전체 percentile(우측 메인 패널
+    // 점수와 동일한 절댓값 스케일)을 공사 전/후 둘 다 같이 툴팁으로
+    // 보여준다(현재 토글 상태와 무관하게 두 값을 나란히 보여줘야 "공사
+    // 때문에 얼마나 달라지는지"가 한 번에 보인다). 클릭하면 스코어 패널
+    // 자체를 그 시각 데이터(현재 토글 기준)로 고정 표시한다(재조회 없이
+    // currentHourlyData 재사용).
     bar.addEventListener("pointermove", (e) => {
-      const scoreText = rel === null ? "결측" : `${rel} / 100 (오늘 이 구간 내 상대값)`;
-      const constructionText = hourHasConstructionImpact(data[h], h) ? "" : "<br><span style=\"color:var(--ink-muted)\">공사 시간대 아님</span>";
-      showHoverTooltip(e, `<b>${String(h).padStart(2, "0")}:00</b><br>traffic score: <b>${scoreText}</b>${constructionText}`);
+      const fmt = (rel) => rel === null ? "결측" : `${rel} / 100`;
+      const constructionText = hourHasConstructionImpact(h) ? "" : "<br><span style=\"color:var(--ink-muted)\">공사 시간대 아님</span>";
+      showHoverTooltip(
+        e,
+        `<b>${String(h).padStart(2, "0")}:00</b> (도시 전체 percentile)` +
+        `<br>공사 후: <b>${fmt(relativeScore(hourlyDataAfter[h].traffic_score))}</b>` +
+        `<br>${beforeModeLabel()}: <b>${fmt(relativeScore(hourlyDataBefore[h].traffic_score))}</b>` +
+        constructionText,
+      );
     });
     bar.addEventListener("pointerleave", hideHoverTooltip);
-    bar.addEventListener("click", () => {
-      barsEl.querySelectorAll(".hourly-bar.pinned").forEach(b => b.classList.remove("pinned"));
-      bar.classList.add("pinned");
-      renderDetail(currentHourlyData[h]);
-    });
+    bar.addEventListener("click", () => pinHour(barsEl, h));
 
     barsEl.appendChild(bar);
   }
 
+  // pinnedHour가 없으면(세그먼트를 방금 새로 선택한 경우) 권장 시간을
+  // 자동으로 클릭한 것처럼 고정한다 — 사용자가 굳이 막대를 눌러야만 권장
+  // 시간 점수를 볼 수 있던 걸 없앤 것. 이미 고정된 시간이 있으면(토글/날짜
+  // 변경으로 다시 그려진 경우) 그 선택을 그대로 유지하고 새 데이터로만
+  // 갱신한다 — 매번 권장 시간으로 되돌아가면 사용자가 일부러 골라둔 시간이
+  // 자꾸 덮어써진다. 공사 시간대가 없어서 bestIdx도 없으면 아무 시간도
+  // 강제로 고정하지 않는다.
+  if (pinnedHour !== null) {
+    pinHour(barsEl, pinnedHour);
+  } else if (bestIdx !== null) {
+    pinHour(barsEl, bestIdx);
+  }
+
   hourlyPanel.classList.add("visible");
+}
+
+function pinHour(barsEl, h) {
+  pinnedHour = h;
+  barsEl.querySelectorAll(".hourly-bar.pinned").forEach(b => b.classList.remove("pinned"));
+  barsEl.children[h].classList.add("pinned");
+  renderDetail(currentHourlyData[h]);
+  // 우측 패널에서 시간대를 바꿔 보면(자동 권장 포함) 지도 위 주변 도로
+  // 배지도 그 시각 기준으로 다시 계산해서 갱신한다 — 안 그러면 배지가
+  // 세그먼트를 처음 선택했을 때 시각에 계속 고정돼 있게 된다.
+  if (selectedSegmentId) loadNearbySegments(selectedSegmentId, h);
 }
 
 // ---------- 현재 영향받는 공사(인접 최대 3칸 이내, 현재 활성인 것) ----------
@@ -857,6 +1084,7 @@ function renderActiveList() {
 
   const shown = filtered.slice(0, ACTIVE_DISPLAY_LIMIT);
   shown.forEach((item, i) => {
+    const embargoes = item.embargoes || [];
     const div = document.createElement("div");
     div.className = "active-item";
 
@@ -870,16 +1098,27 @@ function renderActiveList() {
       detailLines += `<div class="detail-line work-hours">작업 가능 시간: ${dayLabel} ${formatHourRange(item.work_start_hour, item.work_end_hour)}</div>`;
     }
     // embargo(행사 때문에 작업 임시 중단) — 있으면 전부 표시.
-    for (const em of (item.embargoes || [])) {
+    // 날짜/시간(강조)과 사유(보조 정보)를 분리해서, 여러 건이어도 한눈에
+    // 훑어볼 수 있게 한다 — 아이콘/색은 위쪽 배지 하나로 충분해서 줄마다
+    // 반복하지 않는다.
+    for (const em of embargoes) {
       const dateRange = em.start_date === em.end_date ? em.start_date : `${em.start_date} ~ ${em.end_date}`;
-      detailLines += `<div class="detail-line embargo">⛔ 작업 중단: ${dateRange} ${formatHourRange(em.start_hour, em.end_hour)} — ${em.reason}</div>`;
+      detailLines += `
+        <div class="embargo-item">
+          <div class="embargo-range">${dateRange} · ${formatHourRange(em.start_hour, em.end_hour)}</div>
+          <div class="embargo-reason">${em.reason}</div>
+        </div>
+      `;
     }
 
     div.innerHTML = `
       <span class="active-item-num">${i + 1}</span>
       <div class="active-item-body">
         <div class="row1">
-          <span class="street">${item.on_street}</span>
+          <div class="row1-left">
+            <span class="street">${item.on_street}</span>
+            ${embargoes.length ? `<span class="embargo-badge">⛔ 임시중단 ${embargoes.length}건</span>` : ""}
+          </div>
           ${item.permit_type ? `<span class="permit-type">${item.permit_type}</span>` : ""}
         </div>
         <div class="cross">${item.from_street} ~ ${item.to_street}</div>
@@ -890,7 +1129,14 @@ function renderActiveList() {
       const workHours = (item.work_start_hour !== null && item.work_end_hour !== null)
         ? { start_hour: item.work_start_hour, end_hour: item.work_end_hour, days_code: item.work_days_code }
         : null;
-      selectSegment(item.segment_id, workHours);
+      // get_newly_issued_closures()가 이미 이 6개 필드 조합으로 물리적 현장을
+      // 대표 1건으로 묶어서 내려준 거라, 이 카드 자체가 곧 "이 현장"의 식별자다
+      // (permit_id는 그 단계에서 이미 버려짐 — closure_penalty.py 참고).
+      const excludeSite = {
+        on_street: item.on_street, from_street: item.from_street, to_street: item.to_street,
+        work_start_ts: item.work_start_ts, work_end_ts: item.work_end_ts, segment_id: item.segment_id,
+      };
+      selectSegment(item.segment_id, workHours, excludeSite);
       panToSegment(item.segment_id);
     });
     list.appendChild(div);
@@ -926,9 +1172,12 @@ async function applyDateChange() {
   try {
     await Promise.all([loadMapData(), loadActiveClosures()]);
     if (selectedSegmentId) {
-      // currentPermitWorkHours를 그대로 넘겨서 날짜만 바뀌어도 "특정 공사
-      // 기준" 보기가 유지되게 한다(selectSegment 인자로 안 넘기면 리셋됨).
-      await selectSegment(selectedSegmentId, currentPermitWorkHours);
+      // currentPermitWorkHours/currentExcludeSite를 그대로 넘겨서 날짜만
+      // 바뀌어도 "특정 공사 기준" 보기가 유지되게 한다(selectSegment 인자로
+      // 안 넘기면 리셋됨). keepPinnedHour: true로 사용자가 이미 고정해둔
+      // 시각도 그대로 유지 — 날짜만 바뀐 거지 세그먼트를 새로 고른 게
+      // 아니므로 권장 시간으로 되돌아가면 안 된다.
+      await selectSegment(selectedSegmentId, currentPermitWorkHours, currentExcludeSite, { keepPinnedHour: true });
     } else {
       draw();
     }
@@ -1034,9 +1283,52 @@ function handleHover(e) {
   const seg = pickSegmentAt(e);
   if (!seg) { hideHoverTooltip(); return; }
 
-  const pct = percentileScore(seg.traffic_score);
-  const scoreText = pct === null ? "결측" : `${Math.round(pct)} / 100`;
-  showHoverTooltip(e, `<b>${seg.segment_id}</b><br>traffic score: <b>${scoreText}</b>`);
+  // 지금 지도에서 강조된 "주변 도로"에 속하면(nearbySegmentScores에 있으면)
+  // 공사 후/전 두 값을 같이 보여준다 — 이 근방 도로가 공사 때문에 얼마나
+  // 나빠졌는지 바로 비교되게. 강조 대상이 아니면(선택 안 했거나, 도시
+  // 전체 아무 데나) 기존처럼 실제 값 하나만 보여준다.
+  const nearby = nearbySegmentScores && nearbySegmentScores.get(seg.segment_id);
+  const fmt = (raw) => {
+    const p = scorePct(raw);
+    return p === null ? "결측" : `${p} / 100`;
+  };
+  const html = nearby
+    ? `<b>${seg.segment_id}</b><br>공사 후: <b>${fmt(nearby.after)}</b><br>공사 전: <b>${fmt(nearby.before)}</b>`
+    : `<b>${seg.segment_id}</b><br>traffic score: <b>${fmt(seg.traffic_score)}</b>`;
+  showHoverTooltip(e, html);
+}
+
+// ---------- 선택한 세그먼트 주변 도로 점수 배지 (지도 위 시각화) ----------
+// segment를 선택하면(지도 클릭/검색/카드 무관) 그 주변 도로(hop 그래프
+// 기준 최대 3홉) 위에 traffic_score(공사 후) percentile을 작은 숫자
+// 배지로 얹는다. 지도 자체의 색/강도는 건드리지 않는다 — 나머지 도시를
+// 흐리게 죽이는 방식은 "전체 그림이 안 보인다"는 피드백을 받아서 뺐다.
+// get_nearby_segment_scores()가 주는 hop 트리에서 segment_id별 공사
+// 후/전(traffic_score/traffic_score_before) 값을 뽑아 두면, 배지는 현재
+// 토글 상태(showAfterConstruction)에 맞는 쪽을, 호버 툴팁은 둘 다 보여준다.
+let nearbySegmentScores = null;  // segment_id -> {after, before} — 배지 + 호버 툴팁용. null이면 배지 없음.
+
+// tsHour를 명시적으로 받는다 — 우측 패널에서 다른 시간대 막대를 클릭하면
+// (pinHour) 그 시각 기준으로 다시 불러와야 해서, 항상 "현재 시각"만 보는
+// hourQuery()/selectedHour에 기대면 안 된다. 안 넘기면(초기 선택 시)
+// selectedHour로 기본 조회한다.
+async function loadNearbySegments(segmentId, tsHour) {
+  const hour = tsHour ?? selectedHour;
+  try {
+    const res = await fetch(`/api/traffic_score/${segmentId}/nearby_segments?ts_hour=${hour}&ts_date=${selectedDate}`);
+    if (!res.ok) { nearbySegmentScores = null; draw(); return; }
+    const root = await res.json();
+    const scores = new Map();
+    (function collect(node) {
+      scores.set(node.segment_id, { after: node.traffic_score, before: node.traffic_score_before });
+      node.children.forEach(collect);
+    })(root);
+    nearbySegmentScores = scores;
+    draw();
+  } catch (e) {
+    nearbySegmentScores = null;
+    draw();
+  }
 }
 
 (async function init() {
