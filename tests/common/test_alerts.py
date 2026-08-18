@@ -61,3 +61,17 @@ def test_notify_slack_failure_still_works_after_refactor(monkeypatch):
     sent_text = mock_post.call_args.kwargs["json"]["text"]
     assert "tlc_pipeline" in sent_text
     assert "store_bronze" in sent_text
+
+
+def test_notify_slack_failure_swallows_build_message_exception(monkeypatch, caplog):
+    """notify_slack_failure는 메시지 생성 실패도 삼켜야 한다."""
+    monkeypatch.setattr(alerts, "SLACK_WEBHOOK_URL", "https://hooks.slack.test/webhook")
+
+    # _build_message를 패치해서 예외를 던지게 한다
+    with patch.object(alerts, "_build_message", side_effect=ValueError("메시지 생성 오류")):
+        with caplog.at_level("ERROR"):
+            # 메시지 생성이 실패해도 예외를 던지면 안 된다
+            alerts.notify_slack_failure({"task_instance": MagicMock()})
+
+    # 메시지 생성 실패가 로그되었는지 확인
+    assert any("메시지 생성 실패" in rec.message for rec in caplog.records)

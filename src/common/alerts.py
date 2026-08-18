@@ -94,7 +94,13 @@ def _post_to_slack(text: str) -> None:
 def notify_slack_failure(context: dict) -> None:
     """on_failure_callback으로 등록해서 쓰는 함수."""
 
-    _post_to_slack(_build_message(context))
+    try:
+        message = _build_message(context)
+    except Exception:
+        logger.exception("Slack 실패 알림 메시지 생성 실패")
+        return
+
+    _post_to_slack(message)
 
 
 def notify_slack_message(text: str) -> None:
