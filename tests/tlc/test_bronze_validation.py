@@ -62,7 +62,7 @@ def test_validate_bronze_file_logs_but_passes_when_location_out_of_range(tmp_pat
     path = _write_bronze_fixture(tmp_path, "out_of_range.parquet", [{
         "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
         "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
-        "PULocationID": 999,  # 유효 범위(1~263) 밖
+        "PULocationID": 999,  # 유효 범위(1~265) 밖
         "DOLocationID": 20,
         "passenger_count": 1,
         "trip_distance": 5.0,

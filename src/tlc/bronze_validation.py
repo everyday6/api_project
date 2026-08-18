@@ -59,8 +59,9 @@ def validate_bronze_file(spark, bronze_path: str, taxi_type: str) -> list[dict]:
 
 # 청크 하나에 대한 집계 Slack 메시지에 파일별 사유를 나열할 때, 목록이
 # 지나치게 길어지지 않도록 여기까지만 나열하고 나머지는 "...외 N건"으로
-# 줄인다.
-MAX_EXCLUDED_FILES_IN_MESSAGE = 20
+# 줄인다. 초기 적재 기준 taxi_type 하나당 최대 파일 수(약 36개)를 넘게 잡아,
+# 컬럼 하나가 통째로 사라지는 최악의 경우에도 전부 나열되게 한다.
+MAX_EXCLUDED_FILES_IN_MESSAGE = 40
 
 
 def _validate_chunk_files(spark, bronze_chunk: list[dict]) -> list[dict]:

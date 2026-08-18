@@ -133,34 +133,43 @@ Task 자체가 죽는 경우(Spark 세션 기동 실패 등 검증 로직과 무
 
 ## 검증 항목과 심각도 (TLC Bronze, taxi_type별)
 
+> **2026-08-18 최종 리뷰 이후 수정**: 초기 설계는 dropoff 관련 2개 컬럼만 critical로 두고
+> 나머지 필수 컬럼 존재 여부는 log-only로 뒀으나, `transform.py`의 `rename_columns()`는
+> `COLUMN_MAPPING`에 있는 컬럼 중 **하나라도** 없으면 `ValueError`를 던지고 `build_silver`가
+> 청크 전체를 실패시킨다는 걸 최종 리뷰에서 놓쳤던 것이 드러났다. 즉 "일부만 critical"로
+> 두면 log-only로 통과시킨 파일이 결국 Silver 단계에서 같은 taxi_type의 다른 정상 파일까지
+> 막아버린다 — 이 설계가 막으려던 문제가 그대로 재현되는 것. 아래 표는 그 수정 결과다.
+
 | 검증 항목 | 대상 | 심각도 | 실패 시 대응 |
 |---|---|---|---|
-| dropoff_datetime, dropoff_location_id의 **원본 컬럼 자체가 존재하지 않음** | 전체 taxi_type | **Critical** | 해당 파일 제외 + Slack 즉시 알림 |
+| taxi_type이 요구하는 **원본 컬럼 자체가 존재하지 않음** (`COLUMN_MAPPING` 기준 전체 컬럼) | 전체 taxi_type | **Critical** | 해당 파일 제외 + 같은 청크 안 제외된 파일들을 모아 Slack에 1회 집계 알림 |
 | row count > 0 | 전체 taxi_type | Log-only | 로그 기록, 파일은 계속 진행 |
-| pickup_datetime, pickup_location_id 등 나머지 필수 원본 컬럼 존재 여부 (taxi_type별 `COLUMN_MAPPING` 기준, fhv/fhvhv는 passenger_count·trip_distance 제외) | taxi_type별 상이 | Log-only | 로그 기록, 파일은 계속 진행 |
 | pickup/dropoff datetime, location ID 등 **컬럼은 있지만 일부 행의 값이 null** | 전체 taxi_type | Log-only | 로그 기록 (기존 `check_null()`과 동일 정책 — 결측치가 있어도 삭제하지 않음) |
-| location ID가 유효 범위(1~263) 안에 있는지 | 전체 taxi_type | Log-only | 로그 기록 |
+| location ID가 유효 범위(1~265, TLC zone ID 1~263 + 264 Unknown + 265 Outside of NYC) 안에 있는지 | 전체 taxi_type | Log-only | 로그 기록 |
 | passenger_count, trip_distance(또는 trip_miles)가 음수가 아닌지 | 값이 존재하는 taxi_type만 | Log-only | 로그 기록 |
 
-**심각도 판단 기준**: "컬럼 자체가 원본에 없다"는 것은 TLC가 데이터 포맷을 통째로 바꿨다는
-뜻이라 드물고, 그 파일 전체가 해당 정보를 원천적으로 복구할 수 없는 상태다. 반면 "컬럼은
-있는데 일부 행만 null"인 경우는 TLC 실제 데이터에서 흔히 발생하는 정상 범주의 잡음이라
-`check_null()`이 이미 로그만 남기는 정책을 쓰고 있고, 이번 설계도 그 정책을 그대로 따른다.
-
-dropoff_datetime/dropoff_location_id를 critical로 지정한 이유는 이 두 컬럼이 Silver의 6개
-컬럼 중 traffic score 분석(세그먼트별 하차 위치·시각 집계)에 직접 쓰이는 핵심 값이기 때문이다.
+**심각도 판단 기준**: 컬럼 존재 여부는 `rename_columns()`가 어차피 전부 요구하므로 전부
+critical로 취급한다 — 일부만 critical로 나누면 나머지가 log-only로 통과했다가 Silver
+단계에서 청크 전체를 막는 결과로 이어지기 때문이다("컬럼 자체가 원본에 없다"는 TLC가 데이터
+포맷을 통째로 바꿨다는 뜻이라 드물지만, 일어나면 그 파일 전체를 원천적으로 복구할 수 없다).
+반면 "컬럼은 있는데 일부 행만 null"이거나 값이 범위를 벗어난 경우는 TLC 실제 데이터에서 흔히
+발생하는 정상 범주의 잡음이라 `check_null()`이 이미 로그만 남기는 정책을 쓰고 있고, 이번
+설계도 그 정책을 그대로 따른다.
 
 ## 실패 처리 상세
 
-- **Critical (컬럼 없음)**: 검증 실행 직후 그 자리에서 Slack으로 알림을 보내야 하는데, 이건
-  Airflow Task 자체의 최종 실패가 아니라 "정상 동작 중 특정 파일을 걸러낸 것"이라 기존
-  `notify_slack_failure`(Task 최종 실패 시 `on_failure_callback`으로만 호출됨)가 자동으로
-  발동하지 않는다. 따라서 `src/common/alerts.py`에 Airflow context에 의존하지 않는 범용 메시지
-  전송 함수(가칭 `notify_slack_message(text: str)`)를 추가하고, `bronze_validation.py`가
-  critical 실패를 감지했을 때 이 함수를 직접 호출한다. 기존 `notify_slack_failure`와 마찬가지로
-  알림 전송 자체가 실패해도 예외를 밖으로 던지지 않는다(로그만 남김).
+- **Critical (컬럼 없음)**: Task 자체의 최종 실패가 아니라 "정상 동작 중 특정 파일들을 걸러낸
+  것"이라 기존 `notify_slack_failure`(Task 최종 실패 시 `on_failure_callback`으로만 호출됨)가
+  자동으로 발동하지 않는다. `src/common/alerts.py`에 Airflow context에 의존하지 않는 범용 메시지
+  전송 함수 `notify_slack_message(text: str)`를 추가했고, `bronze_validation.py`는 청크(같은
+  taxi_type) 처리를 마친 뒤 그 청크에서 제외된 파일들을 모아 **한 번**의 Slack 메시지로
+  보낸다 — 초기 적재 시 한 taxi_type에 최대 수십 개 파일이 있어, 컬럼 하나가 통째로 사라지는
+  상황이면 파일마다 알림을 보내다 Slack Webhook의 초당 메시지 제한에 걸려 알림이 조용히
+  유실될 수 있기 때문이다. 기존 `notify_slack_failure`와 마찬가지로 알림 전송 자체가 실패해도
+  예외를 밖으로 던지지 않는다(로그만 남김).
 - **Log-only**: `src/common/logger.py`의 로거로 어떤 expectation이 왜 실패했는지(파일명,
-  taxi_type, 컬럼, 실패 건수/비율)를 기록한다. Slack 알림은 보내지 않는다.
+  taxi_type, 컬럼, 실패 건수/비율, GX가 내부적으로 잡은 예외 정보)를 기록한다. Slack 알림은
+  보내지 않는다.
 - **Task 레벨 장애**: 검증 로직과 무관한 예외(Spark 세션 기동 실패 등)는 그대로 전파해 Task를
   실패시키고, 기존 DAG의 `on_failure_callback=notify_slack_failure` 경로를 그대로 사용한다.
 
@@ -172,6 +181,7 @@ src/common/alerts.py            # notify_slack_message() 추가 (기존 파일 �
 src/tlc/expectations.py         # taxi_type별 ExpectationSuite 정의
 src/tlc/bronze_validation.py    # validate_bronze_quality Task (청크 순회 + 개별 판정 + 반응)
 dags/tlc_pipeline.py            # store_bronze와 chunk_bronze_files 사이에 Task 삽입
+dags/tlc_daily.py               # 운영 중 매일 도는 DAG에도 동일하게 연결 (최종 리뷰 후 추가)
 requirements.txt                # great_expectations>=1.20.0 추가
 ```
 
