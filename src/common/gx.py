@@ -3,6 +3,12 @@
 Spark DataFrame과 Expectation 목록을 받아 검증을 실행하고, 결과를 dict
 리스트로 반환하는 것까지만 책임진다. 검증 실패 시 어떻게 반응할지
 (파일 제외/로그/알림)는 호출하는 도메인 코드가 결정한다.
+
+반환하는 각 dict는 success/expectation_type/kwargs/result에 더해
+exception_info도 포함한다 — GX가 메트릭 계산 중 내부적으로 예외를 잡은
+경우(예: 컬럼 타입 불일치) success=False에 result={}만 남고 실제 원인은
+exception_info에만 담기므로, 이걸 버리면 구조적 실패의 진짜 원인을 알 수
+없다.
 """
 
 import great_expectations as gx
@@ -37,5 +43,6 @@ def validate_spark_dataframe(
             "expectation_type": validation_result.expectation_config.type,
             "kwargs": dict(validation_result.expectation_config.kwargs),
             "result": dict(validation_result.result),
+            "exception_info": dict(validation_result.exception_info or {}),
         })
     return results
