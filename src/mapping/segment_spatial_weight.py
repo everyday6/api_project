@@ -191,3 +191,41 @@ def _match_points_to_segment(
         return pd.DataFrame({"segment_id": pd.Series(dtype="object"), "dropoff_count": pd.Series(dtype="float64")})
 
     return pd.DataFrame(matched_rows)
+
+
+def _aggregate_hotspot_counts(
+    matched_points: pd.DataFrame,
+    map_zone_segment: pd.DataFrame,
+) -> pd.DataFrame:
+    """매칭된 grid point의 dropoff_count를 segment_id별로 합산한다.
+
+    map_zone_segment 전체(그 zone에 속한 세그먼트 전부)에 left join해서, 매칭이
+    0건인 세그먼트도 segment_hotspot_count=0으로 명시적으로 포함시킨다 — 이래야
+    다음 단계(_compute_spatial_weight)의 zone 내부 정규화가 zone에 속한 세그먼트
+    전부를 커버한다.
+    """
+    hotspot_counts = (
+        matched_points.groupby("segment_id")["dropoff_count"].sum().rename("segment_hotspot_count")
+    )
+
+    result = map_zone_segment[["segment_id", "zone_id"]].merge(
+        hotspot_counts, on="segment_id", how="left"
+    )
+    result.loc[:, "segment_hotspot_count"] = result["segment_hotspot_count"].fillna(0.0).astype("float64")
+    return result
+
+
+def _compute_spatial_weight(
+    df: pd.DataFrame,
+    alpha: float = LAPLACE_SMOOTHING_ALPHA,
+) -> pd.DataFrame:
+    """zone 내부에서 라플라스 스무딩 후 정규화한다 (zone별 spatial_weight 합 = 1).
+
+    alpha는 정성적 초안이다(TODO, 팀 검토 필요) — 매칭 0건 세그먼트가 완전히
+    0이 되지 않게 하는 최소한의 목적만 반영했다.
+    """
+    result = df.copy()
+    result.loc[:, "_smoothed"] = result["segment_hotspot_count"] + alpha
+    zone_totals = result.groupby("zone_id")["_smoothed"].transform("sum")
+    result.loc[:, "spatial_weight"] = result["_smoothed"] / zone_totals
+    return result.drop(columns=["_smoothed"])

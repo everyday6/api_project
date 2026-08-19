@@ -5,6 +5,8 @@ import pytest
 from shapely.geometry import LineString, Point, Polygon
 
 from src.mapping.segment_spatial_weight import (
+    _aggregate_hotspot_counts,
+    _compute_spatial_weight,
     _match_points_to_segment,
     _match_points_to_zone,
     _points_from_grid,
@@ -224,3 +226,58 @@ def test_match_points_to_segment_closer_segment_gets_more_share():
     assert by_segment["A"] > by_segment["B"]
     assert by_segment["A"] == pytest.approx(100 * (1 / 6) / (1 / 6 + 1 / 46), rel=1e-6)
     assert by_segment.sum() == pytest.approx(100.0)
+
+
+def test_aggregate_hotspot_counts_fills_unmatched_segments_with_zero():
+    map_zone_segment = pd.DataFrame({
+        "segment_id": ["A", "B", "C"],
+        "zone_id": [1, 1, 2],
+    })
+    matched_points = pd.DataFrame({
+        "segment_id": ["A", "A", "C"],
+        "dropoff_count": [10, 5, 3],
+    })
+
+    result = _aggregate_hotspot_counts(matched_points, map_zone_segment)
+
+    counts = result.set_index("segment_id")["segment_hotspot_count"]
+    assert counts["A"] == 15
+    assert counts["B"] == 0  # 매칭된 grid point 없음
+    assert counts["C"] == 3
+    assert len(result) == 3
+
+
+def test_aggregate_hotspot_counts_handles_no_matches_at_all():
+    map_zone_segment = pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1]})
+    matched_points = pd.DataFrame({"segment_id": pd.Series(dtype="object"), "dropoff_count": pd.Series(dtype="float64")})
+
+    result = _aggregate_hotspot_counts(matched_points, map_zone_segment)
+
+    assert len(result) == 2
+    assert (result["segment_hotspot_count"] == 0).all()
+
+
+def test_compute_spatial_weight_sums_to_one_per_zone():
+    df = pd.DataFrame({
+        "segment_id": ["A", "B", "C"],
+        "zone_id": [1, 1, 2],
+        "segment_hotspot_count": [90, 0, 5],
+    })
+
+    result = _compute_spatial_weight(df, alpha=1.0)
+
+    zone1 = result[result["zone_id"] == 1].set_index("segment_id")["spatial_weight"]
+    assert zone1["A"] == pytest.approx(91 / 92)
+    assert zone1["B"] == pytest.approx(1 / 92)
+    assert zone1.sum() == pytest.approx(1.0)
+
+    zone2 = result[result["zone_id"] == 2]["spatial_weight"]
+    assert zone2.iloc[0] == pytest.approx(1.0)  # zone에 세그먼트가 하나뿐이면 무조건 1
+
+
+def test_compute_spatial_weight_never_fully_zero():
+    df = pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1], "segment_hotspot_count": [1000, 0]})
+
+    result = _compute_spatial_weight(df, alpha=1.0)
+
+    assert (result["spatial_weight"] > 0).all()
