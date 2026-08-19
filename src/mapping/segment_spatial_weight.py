@@ -142,12 +142,18 @@ def _match_points_to_segment(
     segments = dim_segment[["segment_id", "geometry"]].merge(
         map_zone_segment[["segment_id", "zone_id"]], on="segment_id", how="inner"
     )
-    segments["geom"] = segments["geometry"].apply(wkt.loads)
+    segments = segments.assign(geom=segments["geometry"].apply(wkt.loads))
 
     matched_rows = []
+    skipped_zones = 0
+    skipped_points = 0
+    skipped_dropoff_count = 0.0
     for zone_id, zone_points in points_with_zone.groupby("zone_id"):
         zone_segments = segments[segments["zone_id"] == zone_id]
         if zone_segments.empty:
+            skipped_zones += 1
+            skipped_points += len(zone_points)
+            skipped_dropoff_count += float(zone_points["dropoff_count"].sum())
             continue
 
         geoms = zone_segments["geom"].tolist()
@@ -174,6 +180,12 @@ def _match_points_to_segment(
                     "segment_id": segment_ids[idx],
                     "dropoff_count": float(dropoff_count) * float(share),
                 })
+
+    if skipped_zones:
+        logger.warning(
+            f"[map_segment_spatial_weight] 세그먼트가 없는 zone {skipped_zones}개, "
+            f"grid point {skipped_points}건, dropoff_count {skipped_dropoff_count:.1f} 제외"
+        )
 
     if not matched_rows:
         return pd.DataFrame({"segment_id": pd.Series(dtype="object"), "dropoff_count": pd.Series(dtype="float64")})
