@@ -132,6 +132,12 @@ WORK_HOURS_COLUMNS = [
 # lineage(parsed_at)는 호출마다 값이 달라져서 이 컬럼까지 포함해 dedup하면
 # 사실상 아무것도 안 지워진다 — 의미 있는 값 컬럼만 기준으로 중복 제거한다.
 _WORK_HOURS_DEDUP_SUBSET = ["permitnumber", "work_start_hour", "work_end_hour", "work_days_code", "work_days_raw"]
+# _rule_parse_work_hours_with_lineage()가 반환하는 dict의 키(permitnumber
+# 제외). pd.DataFrame(list_of_dicts, columns=이거)로 만들 때 명시적으로
+# 넘긴다 — 모든 행이 정규식에 실패하면 list_of_dicts가 빈 리스트가 되는데,
+# columns 없이 만들면 pandas가 컬럼 자체를 못 만들어서(0열) 이후
+# raw[WORK_HOURS_COLUMNS] 선택에서 KeyError로 죽는다.
+_WORK_HOURS_PARSE_KEYS = ["work_start_hour", "work_end_hour", "work_days_code", "work_days_raw", "parse_method", "parse_source", "parsed_at"]
 
 
 def _load_raw_work_hours_rows(bronze_root: Path) -> pd.DataFrame:
@@ -171,7 +177,7 @@ def extract_work_hours(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> 
     raw = raw[parsed.notna()].copy()
     parsed = parsed[parsed.notna()]
 
-    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index)
+    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index, columns=_WORK_HOURS_PARSE_KEYS)
     for col in parsed_df.columns:
         raw[col] = parsed_df[col]
 
@@ -299,6 +305,13 @@ EMBARGO_COLUMNS = [
     "embargo_start_hour", "embargo_end_hour", "embargo_reason",
     "parse_method", "parse_source", "parsed_at",
 ]
+# _rule_parse_embargo_with_lineage()가 반환하는 dict의 키(permitnumber
+# 제외) — WORK_HOURS와 동일한 이유로 pd.DataFrame(...) 생성 시 명시적으로
+# 넘긴다(모든 행이 정규식 실패 시 빈 리스트가 되어 컬럼이 안 생기는 문제 방지).
+_EMBARGO_PARSE_KEYS = [
+    "embargo_start_date", "embargo_end_date", "embargo_start_hour", "embargo_end_hour",
+    "embargo_reason", "parse_method", "parse_source", "parsed_at",
+]
 # lineage(parsed_at)는 호출마다 값이 달라져서 이 컬럼까지 포함해 dedup하면
 # 사실상 아무것도 안 지워진다 — 의미 있는 값 컬럼만 기준으로 중복 제거한다.
 _EMBARGO_DEDUP_SUBSET = [
@@ -365,7 +378,7 @@ def extract_work_embargoes(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE)
     raw = raw[parsed.notna()].copy()
     parsed = parsed[parsed.notna()]
 
-    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index)
+    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index, columns=_EMBARGO_PARSE_KEYS)
     for col in parsed_df.columns:
         raw[col] = parsed_df[col]
 
@@ -416,7 +429,7 @@ def build_embargoes(run_date: str | None = None) -> str:
 
     parsed = raw["stipulationfulltext"].map(_rule_parse_embargo_with_lineage)
     regex_ok = raw[parsed.notna()].copy()
-    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index)
+    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index, columns=_EMBARGO_PARSE_KEYS)
     for col in parsed_df.columns:
         regex_ok[col] = parsed_df[col]
 
@@ -477,10 +490,16 @@ def build_embargoes(run_date: str | None = None) -> str:
             run_date,
         )
 
-    # 품질 리포트(고유 문구 기준) + 직전 실행 대비 급락 감지
+    # 품질 리포트(고유 문구 기준) + 직전 실행 대비 급락 감지.
+    # llm_parsed_count는 llm_ok(캐시 전체, 예전에 LLM으로 풀렸던 문구까지
+    # 다 포함)가 아니라 llm_resolved(지금 이 실행에서 실제로 regex_failed와
+    # 합쳐진 것)로 세야 한다 — 안 그러면 나중에 rule 정규식이 개선돼서
+    # 예전에 LLM으로 풀렸던 문구를 rule이 잡게 됐을 때 그 문구가 rule_parsed_count와
+    # llm_parsed_count 양쪽에 다 잡혀서 합계가 100%를 넘고 quarantine_count가
+    # 0으로 뭉개져 drift 감지 신호가 왜곡된다.
     total_unique_texts = raw["stipulationfulltext"].nunique()
     rule_parsed_count = regex_ok["stipulationfulltext"].nunique()
-    llm_parsed_count = llm_ok["stipulationfulltext"].nunique() if not llm_ok.empty else 0
+    llm_parsed_count = llm_resolved["stipulationfulltext"].nunique() if not llm_resolved.empty else 0
     drift_message = compute_and_log_quality_report(
         "embargo", run_date, total_unique_texts, rule_parsed_count, llm_parsed_count,
     )
@@ -643,9 +662,12 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
             run_date,
         )
 
+    # llm_parsed_count는 llm_ok(캐시 전체)가 아니라 llm_resolved(이번 실행의
+    # regex_failed와 실제로 합쳐진 것)로 센다 — build_embargoes()의 동일한
+    # 수정 사항 참고(리뷰에서 발견된 이중 카운팅 문제).
     total_unique_texts = raw["stipulationfulltext"].nunique()
     rule_parsed_count = regex_ok["stipulationfulltext"].nunique()
-    llm_parsed_count = llm_ok["stipulationfulltext"].nunique() if not llm_ok.empty else 0
+    llm_parsed_count = llm_resolved["stipulationfulltext"].nunique() if not llm_resolved.empty else 0
     drift_message = compute_and_log_quality_report(
         "work_hours", run_date, total_unique_texts, rule_parsed_count, llm_parsed_count,
     )
