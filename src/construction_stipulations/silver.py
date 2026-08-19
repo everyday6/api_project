@@ -68,6 +68,7 @@ from src.construction_stipulations.llm_pipeline import (
     _to_hour24,
     compute_and_log_quality_report,
     load_llm_cache,
+    quarantined_texts,
     run_llm_fallback_batch,
     write_quarantine,
 )
@@ -217,15 +218,17 @@ def extract_work_hours(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> 
 EMBARGO_DATE = r"(\d{1,2}/\d{1,2}(?:/\d{2,4})?)"
 EMBARGO_TIME = r"(\d{1,2}(?::\d{2})?\s*[AP]M)"
 
+# 콜론 앞에 공백이 낀 변형("WORK EMBARGO : ...")이 실제로 있어서(quarantine
+# 검토 중 발견 — 영향받는 permit이 4만 건 넘음) 콜론 앞에도 \s*를 허용한다.
 # 1)+2)
 EMBARGO_RE_SINGLE = re.compile(
-    rf"^WORK EMBARGO:\s*{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*(?:-|to)\s*"
+    rf"^WORK EMBARGO\s*:\s*{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*(?:-|to)\s*"
     rf"(?:{EMBARGO_DATE}\s+)?{EMBARGO_TIME}\s+for\s+(.+)",
     re.IGNORECASE,
 )
 # 3)
 EMBARGO_RE_RECURRING = re.compile(
-    rf"^WORK EMBARGO:\s*{EMBARGO_DATE}\s+to\s+{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*-\s*{EMBARGO_TIME}\s+for\s+(.+)",
+    rf"^WORK EMBARGO\s*:\s*{EMBARGO_DATE}\s+to\s+{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*-\s*{EMBARGO_TIME}\s+for\s+(.+)",
     re.IGNORECASE,
 )
 # reason 뒤에 붙는 "*NYC DOT REQUIRES FULL RESTORATION..." 보일러플레이트를 잘라낸다.
@@ -438,10 +441,15 @@ def build_embargoes(run_date: str | None = None) -> str:
 
     cache = load_llm_cache("embargo")
     known_texts = set(cache["stipulationfulltext"]) if not cache.empty else set()
-    new_texts = [t for t in failed_texts if t not in known_texts]
+    # 한 번 quarantine에 들어간 문구는 LLM이 다시 자동으로 안 건드린다 —
+    # 이 기능이 처음 생겼을 때 통째로 쌓여 있던 과거 백로그는 사람이 직접
+    # 매핑하기로 했고(quarantine에 이미 있음), 앞으로는 "역사상 이번에 처음
+    # 등장한" 문구만 자동 LLM 폴백 대상이 된다.
+    frozen_texts = quarantined_texts("embargo")
+    new_texts = [t for t in failed_texts if t not in known_texts and t not in frozen_texts]
 
     logger.info(
-        "정규식 실패 고유 문구=%d개, 이 중 LLM 캐시에 없는 신규 문구=%d개",
+        "정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개",
         len(failed_texts), len(new_texts),
     )
 
@@ -469,16 +477,20 @@ def build_embargoes(run_date: str | None = None) -> str:
         len(combined), len(regex_ok), len(llm_resolved), path,
     )
 
-    # quarantine: 지금 시점에 rule+LLM 둘 다 실패한 전체 후보(캐시에
-    # parseable=False로 남은 문구)를 permitnumber와 조인해서 기록한다.
-    # write_quarantine()은 이미 있는 키를 건드리지 않으니 매번 전체 백로그를
-    # 넘겨도 안전하다(idempotent).
-    llm_failed = cache[~cache["parseable"]] if not cache.empty else cache
-    if not llm_failed.empty:
-        quarantine_candidates = regex_failed.merge(
-            llm_failed[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
+    # quarantine: 지금 시점에 rule로도 안 잡히고 LLM으로 "성공"하지도 못한
+    # 전체 후보를 permitnumber와 조인해서 기록한다 — LLM이 명시적으로 실패
+    # 응답한 것뿐 아니라 아직 한 번도 시도 못 한 것(쿼터 소진 등, 캐시 자체가
+    # 없음)까지 전부 포함한다(left join). write_quarantine()은 이미 있는
+    # 키를 건드리지 않으니 매번 전체 백로그를 넘겨도 안전하다(idempotent) —
+    # 이렇게 한 번 들어가면 quarantined_texts()에 의해 이후 LLM 자동 재시도
+    # 대상에서 빠지고, 사람이 직접 검토해야 하는 몫이 된다.
+    llm_ok_texts = set(llm_ok["stipulationfulltext"]) if not llm_ok.empty else set()
+    still_unresolved = regex_failed[~regex_failed["stipulationfulltext"].isin(llm_ok_texts)]
+    if not still_unresolved.empty:
+        quarantine_candidates = still_unresolved.merge(
+            cache[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
             on="stipulationfulltext",
-            how="inner",
+            how="left",
         ).copy()
         quarantine_candidates["rule_failure_reason"] = "EMBARGO_RE_RECURRING/EMBARGO_RE_SINGLE 둘다 미매칭"
         write_quarantine(
@@ -605,7 +617,7 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
 
     parsed = raw["stipulationfulltext"].map(_rule_parse_work_hours_with_lineage)
     regex_ok = raw[parsed.notna()].copy()
-    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index)
+    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index, columns=_WORK_HOURS_PARSE_KEYS)
     for col in parsed_df.columns:
         regex_ok[col] = parsed_df[col]
 
@@ -614,10 +626,13 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
 
     cache = load_llm_cache("work_hours")
     known_texts = set(cache["stipulationfulltext"]) if not cache.empty else set()
-    new_texts = [t for t in failed_texts if t not in known_texts]
+    # 한 번 quarantine에 들어간 문구는 LLM이 다시 자동으로 안 건드린다 —
+    # build_embargoes()와 동일한 정책(과거 백로그는 사람이 직접 매핑).
+    frozen_texts = quarantined_texts("work_hours")
+    new_texts = [t for t in failed_texts if t not in known_texts and t not in frozen_texts]
 
     logger.info(
-        "[work_hours] 정규식 실패 고유 문구=%d개, 이 중 LLM 캐시에 없는 신규 문구=%d개",
+        "[work_hours] 정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개",
         len(failed_texts), len(new_texts),
     )
 
@@ -645,12 +660,15 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
         len(combined), len(regex_ok), len(llm_resolved), path,
     )
 
-    llm_failed = cache[~cache["parseable"]] if not cache.empty else cache
-    if not llm_failed.empty:
-        quarantine_candidates = regex_failed.merge(
-            llm_failed[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
+    # build_embargoes()와 동일한 이유(left join으로 미시도 건까지 포함) —
+    # 위 주석 참고.
+    llm_ok_texts = set(llm_ok["stipulationfulltext"]) if not llm_ok.empty else set()
+    still_unresolved = regex_failed[~regex_failed["stipulationfulltext"].isin(llm_ok_texts)]
+    if not still_unresolved.empty:
+        quarantine_candidates = still_unresolved.merge(
+            cache[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
             on="stipulationfulltext",
-            how="inner",
+            how="left",
         ).copy()
         quarantine_candidates["rule_failure_reason"] = "WORK_HOUR_RE 미매칭"
         write_quarantine(

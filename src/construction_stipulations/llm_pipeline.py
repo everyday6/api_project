@@ -481,6 +481,18 @@ def write_quarantine(category: str, candidates: pd.DataFrame, run_date: str) -> 
     logger.info("[%s] quarantine 신규 %d건 추가(누적 %d건)", category, len(new_rows), len(combined))
 
 
+def quarantined_texts(category: str) -> set[str]:
+    """이미 quarantine에 들어간(resolved 여부 무관) 문구 집합. 한 번
+    quarantine에 들어간 문구는 LLM이 다시 자동으로 건드리지 않는다 — 과거
+    통째로 쌓여있던 백로그를 "사람이 직접 처리할 몫"으로 못박아 두고, 이후
+    로직(build_embargoes/build_work_hours_rules)이 그 문구들을 신규 문구
+    선정에서 제외하는 데 쓴다."""
+    df = _load_quarantine(category)
+    if df.empty:
+        return set()
+    return set(df["stipulationfulltext"])
+
+
 def summarize_quarantine(category: str | None = None, top_n: int = 20) -> pd.DataFrame:
     """resolved==False인 quarantine 항목을 (category, stipulationfulltext)
     기준으로 그룹핑해서 영향받는 행수 기준 내림차순 정렬한다 — 사람이 반복
