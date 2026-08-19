@@ -211,7 +211,7 @@ def _aggregate_hotspot_counts(
     result = map_zone_segment[["segment_id", "zone_id"]].merge(
         hotspot_counts, on="segment_id", how="left"
     )
-    result.loc[:, "segment_hotspot_count"] = result["segment_hotspot_count"].fillna(0.0).astype("float64")
+    result["segment_hotspot_count"] = result["segment_hotspot_count"].fillna(0.0).astype("float64")
     return result
 
 
@@ -224,10 +224,17 @@ def _compute_spatial_weight(
     alpha는 정성적 초안이다(TODO, 팀 검토 필요) — 매칭 0건 세그먼트가 완전히
     0이 되지 않게 하는 최소한의 목적만 반영했다.
     """
+    if alpha <= 0:
+        raise ValueError(
+            f"alpha는 0보다 커야 합니다: {alpha}. 실 데이터에는 zone 내 세그먼트 전부가 "
+            "segment_hotspot_count=0인 zone이 있어(예: zone 103), alpha<=0이면 그 zone의 "
+            "zone_totals(= Σ(segment_hotspot_count + alpha))가 0이 되어 spatial_weight가 "
+            "0으로 나누기(NaN)가 됩니다."
+        )
     result = df.copy()
-    result.loc[:, "_smoothed"] = result["segment_hotspot_count"] + alpha
+    result["_smoothed"] = result["segment_hotspot_count"] + alpha
     zone_totals = result.groupby("zone_id")["_smoothed"].transform("sum")
-    result.loc[:, "spatial_weight"] = result["_smoothed"] / zone_totals
+    result["spatial_weight"] = result["_smoothed"] / zone_totals
     return result.drop(columns=["_smoothed"])
 
 

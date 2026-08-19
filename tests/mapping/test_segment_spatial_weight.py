@@ -285,6 +285,33 @@ def test_compute_spatial_weight_never_fully_zero():
     assert (result["spatial_weight"] > 0).all()
 
 
+def test_compute_spatial_weight_alpha_zero_raises():
+    # 실 데이터에는 zone 내 세그먼트 전부가 segment_hotspot_count=0인 zone이
+    # 있다(예: zone 103, 세그먼트 6개 전부 0). alpha<=0이면 그 zone의
+    # zone_totals가 0이 되어 spatial_weight가 0으로 나누기(NaN)가 되므로,
+    # alpha는 반드시 0보다 커야 한다.
+    df = pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [103, 103], "segment_hotspot_count": [0, 0]})
+
+    with pytest.raises(ValueError, match="alpha"):
+        _compute_spatial_weight(df, alpha=0)
+
+
+def test_aggregate_hotspot_counts_returns_float64_even_when_all_inputs_are_int():
+    # merge 결과가 int64인 채로 남아 있어도(모든 세그먼트가 매칭돼 NaN이 전혀
+    # 없는 경우) segment_hotspot_count는 항상 float64여야 한다 —
+    # .loc[:, col] = ...astype("float64")가 기존 int64 블록 dtype을 그대로
+    # 유지해버려 이 계약이 조용히 깨졌던 적이 있다(pandas 3.x).
+    map_zone_segment = pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1]})
+    matched_points = pd.DataFrame({
+        "segment_id": ["A", "B"],  # 둘 다 매칭됨 -> merge에 NaN이 전혀 없음
+        "dropoff_count": [10, 5],  # 정수만
+    })
+
+    result = _aggregate_hotspot_counts(matched_points, map_zone_segment)
+
+    assert result["segment_hotspot_count"].dtype == "float64"
+
+
 def test_build_and_validate_map_segment_spatial_weight(tmp_path, monkeypatch):
     zones = pd.DataFrame({
         "LocationID": [1],

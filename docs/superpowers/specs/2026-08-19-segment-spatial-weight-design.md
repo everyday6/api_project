@@ -67,7 +67,9 @@ bronze/tlc/hotspot_2016/dropoff_grid.parquet
 grid point (Point geometry, EPSG:2263)
         │  Taxi Zone 폴리곤과 point-in-polygon (map_zone_segment.py의 STRtree 패턴)
         ▼
-grid point + zone_id  (비매칭·비맨해튼 zone 제외, 로그만 남김)
+grid point + zone_id  (비매칭 포인트만 제외, 로그만 남김 — 이 단계는 도시 전체
+                        zone 대상이라 borough로 걸러내지 않음. Manhattan 한정
+                        필터링은 더 뒤 Gold 단계(build_dim_segment_tlc_volume)에서 함)
         │  zone_id별로 그룹화 -> 그 zone에 속한 세그먼트(map_zone_segment.parquet) 중
         │  point 반경 100ft 이내 전부를 후보로 삼아 거리 역가중(1/(distance+ε))으로
         │  dropoff_count를 나눠 배분 (반경 안에 하나도 없으면 zone 내 최근접 1개로
@@ -109,8 +111,11 @@ zone의 grid point에 카운트를 받으면, 그 zone의 `spatial_weight` 합�
    (EPSG:2263)로 변환한다 (`src/common/config.py`의 `TICKETMASTER_CRS`/`LION_CRS`
    패턴과 동일하게 `BQ_HOTSPOT_CRS = "EPSG:4326"` 상수를 추가한다).
 3. **zone 매칭**: Taxi Zone 폴리곤에 대해 point-in-polygon (STRtree)으로 zone_id를
-   찾는다. 매칭 안 되거나 Manhattan이 아닌 포인트는 제외하고 건수만 로그로 남긴다
-   (`map_zone_segment.py`의 미매칭 처리와 동일 패턴).
+   찾는다. 이 단계(`_match_points_to_zone`)는 borough로 걸러내지 않고 도시 전체
+   zone을 대상으로 매칭한다 — 매칭 안 되는 포인트만 제외하고 건수를 로그로 남긴다
+   (`map_zone_segment.py`의 미매칭 처리와 동일 패턴). Manhattan 한정 필터링은
+   기존 관례(`src/tlc/gold.py`)와 동일하게 더 뒤 Gold 단계
+   (`build_dim_segment_tlc_volume`)에서 이뤄진다.
 4. **세그먼트 매칭 (zone 내부로 한정, 반경 + 거리 역가중)**: zone_id로 그룹화한 뒤,
    `map_zone_segment.parquet`에서 같은 zone_id에 속한 세그먼트 geometry만 후보로
    삼는다. 최근접 세그먼트 하나에만 몰아주면(winner-take-all) 교차로처럼 여러

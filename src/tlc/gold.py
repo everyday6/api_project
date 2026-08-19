@@ -30,6 +30,15 @@ DIM_SEGMENT_TLC_VOLUME_PATH = GOLD_DIR / "dim_segment_tlc_volume.parquet"
 HOURS = list(range(24))
 DEFAULT_HOPS = 3
 
+# map_zone_segment.parquet은 LION 분기별 갱신(dags/lion_pipeline.py)마다 자동으로
+# 다시 만들어지지만, map_segment_spatial_weight.parquet은 정적 스냅샷이라(2016년
+# 한 해 데이터 기반, DAG 없음) 함께 갱신되지 않는다. 그래서 LION이 새 세그먼트를
+# 추가하면 spatial_weight 테이블에는 아직 없는 상태가 생길 수 있다. 소수는
+# _expand_zone_to_segment_hour의 1.0 폴백으로 안전하게 넘어가지만, spatial_weight
+# 테이블이 여러 분기 방치돼 결측 비율이 커지면 그 폴백이 zone 총합을 크게 부풀린다
+# — 이를 하드 실패로 막는 기준선. 정성적 초안이다(TODO, 팀 검토 필요).
+MAX_MISSING_SPATIAL_WEIGHT_FRACTION = 0.05
+
 
 def collect_zone_hour_counts(
     spark: SparkSession,
@@ -170,6 +179,14 @@ def build_dim_segment_tlc_volume(
     zone -> segment 분배는 균등 복사가 아니라 map_segment_spatial_weight의
     spatial_weight 비례 분배다 (2026-08-19 개정,
     docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md).
+
+    map_zone_segment는 LION 분기 갱신마다 자동으로 다시 만들어지지만
+    map_segment_spatial_weight는 정적 스냅샷이라 그렇지 않다 — 그래서 여기서
+    두 테이블 사이의 결측 세그먼트 비율을 확인해, 소수(폴백으로 안전하게
+    처리 가능)를 넘어 spatial_weight 테이블이 방치돼 낡아진 상황을 하드 실패로
+    잡아낸다(MAX_MISSING_SPATIAL_WEIGHT_FRACTION). _expand_zone_to_segment_hour
+    자체의 세그먼트별 1.0 폴백은 그대로 유지된다 — 이 체크는 그 폴백이 감당할
+    수 없는 규모로 커지는 것만 막는다.
     """
 
     map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
@@ -178,6 +195,22 @@ def build_dim_segment_tlc_volume(
     map_segment_spatial_weight = pd.read_parquet(
         map_segment_spatial_weight_path, columns=["segment_id", "spatial_weight"]
     )
+
+    zone_segment_ids = set(map_zone_segment["segment_id"])
+    if zone_segment_ids:
+        missing_segment_ids = zone_segment_ids - set(map_segment_spatial_weight["segment_id"])
+        missing_fraction = len(missing_segment_ids) / len(zone_segment_ids)
+        if missing_fraction > MAX_MISSING_SPATIAL_WEIGHT_FRACTION:
+            raise RuntimeError(
+                f"[tlc_gold] map_segment_spatial_weight에 없는 map_zone_segment 세그먼트가 "
+                f"{missing_fraction:.1%}({len(missing_segment_ids)}/{len(zone_segment_ids)}개)로 "
+                f"허용 기준({MAX_MISSING_SPATIAL_WEIGHT_FRACTION:.0%})을 초과합니다. "
+                "map_zone_segment는 LION 분기 갱신마다 자동으로 갱신되지만 "
+                "map_segment_spatial_weight는 정적 테이블이라 그렇지 않아 낡았을 수 있습니다 — "
+                "src/mapping/segment_spatial_weight.py의 빌드 파이프라인(ingest_hotspot_grid -> "
+                "build_map_segment_spatial_weight -> validate_map_segment_spatial_weight)을 다시 "
+                "실행해 map_segment_spatial_weight.parquet을 갱신하세요."
+            )
 
     # zone_id가 '{borough}' 세그먼트 중 어디에도 안 붙는 트립: TLC 특수 zone
     # 코드(264/265 등 zone_id 1~263 밖)나 다른 자치구 zone이 여기 해당한다.

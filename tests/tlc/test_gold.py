@@ -403,6 +403,68 @@ def test_build_dim_segment_tlc_volume_logs_unmatched_zone_trips(tmp_path, spark,
     assert df["dropoff_count_raw"].sum() == 1  # zone 99의 트립은 결과에 안 들어감
 
 
+def test_build_dim_segment_tlc_volume_succeeds_with_missing_fraction_below_threshold(tmp_path):
+    # 세그먼트 21개 중 1개(약 4.8%)만 map_segment_spatial_weight에서 빠진 경우 —
+    # MAX_MISSING_SPATIAL_WEIGHT_FRACTION(5%) 밑이라 정상적으로 빌드돼야 하고,
+    # 빠진 세그먼트는 _expand_zone_to_segment_hour의 1.0 폴백을 그대로 탄다.
+    segment_ids = [f"S{i}" for i in range(21)]
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": segment_ids,
+        "zone_id": [1] * 21,
+        "borough": ["Manhattan"] * 21,
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    map_segment_spatial_weight_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": segment_ids[:20],  # S20 하나만 빠짐 -> 1/21 ≈ 4.76%
+        "spatial_weight": [1 / 20] * 20,
+    }).to_parquet(map_segment_spatial_weight_path, index=False)
+
+    zone_hour_counts = pd.DataFrame({"zone_id": [1], "hour": [8], "dropoff_count": [100]})
+
+    out_path = build_dim_segment_tlc_volume(
+        zone_hour_counts,
+        map_zone_segment_path=map_zone_segment_path,
+        map_segment_spatial_weight_path=map_segment_spatial_weight_path,
+        gold_dir=tmp_path / "gold",
+    )
+
+    df = pd.read_parquet(out_path)
+    assert len(df) == 21 * 24
+
+
+def test_build_dim_segment_tlc_volume_raises_when_missing_fraction_exceeds_threshold(tmp_path):
+    # 세그먼트 10개 중 6개(60%)가 map_segment_spatial_weight에서 빠진 경우 —
+    # map_zone_segment는 LION 분기 갱신으로 계속 새로워지지만
+    # map_segment_spatial_weight는 정적 테이블이라 갱신되지 않아 여러 분기
+    # 방치된 상황을 흉내낸다. 5% 기준을 크게 초과하므로 조용히 1.0 폴백으로
+    # 넘어가지 않고 즉시 실패해야 한다.
+    segment_ids = [f"S{i}" for i in range(10)]
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({
+        "segment_id": segment_ids,
+        "zone_id": [1] * 10,
+        "borough": ["Manhattan"] * 10,
+    }).to_parquet(map_zone_segment_path, index=False)
+
+    map_segment_spatial_weight_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": segment_ids[:4],  # 6개(60%) 빠짐
+        "spatial_weight": [1 / 4] * 4,
+    }).to_parquet(map_segment_spatial_weight_path, index=False)
+
+    zone_hour_counts = pd.DataFrame({"zone_id": [1], "hour": [8], "dropoff_count": [100]})
+
+    with pytest.raises(RuntimeError, match="segment_spatial_weight"):
+        build_dim_segment_tlc_volume(
+            zone_hour_counts,
+            map_zone_segment_path=map_zone_segment_path,
+            map_segment_spatial_weight_path=map_segment_spatial_weight_path,
+            gold_dir=tmp_path / "gold",
+        )
+
+
 def test_validate_dim_segment_tlc_volume_rejects_duplicate_rows(tmp_path):
     map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
     pd.DataFrame({
