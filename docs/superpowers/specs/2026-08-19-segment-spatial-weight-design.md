@@ -168,7 +168,14 @@ zone의 grid point에 카운트를 받으면, 그 zone의 `spatial_weight` 합�
 - hour와 무관하게 같은 `spatial_weight`를 24시간 전체에 곱한다.
 - zone 총합이 그대로 유지됨을 확인: 한 zone 안에서 24시간 각각 `Σ_seg
   dropoff_count_raw(seg, hour) == dropoff_count(zone, hour)` (spatial_weight 합이
-  1이므로 성립) — 이 불변식을 `validate_dim_segment_tlc_volume`에 테스트로 추가한다.
+  1이므로 성립). `validate_dim_segment_tlc_volume`은 Gold 산출물(세그먼트x시간)만
+  읽고 zone_id/원본 zone 총합을 갖고 있지 않아 이 불변식을 직접 검증할 수 없다 —
+  대신 (1) `test_expand_zone_to_segment_hour_preserves_zone_total`(순수 함수
+  단위테스트)와 (2) `validate_map_segment_spatial_weight`의 zone별 spatial_weight
+  합=1 검증, 이 두 곳에서 실질적으로 보장한다. `build_dim_segment_tlc_volume`은
+  추가로 spatial_weight 결측 비율이 `MAX_MISSING_SPATIAL_WEIGHT_FRACTION`(5%)을
+  넘으면 하드 실패해서, 불변식이 깨질 만큼 결측이 쌓인 상태로 조용히 넘어가는
+  것도 막는다.
 
 ## 알려진 한계 (TODO)
 
