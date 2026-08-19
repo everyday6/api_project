@@ -27,8 +27,16 @@ zone→segment 균등 분배 로직을 이 가중치 기반 분배로 교체한�
 
 이 값은 **2016년 한 해 스냅샷에서 한 번 계산하는 정적 값**이다. 주기적으로 재계산할
 근거 데이터가 없으므로(TLC가 위경도 제공을 끊었음), DAG 연결이나 재실행 스케줄은
-만들지 않는다 — `map_zone_segment.parquet`과 같은 성격의 "한 번 만들고 재사용하는"
-산출물이다.
+만들지 않는다.
+
+**주의**: 이건 `map_zone_segment.parquet`과 다른 성격이다 — `map_zone_segment.parquet`은
+LION이 분기마다 갱신될 때 `dags/lion_pipeline.py`가 **자동으로 재생성**한다. 반면
+`map_segment_spatial_weight.parquet`은 그 자동 재생성 대상이 아니라서, LION 갱신으로
+새 `segment_id`가 생기면 이 정적 테이블에는 없는 상태가 된다. `_expand_zone_to_segment_hour`
+(`src/tlc/gold.py`)는 그런 결측 세그먼트를 `spatial_weight=1.0`으로 폴백 처리하지만,
+`build_dim_segment_tlc_volume`은 결측 비율이 임계값(5%, `MAX_MISSING_SPATIAL_WEIGHT_FRACTION`)을
+넘으면 하드 실패하도록 방어한다 — LION 분기 갱신 후에는 `src/mapping/segment_spatial_weight.py`의
+빌드 파이프라인을 사람이 직접 재실행해야 한다.
 
 ## 범위
 
