@@ -10,7 +10,9 @@ from src.mapping.segment_spatial_weight import (
     _match_points_to_segment,
     _match_points_to_zone,
     _points_from_grid,
+    build_map_segment_spatial_weight,
     ingest_hotspot_grid,
+    validate_map_segment_spatial_weight,
 )
 
 
@@ -281,3 +283,80 @@ def test_compute_spatial_weight_never_fully_zero():
     result = _compute_spatial_weight(df, alpha=1.0)
 
     assert (result["spatial_weight"] > 0).all()
+
+
+def test_build_and_validate_map_segment_spatial_weight(tmp_path, monkeypatch):
+    zones = pd.DataFrame({
+        "LocationID": [1],
+        "borough": ["Manhattan"],
+        "geom": [Polygon([(980000, 200000), (1000000, 200000), (1000000, 220000), (980000, 220000)])],
+    })
+    monkeypatch.setattr("src.mapping.segment_spatial_weight._load_zones", lambda path: zones)
+
+    bronze_path = tmp_path / "dropoff_grid.parquet"
+    pd.DataFrame({
+        "lat_bin": [40.75, 40.76],
+        "lon_bin": [-73.98, -73.97],
+        "dropoff_count": [100, 10],
+    }).to_parquet(bronze_path, index=False)
+
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1]}).to_parquet(map_zone_segment_path, index=False)
+
+    dim_segment_path = tmp_path / "dim_segment.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B"],
+        "geometry": [
+            LineString([(989780, 212510), (989800, 212530)]).wkt,  # (-73.98, 40.75) 근처 -> point1(100건)
+            LineString([(992550, 216150), (992570, 216170)]).wkt,  # (-73.97, 40.76) 근처 -> point2(10건)
+        ],
+    }).to_parquet(dim_segment_path, index=False)
+
+    out_path = build_map_segment_spatial_weight(
+        bronze_path=bronze_path,
+        map_zone_segment_path=map_zone_segment_path,
+        dim_segment_path=dim_segment_path,
+        zone_shapefile_path=Path("unused"),
+        silver_root=tmp_path,
+        alpha=1.0,
+    )
+    validated_path = validate_map_segment_spatial_weight(out_path, map_zone_segment_path=map_zone_segment_path)
+    assert validated_path == out_path
+
+    df = pd.read_parquet(out_path).set_index("segment_id")
+    assert df.loc["A", "segment_hotspot_count"] == 100
+    assert df.loc["B", "segment_hotspot_count"] == 10
+    assert df.loc["A", "spatial_weight"] == pytest.approx(101 / 112)
+    assert df.loc["B", "spatial_weight"] == pytest.approx(11 / 112)
+
+
+def test_validate_map_segment_spatial_weight_rejects_zone_sum_not_one(tmp_path):
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1]}).to_parquet(map_zone_segment_path, index=False)
+
+    bad_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B"],
+        "zone_id": [1, 1],
+        "segment_hotspot_count": [10, 5],
+        "spatial_weight": [0.5, 0.6],  # 합이 1이 아님(고장난 데이터를 흉내)
+    }).to_parquet(bad_path, index=False)
+
+    with pytest.raises(AssertionError, match="합이 1이 아님"):
+        validate_map_segment_spatial_weight(str(bad_path), map_zone_segment_path=map_zone_segment_path)
+
+
+def test_validate_map_segment_spatial_weight_rejects_missing_segment(tmp_path):
+    map_zone_segment_path = tmp_path / "map_zone_segment.parquet"
+    pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1]}).to_parquet(map_zone_segment_path, index=False)
+
+    bad_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": ["A"],  # B가 빠짐
+        "zone_id": [1],
+        "segment_hotspot_count": [10],
+        "spatial_weight": [1.0],
+    }).to_parquet(bad_path, index=False)
+
+    with pytest.raises(AssertionError, match="일치하지 않음"):
+        validate_map_segment_spatial_weight(str(bad_path), map_zone_segment_path=map_zone_segment_path)

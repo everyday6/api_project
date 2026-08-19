@@ -229,3 +229,60 @@ def _compute_spatial_weight(
     zone_totals = result.groupby("zone_id")["_smoothed"].transform("sum")
     result.loc[:, "spatial_weight"] = result["_smoothed"] / zone_totals
     return result.drop(columns=["_smoothed"])
+
+
+def build_map_segment_spatial_weight(
+    bronze_path: Path = BRONZE_HOTSPOT_PATH,
+    map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
+    dim_segment_path: Path = DIM_SEGMENT_PATH,
+    zone_shapefile_path: Path = TAXI_ZONE_SHAPEFILE,
+    silver_root: Path = SILVER_DIR,
+    alpha: float = LAPLACE_SMOOTHING_ALPHA,
+) -> str:
+    """2016 hotspot grid Bronze + map_zone_segment + dim_segment로 map_segment_spatial_weight를 만든다."""
+    bronze_df = pd.read_parquet(bronze_path, columns=["lat_bin", "lon_bin", "dropoff_count"])
+    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id"])
+    dim_segment = pd.read_parquet(dim_segment_path, columns=["segment_id", "geometry"])
+
+    points = _points_from_grid(bronze_df)
+    points_with_zone = _match_points_to_zone(points, zone_shapefile_path=zone_shapefile_path)
+    matched_points = _match_points_to_segment(points_with_zone, map_zone_segment, dim_segment)
+    aggregated = _aggregate_hotspot_counts(matched_points, map_zone_segment)
+    result = _compute_spatial_weight(aggregated, alpha=alpha)
+
+    silver_root.mkdir(parents=True, exist_ok=True)
+    out_path = silver_root / "map_segment_spatial_weight.parquet"
+    result.to_parquet(out_path, index=False)
+
+    logger.info(f"[map_segment_spatial_weight] {len(result)}행 저장 -> {out_path}")
+    return str(out_path)
+
+
+def validate_map_segment_spatial_weight(
+    path: str,
+    map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
+) -> str:
+    """map_segment_spatial_weight.parquet의 최소 불변식을 확인한다."""
+    df = pd.read_parquet(path)
+    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id"])
+
+    assert df["segment_id"].is_unique, "segment_id 중복 발견"
+    assert set(df["segment_id"]) == set(map_zone_segment["segment_id"]), (
+        "map_zone_segment의 세그먼트와 정확히 일치하지 않음"
+    )
+    assert (df["segment_hotspot_count"] >= 0).all(), "segment_hotspot_count에 음수 있음"
+    assert df["spatial_weight"].gt(0).all() and df["spatial_weight"].le(1).all(), (
+        "spatial_weight가 (0, 1] 범위를 벗어남"
+    )
+
+    zone_sums = df.groupby("zone_id")["spatial_weight"].sum()
+    assert np.allclose(zone_sums.to_numpy(), 1.0, atol=1e-9), "zone별 spatial_weight 합이 1이 아님"
+
+    logger.info(f"[map_segment_spatial_weight] 검증 통과 ({len(df)}행, zone {df['zone_id'].nunique()}개)")
+    return path
+
+
+if __name__ == "__main__":
+    bronze_out = ingest_hotspot_grid()
+    silver_out = build_map_segment_spatial_weight(bronze_path=Path(bronze_out))
+    validate_map_segment_spatial_weight(silver_out)
