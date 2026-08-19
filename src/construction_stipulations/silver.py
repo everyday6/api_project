@@ -395,9 +395,12 @@ EMBARGO_OUT_SOURCE = "construction_work_embargoes"
 # 정규식+LLM 둘 다 실패한 "신규"(오늘 처음 본) 고유 문구가 이 개수를 넘으면
 # validate_embargoes_output()이 예외를 던진다. 이미 예전부터 실패로 확정된
 # 캐시 항목은 매일 다시 세지 않는다(그건 못 고치는 기존 오탈자라 매번
-# 알림오면 무시하게 될 뿐) — 그래서 임계값을 낮게(사실상 "0개면 정상, 몇 개만
-# 나와도 이상 신호") 잡아도 노이즈가 안 된다.
-EMBARGO_NEW_FAILURE_ALERT_THRESHOLD = 5
+# 알림오면 무시하게 될 뿐). 알림 자체가 건별이 아니라 "하루치를 모아 한 번"
+# 체크하는 구조라(하루 1번 도는 배치 안에서 그날 신규분 전체를 합산), 임계값을
+# 낮춰도 알림 폭탄이 되지 않는다 — 실측 신규 발생률(embargo 하루 평균
+# 0.7개)이 이미 낮아서 0으로 잡아도(신규가 1건이라도 있으면 알림) 노이즈가
+# 안 되고, 오히려 새 포맷 변형을 그날 바로 알게 되는 이점이 크다.
+EMBARGO_NEW_FAILURE_ALERT_THRESHOLD = 0
 
 
 def build_embargoes(run_date: str | None = None) -> str:
@@ -592,9 +595,9 @@ def load_construction_gold(run_date: str) -> pd.DataFrame:
 WORK_HOURS_OUT_SOURCE = "construction_work_hours_rules"
 
 # work_hours는 역사상 정규식 실패 문구가 1개뿐이라(embargo의 414개에 비해
-# 극히 적음) 임계값을 embargo보다 낮게 잡는다 — 신규 실패가 조금만 나와도
-# 이상 신호로 본다.
-WORK_HOURS_NEW_FAILURE_ALERT_THRESHOLD = 3
+# 극히 적음) — embargo와 동일한 이유로 신규 실패가 1건이라도 있으면 바로
+# 알린다(하루 배치 단위 합산 체크라 노이즈가 안 됨).
+WORK_HOURS_NEW_FAILURE_ALERT_THRESHOLD = 0
 
 
 def build_work_hours_rules(run_date: str | None = None) -> str:
