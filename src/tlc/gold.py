@@ -20,6 +20,7 @@ from pyspark.sql.functions import col, dayofweek, hour as hour_of_day
 from src.common.config import BOROUGH_EVENT, GOLD_DIR, SILVER_DIR, TAXI_TYPES
 from src.common.logger import get_logger
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
+from src.mapping.segment_spatial_weight import MAP_SEGMENT_SPATIAL_WEIGHT_PATH
 from src.mapping.zone_segment import MAP_ZONE_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_gold")
@@ -152,6 +153,7 @@ def _normalize_tlc_volume(df: pd.DataFrame) -> pd.DataFrame:
 def build_dim_segment_tlc_volume(
     zone_hour_counts: pd.DataFrame,
     map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
+    map_segment_spatial_weight_path: Path = MAP_SEGMENT_SPATIAL_WEIGHT_PATH,
     gold_dir: Path = GOLD_DIR,
     borough: str = BOROUGH_EVENT,
 ) -> str:
@@ -164,10 +166,18 @@ def build_dim_segment_tlc_volume(
     공사 허가 신청이 맨해튼 한정이라, map_zone_segment의 borough 컬럼으로
     맨해튼 세그먼트만 걸러서 쓴다. TLC silver 자체(팀 공용 코드)는 도시 전체를
     유지하고, 이 Gold 단계에서만 필터링한다.
+
+    zone -> segment 분배는 균등 복사가 아니라 map_segment_spatial_weight의
+    spatial_weight 비례 분배다 (2026-08-19 개정,
+    docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md).
     """
 
     map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
     map_zone_segment = map_zone_segment.loc[map_zone_segment["borough"] == borough, ["segment_id", "zone_id"]]
+
+    map_segment_spatial_weight = pd.read_parquet(
+        map_segment_spatial_weight_path, columns=["segment_id", "spatial_weight"]
+    )
 
     # zone_id가 '{borough}' 세그먼트 중 어디에도 안 붙는 트립: TLC 특수 zone
     # 코드(264/265 등 zone_id 1~263 밖)나 다른 자치구 zone이 여기 해당한다.
@@ -182,7 +192,7 @@ def build_dim_segment_tlc_volume(
             "(TLC 특수 zone 코드 또는 다른 자치구 zone)"
         )
 
-    expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
+    expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment, map_segment_spatial_weight)
     result = _normalize_tlc_volume(expanded)
 
     out_path = gold_dir / "dim_segment_tlc_volume.parquet"

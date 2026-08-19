@@ -310,6 +310,12 @@ def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
         "borough": ["Manhattan", "Manhattan", "Manhattan", "Brooklyn"],
     }).to_parquet(map_zone_segment_path, index=False)
 
+    map_segment_spatial_weight_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B", "C", "D"],
+        "spatial_weight": [1.0, 1.0, 1.0, 1.0],
+    }).to_parquet(map_segment_spatial_weight_path, index=False)
+
     silver_dir = tmp_path / "silver"
     _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", [{
         "pickup_datetime": datetime(2024, 1, 1, 8, 0),
@@ -324,6 +330,7 @@ def test_build_and_validate_dim_segment_tlc_volume(tmp_path, spark):
     out_path = build_dim_segment_tlc_volume(
         zone_hour_counts,
         map_zone_segment_path=map_zone_segment_path,
+        map_segment_spatial_weight_path=map_segment_spatial_weight_path,
         gold_dir=tmp_path / "gold",
     )
 
@@ -354,6 +361,12 @@ def test_build_dim_segment_tlc_volume_logs_unmatched_zone_trips(tmp_path, spark,
         "borough": ["Manhattan"],
     }).to_parquet(map_zone_segment_path, index=False)
 
+    map_segment_spatial_weight_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": ["A"],
+        "spatial_weight": [1.0],
+    }).to_parquet(map_segment_spatial_weight_path, index=False)
+
     silver_dir = tmp_path / "silver"
     _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", [
         {
@@ -380,6 +393,7 @@ def test_build_dim_segment_tlc_volume_logs_unmatched_zone_trips(tmp_path, spark,
         out_path = build_dim_segment_tlc_volume(
             zone_hour_counts,
             map_zone_segment_path=map_zone_segment_path,
+            map_segment_spatial_weight_path=map_segment_spatial_weight_path,
             gold_dir=tmp_path / "gold",
         )
 
@@ -421,6 +435,12 @@ def test_validate_dim_segment_tlc_volume_rejects_zero_matching_segments(tmp_path
         "borough": ["Brooklyn", "Queens"],  # Manhattan이 하나도 없음
     }).to_parquet(map_zone_segment_path, index=False)
 
+    map_segment_spatial_weight_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B"],
+        "spatial_weight": [1.0, 1.0],
+    }).to_parquet(map_segment_spatial_weight_path, index=False)
+
     silver_dir = tmp_path / "silver"
     _write_tlc_silver_fixture(silver_dir, "yellow", "2024-01", [{
         "pickup_datetime": datetime(2024, 1, 1, 8, 0),
@@ -435,6 +455,7 @@ def test_validate_dim_segment_tlc_volume_rejects_zero_matching_segments(tmp_path
     out_path = build_dim_segment_tlc_volume(
         zone_hour_counts,
         map_zone_segment_path=map_zone_segment_path,
+        map_segment_spatial_weight_path=map_segment_spatial_weight_path,
         gold_dir=tmp_path / "gold",
     )
 
@@ -529,6 +550,12 @@ def test_build_then_query_full_pipeline_seam(tmp_path, spark):
         "borough": ["Manhattan", "Manhattan", "Manhattan"],
     }).to_parquet(map_zone_segment_path, index=False)
 
+    map_segment_spatial_weight_path = tmp_path / "map_segment_spatial_weight.parquet"
+    pd.DataFrame({
+        "segment_id": ["A", "B", "C"],
+        "spatial_weight": [1.0, 1.0, 1.0],
+    }).to_parquet(map_segment_spatial_weight_path, index=False)
+
     adjacency_path = tmp_path / "graph_segment_adjacency.parquet"
     pd.DataFrame({
         "segment_id":          ["A", "B"],
@@ -571,6 +598,7 @@ def test_build_then_query_full_pipeline_seam(tmp_path, spark):
     out_path = build_dim_segment_tlc_volume(
         zone_hour_counts,
         map_zone_segment_path=map_zone_segment_path,
+        map_segment_spatial_weight_path=map_segment_spatial_weight_path,
         gold_dir=tmp_path / "gold",
     )
     validate_dim_segment_tlc_volume(
