@@ -382,9 +382,10 @@ from src.mapping.segment_spatial_weight import _match_points_to_segment
 
 def test_match_points_to_segment_restricts_to_same_zone():
     # zone 1에 세그먼트 A(x=0)만 있고, zone 2에 세그먼트 C(x=5)가 있다.
-    # point(x=4, zone=1)는 실제로는 zone 2의 C(x=5)가 A(x=0)보다 훨씬 가깝지만,
-    # zone 경계를 넘어 매칭되면 zone별 spatial_weight 합이 깨지므로 같은
-    # zone(1)의 A로만(반경 100ft 안에 A 하나뿐이라 fallback) 매칭돼야 한다.
+    # point(x=4, zone=1)는 C(x=5, 거리=1)가 A(x=0, 거리=4)보다 더 가깝지만,
+    # zone 경계를 넘어 매칭되면 zone별 spatial_weight 합이 깨지므로 zone 1의
+    # 후보(A)만 고려해야 한다 — zone 1엔 세그먼트가 A 하나뿐이라 배분 비율은
+    # 자동으로 100%가 된다.
     map_zone_segment = pd.DataFrame({
         "segment_id": ["A", "C"],
         "zone_id": [1, 2],
