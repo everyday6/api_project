@@ -32,10 +32,14 @@ def _write_tlc_silver_fixture(base_dir, taxi_type, month, rows):
     )
 
 
-def test_expand_zone_to_segment_hour_fills_missing_with_zero():
+def test_expand_zone_to_segment_hour_weights_by_spatial_share():
     map_zone_segment = pd.DataFrame({
         "segment_id": ["A", "B", "C"],
         "zone_id": [1, 1, 2],
+    })
+    map_segment_spatial_weight = pd.DataFrame({
+        "segment_id": ["A", "B", "C"],
+        "spatial_weight": [0.7, 0.3, 1.0],
     })
     zone_hour_counts = pd.DataFrame({
         "zone_id": [1, 2],
@@ -43,26 +47,59 @@ def test_expand_zone_to_segment_hour_fills_missing_with_zero():
         "dropoff_count": [100, 5],
     })
 
-    result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
+    result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment, map_segment_spatial_weight)
 
     # 세그먼트 3개 x 24시간
     assert len(result) == 3 * 24
     assert set(result.columns) == {"segment_id", "hour", "dropoff_count_raw"}
 
     hour8 = result[result["hour"] == 8].set_index("segment_id")["dropoff_count_raw"]
-    assert hour8["A"] == 100
-    assert hour8["B"] == 100  # 같은 zone(1)이면 zone 총합을 그대로 복사
-    assert hour8["C"] == 5
+    assert hour8["A"] == pytest.approx(70.0)  # zone 1 총합 100 x weight 0.7
+    assert hour8["B"] == pytest.approx(30.0)  # zone 1 총합 100 x weight 0.3
+    assert hour8["C"] == pytest.approx(5.0)   # zone에 세그먼트 하나뿐 -> weight 1.0
 
     hour9 = result[result["hour"] == 9].set_index("segment_id")["dropoff_count_raw"]
     assert hour9["A"] == 0  # 트립이 없던 시간대는 0으로 채움
 
 
+def test_expand_zone_to_segment_hour_preserves_zone_total():
+    # spatial_weight 합이 1이면, 세그먼트별로 나눠 가져도 zone 총합은 그대로 보존돼야 한다.
+    map_zone_segment = pd.DataFrame({"segment_id": ["A", "B"], "zone_id": [1, 1]})
+    map_segment_spatial_weight = pd.DataFrame({
+        "segment_id": ["A", "B"],
+        "spatial_weight": [0.9, 0.1],
+    })
+    zone_hour_counts = pd.DataFrame({"zone_id": [1], "hour": [8], "dropoff_count": [777]})
+
+    result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment, map_segment_spatial_weight)
+
+    hour8_total = result.loc[result["hour"] == 8, "dropoff_count_raw"].sum()
+    assert hour8_total == pytest.approx(777.0)
+
+
+def test_expand_zone_to_segment_hour_missing_spatial_weight_falls_back_to_one():
+    # map_segment_spatial_weight에 없는 세그먼트는 1.0으로 폴백한다 — 조용히
+    # 0이 되어 traffic_score에서 사라지는 것보다, 예전 균등분배와 같은 결과를
+    # 내는 쪽이 안전하다.
+    map_zone_segment = pd.DataFrame({"segment_id": ["A"], "zone_id": [1]})
+    map_segment_spatial_weight = pd.DataFrame({
+        "segment_id": pd.Series(dtype="object"),
+        "spatial_weight": pd.Series(dtype="float64"),
+    })
+    zone_hour_counts = pd.DataFrame({"zone_id": [1], "hour": [8], "dropoff_count": [42]})
+
+    result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment, map_segment_spatial_weight)
+
+    hour8 = result[result["hour"] == 8].set_index("segment_id")["dropoff_count_raw"]
+    assert hour8["A"] == pytest.approx(42.0)
+
+
 def test_expand_zone_to_segment_hour_every_segment_has_24_hours():
     map_zone_segment = pd.DataFrame({"segment_id": ["A"], "zone_id": [1]})
+    map_segment_spatial_weight = pd.DataFrame({"segment_id": ["A"], "spatial_weight": [1.0]})
     zone_hour_counts = pd.DataFrame({"zone_id": [], "hour": [], "dropoff_count": []})
 
-    result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
+    result = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment, map_segment_spatial_weight)
 
     assert sorted(result["hour"].tolist()) == list(range(24))
 

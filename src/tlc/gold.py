@@ -93,16 +93,32 @@ def collect_zone_hour_counts(
 def _expand_zone_to_segment_hour(
     zone_hour_counts: pd.DataFrame,
     map_zone_segment: pd.DataFrame,
+    map_segment_spatial_weight: pd.DataFrame,
 ) -> pd.DataFrame:
     """zone x hour 하차수를 segment x hour로 펼친다.
 
-    같은 zone에 속한 세그먼트는 zone 총합을 그대로 나눠 갖지 않고 동일하게
-    받는다(세그먼트 수로 나누지 않음). 매치 안 된 시간대는 0으로 채워서
-    세그먼트마다 정확히 24행을 보장한다.
+    같은 zone에 속한 세그먼트라도 동일하게 나눠 갖지 않고,
+    map_segment_spatial_weight의 spatial_weight(zone 내부 상대 밀집도, zone별
+    합=1, docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md
+    참고)만큼 비례해서 나눠 갖는다. spatial_weight가 없는 세그먼트는 1.0으로
+    폴백한다 — 조용히 0이 되어 사라지는 것보다 예전 균등분배와 같은 결과를
+    내는 쪽이 안전하다. 매치 안 된 시간대는 0으로 채워서 세그먼트마다 정확히
+    24행을 보장한다.
     """
 
     segment_zone = map_zone_segment[["segment_id", "zone_id"]].copy()
     segment_zone["zone_id"] = segment_zone["zone_id"].astype("int64")
+
+    weights = map_segment_spatial_weight[["segment_id", "spatial_weight"]]
+    segment_zone = segment_zone.merge(weights, on="segment_id", how="left")
+
+    missing_weight = segment_zone["spatial_weight"].isna()
+    if missing_weight.any():
+        logger.warning(
+            f"[tlc_gold] map_segment_spatial_weight에 없는 세그먼트 {int(missing_weight.sum())}개, "
+            "spatial_weight=1.0으로 폴백"
+        )
+        segment_zone["spatial_weight"] = segment_zone["spatial_weight"].fillna(1.0)
 
     hours = pd.DataFrame({"hour": HOURS})
 
@@ -113,7 +129,8 @@ def _expand_zone_to_segment_hour(
     counts["hour"] = counts["hour"].astype("int64")
 
     merged = grid.merge(counts, on=["zone_id", "hour"], how="left")
-    merged["dropoff_count_raw"] = merged["dropoff_count"].fillna(0).astype("int64")
+    merged["dropoff_count"] = merged["dropoff_count"].fillna(0)
+    merged["dropoff_count_raw"] = merged["dropoff_count"] * merged["spatial_weight"]
 
     return merged[["segment_id", "hour", "dropoff_count_raw"]]
 
