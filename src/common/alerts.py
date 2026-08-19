@@ -14,8 +14,8 @@ DAG의 default_args에 이렇게 걸어서 쓴다:
         "on_failure_callback": notify_slack_failure,
     }
 
-알림 자체가 실패해도(webhook 오류, 네트워크 문제 등) 원래 태스크 실패를
-가리면 안 되므로, 여기서 발생하는 예외는 밖으로 던지지 않고 로그만 남긴다.
+Task 자체는 성공하지만 특정 파일만 제외하는 등, Task 최종 실패가 아닌
+상황에서 즉시 알림이 필요하면 notify_slack_message(text)를 직접 호출한다.
 """
 
 from __future__ import annotations
@@ -63,8 +63,13 @@ def _build_message(context: dict) -> str:
     return "\n".join(lines)
 
 
-def notify_slack_failure(context: dict) -> None:
-    """on_failure_callback으로 등록해서 쓰는 함수."""
+def _post_to_slack(text: str) -> None:
+    """Slack Webhook으로 텍스트를 전송한다.
+
+    알림 자체가 실패해도(webhook 오류, 네트워크 문제 등) 호출부의 원래
+    처리 흐름을 가리면 안 되므로, 여기서 발생하는 예외는 밖으로 던지지
+    않고 로그만 남긴다.
+    """
 
     if not SLACK_WEBHOOK_URL:
         logger.warning(
@@ -73,17 +78,37 @@ def notify_slack_failure(context: dict) -> None:
         return
 
     try:
-        message = _build_message(context)
-
         response = requests.post(
             SLACK_WEBHOOK_URL,
-            json={"text": message},
+            json={"text": text},
             timeout=SLACK_TIMEOUT,
         )
         response.raise_for_status()
 
-        logger.info("Slack 실패 알림 전송 완료")
+        logger.info("Slack 메시지 전송 완료")
 
     except Exception:
-        # 알림 실패가 원래 태스크 실패를 가리면 안 되므로 여기서 삼킨다.
-        logger.exception("Slack 실패 알림 전송 실패")
+        logger.exception("Slack 메시지 전송 실패")
+
+
+def notify_slack_failure(context: dict) -> None:
+    """on_failure_callback으로 등록해서 쓰는 함수."""
+
+    try:
+        message = _build_message(context)
+    except Exception:
+        logger.exception("Slack 실패 알림 메시지 생성 실패")
+        return
+
+    _post_to_slack(message)
+
+
+def notify_slack_message(text: str) -> None:
+    """Airflow 실패 콜백과 무관하게, 임의의 텍스트를 Slack으로 즉시 전송한다.
+
+    Bronze 검증처럼 Task 자체는 성공하지만 특정 파일을 제외했다는 걸
+    바로 알려야 할 때 쓴다 — on_failure_callback은 Task가 최종 실패로
+    확정될 때만 호출되므로 이런 경우엔 발동하지 않는다.
+    """
+
+    _post_to_slack(text)

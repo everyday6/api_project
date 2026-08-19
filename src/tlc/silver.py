@@ -67,6 +67,9 @@ def build_silver(
 ) -> list[dict]:
     """같은 taxi_type의 Bronze 파일 여러 개를 Spark 세션 하나로 Silver 변환한다."""
 
+    if not bronze_chunk:
+        return []
+
     spark = get_spark()
 
     SILVER_DIR.mkdir(
