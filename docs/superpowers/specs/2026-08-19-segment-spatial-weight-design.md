@@ -68,11 +68,13 @@ grid point (Point geometry, EPSG:2263)
         │  Taxi Zone 폴리곤과 point-in-polygon (map_zone_segment.py의 STRtree 패턴)
         ▼
 grid point + zone_id  (비매칭·비맨해튼 zone 제외, 로그만 남김)
-        │  zone_id별로 그룹화 -> 그 zone에 속한 세그먼트(map_zone_segment.parquet)만
-        │  후보로 최근접 세그먼트 탐색 (zone 경계 밖 세그먼트로는 매칭 안 함)
+        │  zone_id별로 그룹화 -> 그 zone에 속한 세그먼트(map_zone_segment.parquet) 중
+        │  point 반경 100ft 이내 전부를 후보로 삼아 거리 역가중(1/(distance+ε))으로
+        │  dropoff_count를 나눠 배분 (반경 안에 하나도 없으면 zone 내 최근접 1개로
+        │  fallback). zone 경계 밖 세그먼트로는 매칭 안 함
         ▼
-grid point + segment_id
-        │  segment_id별 dropoff_count 합산 -> segment_hotspot_count
+grid point + segment_id + 배분된 dropoff_count(분수)
+        │  segment_id별로 배분된 dropoff_count 합산 -> segment_hotspot_count
         │  (매칭 0건인 세그먼트도 map_zone_segment 기준으로 0으로 포함)
         ▼
 segment_hotspot_count (zone 내 세그먼트 전부, 매칭 없으면 0)
@@ -93,7 +95,7 @@ zone의 grid point에 카운트를 받으면, 그 zone의 `spatial_weight` 합�
 |---|---|---|
 | `segment_id` | string | LION 세그먼트 ID (`map_zone_segment`의 routable 세그먼트 전부) |
 | `zone_id` | int | 소속 TLC zone |
-| `segment_hotspot_count` | long | 2016년 그리드 기준 이 세그먼트에 매칭된 dropoff_count 합 (매칭 없으면 0) |
+| `segment_hotspot_count` | double | 2016년 그리드 기준 이 세그먼트에 배분된 dropoff_count 합 (거리 역가중 분배라 소수, 매칭 없으면 0) |
 | `spatial_weight` | double (0,1] | zone 내부 정규화된 상대 가중치. **zone별로 합 = 1** |
 
 행 수 = `map_zone_segment.parquet` 행 수와 동일(세그먼트마다 정확히 1행).
@@ -109,15 +111,26 @@ zone의 grid point에 카운트를 받으면, 그 zone의 `spatial_weight` 합�
 3. **zone 매칭**: Taxi Zone 폴리곤에 대해 point-in-polygon (STRtree)으로 zone_id를
    찾는다. 매칭 안 되거나 Manhattan이 아닌 포인트는 제외하고 건수만 로그로 남긴다
    (`map_zone_segment.py`의 미매칭 처리와 동일 패턴).
-4. **세그먼트 매칭 (zone 내부로 한정)**: zone_id로 그룹화한 뒤, `map_zone_segment.parquet`
-   에서 같은 zone_id에 속한 세그먼트 geometry만 후보로 삼아 최근접 세그먼트를 찾는다.
+4. **세그먼트 매칭 (zone 내부로 한정, 반경 + 거리 역가중)**: zone_id로 그룹화한 뒤,
+   `map_zone_segment.parquet`에서 같은 zone_id에 속한 세그먼트 geometry만 후보로
+   삼는다. 최근접 세그먼트 하나에만 몰아주면(winner-take-all) 교차로처럼 여러
+   세그먼트가 인접한 곳에서 실제 분산을 왜곡하므로, `src/mapping/ticketmaster_lion.py`의
+   buffer+nearest-fallback 패턴을 그대로 가져온다:
+   - grid point 반경 `HOTSPOT_SEGMENT_BUFFER_FT`(100ft) 이내에 있는 세그먼트 전부를
+     후보로 삼는다 (grid 셀 자체가 8~11m이라 venue-도로 매핑에 쓴 200ft보다 좁게 잡음).
+   - 후보가 있으면, 각 후보 세그먼트까지의 거리 `d`로 `1/(d + ε)` 가중치를 매겨(가까울
+     수록 더 많이 받도록) 정규화한 뒤 `dropoff_count`를 그 비율대로 나눠 배분한다.
+     `ε`(`HOTSPOT_INVERSE_DISTANCE_EPSILON_FT`, 기본 1.0ft)는 point가 세그먼트 위에
+     정확히 있어 거리가 0이 되는 경우의 0-division만 막는 역할이다.
+   - 반경 안에 세그먼트가 하나도 없으면(도로가 드문 구역), zone 내 최근접 세그먼트
+     1개로 fallback한다 — 이때는 `dropoff_count` 전부가 그 세그먼트로 간다.
    zone당 세그먼트 수가 적어(평균 약 74개) zone별로 작은 공간 인덱스를 만들어도 충분히
    빠르다.
-5. **집계**: 세그먼트별로 매칭된 grid point의 `dropoff_count`를 합산해
-   `segment_hotspot_count`를 만든다. `map_zone_segment.parquet`의 (segment_id, zone_id)
-   전체에 left join해서, 매칭이 0건인 세그먼트도 `segment_hotspot_count = 0`으로
-   명시적으로 포함시킨다 (이렇게 해야 다음 단계의 zone 합=1 정규화가 zone에 속한
-   세그먼트 전부를 커버한다).
+5. **집계**: 세그먼트별로 배분된 `dropoff_count`(반경 매칭이면 분수, fallback이면
+   정수)를 합산해 `segment_hotspot_count`를 만든다. `map_zone_segment.parquet`의
+   (segment_id, zone_id) 전체에 left join해서, 매칭이 0건인 세그먼트도
+   `segment_hotspot_count = 0`으로 명시적으로 포함시킨다 (이렇게 해야 다음 단계의
+   zone 합=1 정규화가 zone에 속한 세그먼트 전부를 커버한다).
 6. **스무딩 + 정규화**:
    ```
    spatial_weight(seg) = (segment_hotspot_count(seg) + α) / Σ_{s ∈ zone(seg)} (segment_hotspot_count(s) + α)
@@ -148,10 +161,13 @@ zone의 grid point에 카운트를 받으면, 그 zone의 `spatial_weight` 합�
 
 1. **2016년 공간 분포가 현재도 유효하다는 가정.** 검증 수단이 없다(TLC가 위경도
    제공을 끊었기 때문). 도로망/건물이 크게 안 바뀌었다는 전제에 의존한다.
-2. **라플라스 스무딩 상수 `α`는 정성적 초안이다.** `HOP_DECAY`와 같은 성격의 TODO.
-3. **zone 경계로 최근접 매칭을 한정**하기 때문에, zone 경계 바로 바깥에 실제로는 더
-   가까운 세그먼트가 있어도 무시된다. zone 내부 비율의 합을 1로 유지하기 위한
-   trade-off다.
+2. **라플라스 스무딩 상수 `α`, buffer 반경(`HOTSPOT_SEGMENT_BUFFER_FT`=100ft), 거리
+   역가중 epsilon(`HOTSPOT_INVERSE_DISTANCE_EPSILON_FT`=1.0ft)은 전부 정성적
+   초안이다.** `HOP_DECAY`와 같은 성격의 TODO — "가까운 세그먼트가 더 받아야 한다",
+   "0건 세그먼트가 완전히 0이 되면 안 된다"는 정성적 요구만 반영했고, 실측 검증된
+   값은 아니다.
+3. **zone 경계로 매칭을 한정**하기 때문에, zone 경계 바로 바깥에 실제로는 더 가까운
+   세그먼트가 있어도 무시된다. zone 내부 비율의 합을 1로 유지하기 위한 trade-off다.
 4. **하차(dropoff) 위치만 반영한다.** 승차(pickup) 위치는 이번 범위에 포함하지 않음
    (기존 `tlc_volume` 컴포넌트 자체가 dropoff 기준이라 일관성 유지).
 
@@ -161,4 +177,6 @@ zone의 grid point에 카운트를 받으면, 그 zone의 `spatial_weight` 합�
   `tlc_volume` 설계, 이번 설계가 수정하는 대상
 - `src/mapping/zone_segment.py` — zone-segment 매핑에 쓴 STRtree/point-in-polygon
   패턴 재사용
+- `src/mapping/ticketmaster_lion.py` — 반경(buffer) 내 전부 매칭 + 반경 밖이면
+  최근접 1개 fallback 패턴 재사용 (여기선 buffer 안에서 거리 역가중 분배까지 추가)
 - `src/taxi_zone/bronze.py` — 정적 참조 테이블 Bronze 적재 패턴
