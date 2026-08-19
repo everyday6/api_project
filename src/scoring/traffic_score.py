@@ -83,6 +83,7 @@ HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
         ts_date,
         _load_adjacency(),
         _load_capacity_by_segment(),
+        _load_lanes_by_segment(),
     ),
     "tlc_volume": lambda ts_date: _load_tlc_volume_table(),
     "event_boost": lambda ts_date: _event_boost_table_for_date(ts_date),
@@ -137,6 +138,14 @@ def _load_capacity_by_segment() -> dict:
     if "capacity_by_segment" not in _cache:
         _cache["capacity_by_segment"] = closure_penalty.load_capacity_by_segment()
     return _cache["capacity_by_segment"]
+
+
+def _load_lanes_by_segment() -> dict:
+    """segment_id -> lanes_total. closure_penalty의 NCHRP 차로 기반 보정에
+    쓰인다(_lane_aware_half_saturation) — 요청마다 다시 읽지 않도록 캐싱한다."""
+    if "lanes_by_segment" not in _cache:
+        _cache["lanes_by_segment"] = closure_penalty.load_lanes_by_segment()
+    return _cache["lanes_by_segment"]
 
 
 def _event_boost_table_for_date(ts_date: str) -> pd.DataFrame:
@@ -325,7 +334,10 @@ def _closure_penalty_value(segment_id: str, hour: int, ts_date: str, exclude_sit
     capacity = _load_capacity_by_segment().get(segment_id)
     if not capacity:
         return 0.0
-    reduction_ratio = remaining_intensity / (remaining_intensity + closure_penalty.HALF_SATURATION_INTENSITY)
+    half_saturation = closure_penalty._lane_aware_half_saturation(_load_lanes_by_segment().get(segment_id))
+    reduction_ratio = (
+        closure_penalty.URBAN_WORK_ZONE_MAX_REDUCTION * remaining_intensity / (remaining_intensity + half_saturation)
+    )
     return -(capacity * reduction_ratio)
 
 

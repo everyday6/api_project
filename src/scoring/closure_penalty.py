@@ -48,8 +48,12 @@ closure_penalty(용량 감소량)를 계산한다 -> dim_segment_closure_penalty
    변환한다: reduction_ratio = intensity / (intensity + K) (점근선/포화 곡선 —
    intensity가 아무리 커도 100%에 도달하지 않는다. 처음엔 선형 캡을 썼다가
    영향받는 세그먼트의 48.8%가 용량 0이 되는 문제를 발견해서 이 방식으로
-   교체했다). K(HALF_SATURATION_INTENSITY)도 근거 있는 값이 아닌 초안이다 —
-   TODO(팀 검토 필요).
+   교체했다). K는 이제 고정 상수가 아니라 NCHRP Report 03-107(HCM 작업구간
+   용량 방법론) 실측 범위를 세그먼트의 실제 차로 수(lanes_total)에 맞게
+   보정한 값이다 — "차로 1개만 남았을 때 용량이 68%(감소 32%)로 떨어진다"는
+   실측 앵커를 지나가도록 세그먼트별로 K를 역산한다(_lane_aware_half_saturation
+   참고). lanes_total을 모르는 세그먼트만 예전 고정값(HALF_SATURATION_INTENSITY,
+   PENALTY_RATIO=0.3 기준)으로 폴백한다.
 
 결과 스키마: segment_id, hour(0~23), closure_intensity, closure_capacity_reduction.
 같은 segment도 시간대별로 다른 행을 가질 수 있다(예: 야간 공사면 낮 시간대엔
@@ -84,15 +88,65 @@ CONSTRUCTION_GOLD_DIR = GOLD_DIR / "construction"
 
 MAX_HOPS = 3
 # TODO(팀 검토 필요): 근거 없는 초안 — "홉이 멀수록 영향이 줄어든다"는 정성적
-# 요구만 반영한 선형 감쇠.
-HOP_DECAY = {0: 1.0, 1: 0.75, 2: 0.5, 3: 0.25}
+# 요구만 반영한 감쇠. 진앙 segment 자체의 최대 감소율을 100%가 아니라
+# URBAN_WORK_ZONE_MAX_REDUCTION(58%)로 캡을 씌운 대신(아래 참고), 그 도로가
+# 막혀서 못 가는 차량이 실제로는 주변 도로로 우회하는 효과를 반영하기 위해
+# 홉 감쇠값을 기존(0.75/0.5/0.25)보다 올렸다 — 실측 검증된 값은 아니고
+# "진앙 하나에 캡을 씌운 만큼 주변으로 더 퍼지게 한다"는 정성적 보정이다.
+HOP_DECAY = {0: 1.0, 1: 0.85, 2: 0.65, 3: 0.4}
 
-# TODO(팀 검토 필요): PENALTY_RATIO=0.3은 "활성 공사/통제 1건(intensity=1)당
-# capacity_per_hour의 30%를 깎는다"는 의도를 반영한 값이고, 이걸 점근선 곡선
-# intensity/(intensity+K)가 intensity=1에서 지나가도록 역산해서 K를 구했다.
-# 자세한 경위(선형 캡의 문제)는 모듈 docstring 5번 참고.
+# PENALTY_RATIO=0.3(고정값) 대신 NCHRP Report 03-107(HCM 작업구간 용량
+# 방법론) 실측 범위로 half-saturation을 세그먼트의 실제 차로 수(lanes_total)
+# 기반으로 계산한다 — _lane_aware_half_saturation() 참고. lanes_total을 모르는
+# 세그먼트(LION 원본에 없는 경우, 맨해튼 기준 약 15%)를 위한 폴백값으로만
+# 이 고정 상수를 남겨둔다.
 PENALTY_RATIO = 0.3
 HALF_SATURATION_INTENSITY = (1 - PENALTY_RATIO) / PENALTY_RATIO  # ≈ 2.33
+
+# NCHRP Report 03-107(FREEVAL-WZ/HCM 7판이 쓰는 작업구간 용량 조정계수,
+# CAF) 실측 범위: 다차선 도로에서 "차로 1개만 남았을 때" 용량이 원래의
+# 약 68%(감소 32%)로 떨어진다고 보고한다. 이 프로젝트는 정확히 몇 차로가
+# 막혔는지는 모르지만(허가 데이터에 없음) LION에 세그먼트별 전체 차로 수
+# (lanes_total)는 있어서, "intensity가 늘어나 차로 1개만 남은 것과 같아지는
+# 지점"에서 이 실측 감소율이 나오도록 half-saturation을 세그먼트별로 역산한다.
+NCHRP_ONE_LANE_OPEN_CAF = 0.68
+
+# reduction_ratio = intensity/(intensity+K)는 K가 아무리 작아도(예: 1차로
+# 도로) intensity가 커지면 결국 100%(완전폐쇄)에 수렴한다 — 근데 100% 완전
+# 폐쇄는 어떤 레퍼런스로도 검증 안 된 극단값이다(1차로 도로 자체를 측정한
+# 연구가 아니라 "다차선 도로가 1차로까지 좁아진" 경우만 측정됨). 대신 HCM
+# 도심 도로(urban street) 실측 연구 중 "미드블록 작업구간 존재 시 관측된
+# 심각한 사례"(58% 감소, 1,040 vphpl 감소)를 절대 상한으로 쓴다 — 아무리
+# intensity가 커져도(=lanes_total 기준 완전폐쇄 시점을 넘어서도) 이 상한
+# 이상은 안 깎는다. 대신 그만큼 못 지나가는 차량이 주변 도로로 우회하는
+# 효과를 HOP_DECAY를 올려서 반영한다(위 참고).
+URBAN_WORK_ZONE_MAX_REDUCTION = 0.58
+
+
+def _lane_aware_half_saturation(lanes_total: float | None) -> float:
+    """reduction_ratio = URBAN_WORK_ZONE_MAX_REDUCTION * intensity/(intensity+K)
+    (to_capacity_reduction 참고)에 쓰이는 K를, "차로 (lanes_total-1)개가
+    막혀서 1개만 남으면 NCHRP 실측대로 32% 감소" 지점을 지나가도록
+    lanes_total 기준으로 계산한다 — K가 작을수록(=차로가 적을수록) 같은
+    intensity에도 URBAN_WORK_ZONE_MAX_REDUCTION 상한에 더 빨리 도달한다.
+
+    lanes_total이 1이면(편도 1차로) 그 유일한 차로가 곧 "남은 차로 0개"
+    상태와 같아서, 활성 공사가 하나라도 있으면 즉시(또는 거의 즉시) 상한에
+    도달한다 — 실제로 1차선 도로는 공사 하나만 걸려도 체감상 거의 막힌 것과
+    같다는 상식과 맞지만, 상한 자체가 100%가 아니라 58%로 캡이 걸려 있어
+    "완전폐쇄"까지 주장하진 않는다.
+
+    lanes_total을 모르면(결측) 기존 고정값(HALF_SATURATION_INTENSITY,
+    PENALTY_RATIO=0.3 기준)으로 폴백한다 — 데이터가 없을 때의 안전한 기본값.
+    """
+    if lanes_total is None or pd.isna(lanes_total) or lanes_total < 1:
+        return HALF_SATURATION_INTENSITY
+    if lanes_total <= 1:
+        return 1e-6  # 사실상 즉시 포화 — 위 docstring 참고
+    lanes_closed_for_one_open = lanes_total - 1
+    # reduction_ratio(intensity=lanes_closed_for_one_open) = 1 - CAF가 되도록 역산:
+    # (L-1)/((L-1)+K) = 1-CAF  =>  K = (L-1) * CAF / (1-CAF)
+    return lanes_closed_for_one_open * NCHRP_ONE_LANE_OPEN_CAF / (1 - NCHRP_ONE_LANE_OPEN_CAF)
 
 # work_days_code -> 그 요일 코드가 활성인 요일(weekday(), 0=월~6=일) 조건.
 # 여기 없는 코드(None, "OTHER" 등)는 활성 여부를 모른다는 뜻이라 "항상 활성"으로
@@ -521,6 +575,12 @@ def load_capacity_by_segment() -> dict:
     return dim.set_index("segment_id")["capacity_per_hour"].to_dict()
 
 
+def load_lanes_by_segment() -> dict:
+    """_lane_aware_half_saturation()에 넘길 세그먼트별 전체 차로 수."""
+    dim = pd.read_parquet(DIM_SEGMENT_PATH, columns=["segment_id", "lanes_total"])
+    return dim.set_index("segment_id")["lanes_total"].to_dict()
+
+
 def spread_with_decay(
     ground_zero: pd.Series,
     adjacency: dict,
@@ -557,14 +617,21 @@ def spread_with_decay(
 def to_capacity_reduction(
     accum: dict[str, float],
     capacity_by_segment: dict,
-    half_saturation: float = HALF_SATURATION_INTENSITY,
+    lanes_by_segment: dict | None = None,
 ) -> pd.DataFrame:
+    """lanes_by_segment가 있으면 세그먼트별 차로 수 기준 NCHRP 보정 half
+    saturation을 쓰고(_lane_aware_half_saturation), 없으면(예: 기존 호출부
+    호환) 고정값(HALF_SATURATION_INTENSITY)을 그대로 쓴다."""
     rows = []
     for seg_id, intensity in accum.items():
         cap = capacity_by_segment.get(seg_id)
         if cap is None or cap <= 0:
             continue
-        reduction_ratio = intensity / (intensity + half_saturation)
+        if lanes_by_segment is not None:
+            half_saturation = _lane_aware_half_saturation(lanes_by_segment.get(seg_id))
+        else:
+            half_saturation = HALF_SATURATION_INTENSITY
+        reduction_ratio = URBAN_WORK_ZONE_MAX_REDUCTION * intensity / (intensity + half_saturation)
         reduction = -(cap * reduction_ratio)
         rows.append({"segment_id": seg_id, "closure_intensity": intensity, "closure_capacity_reduction": reduction})
 
@@ -576,6 +643,7 @@ def compute_hourly_penalty(
     query_date: str,
     adjacency: dict,
     capacity_by_segment: dict,
+    lanes_by_segment: dict | None = None,
 ) -> pd.DataFrame:
     """query_date 기준 날짜 범위로 먼저 걸러낸 뒤, 0~23시 각각에 대해 그 시각
     기준 활성인 레코드만으로 감쇠/합산/용량감소를 계산한다.
@@ -610,7 +678,7 @@ def compute_hourly_penalty(
 
         intensity = active.groupby("segment_id").size()
         accum = spread_with_decay(intensity, adjacency)
-        hour_df = to_capacity_reduction(accum, capacity_by_segment)
+        hour_df = to_capacity_reduction(accum, capacity_by_segment, lanes_by_segment)
         if hour_df.empty:
             continue
         hour_df["hour"] = hour
@@ -713,8 +781,9 @@ def build(run_date: str | None = None) -> str:
     records = load_ground_zero_records(run_date)
     adjacency = load_adjacency()
     capacity_by_segment = load_capacity_by_segment()
+    lanes_by_segment = load_lanes_by_segment()
 
-    df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment)
+    df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment, lanes_by_segment)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 

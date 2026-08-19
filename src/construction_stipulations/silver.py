@@ -68,6 +68,7 @@ from src.construction_stipulations.llm_pipeline import (
     _to_hour24,
     compute_and_log_quality_report,
     load_llm_cache,
+    quarantined_texts,
     run_llm_fallback_batch,
     write_quarantine,
 )
@@ -132,6 +133,12 @@ WORK_HOURS_COLUMNS = [
 # lineage(parsed_at)는 호출마다 값이 달라져서 이 컬럼까지 포함해 dedup하면
 # 사실상 아무것도 안 지워진다 — 의미 있는 값 컬럼만 기준으로 중복 제거한다.
 _WORK_HOURS_DEDUP_SUBSET = ["permitnumber", "work_start_hour", "work_end_hour", "work_days_code", "work_days_raw"]
+# _rule_parse_work_hours_with_lineage()가 반환하는 dict의 키(permitnumber
+# 제외). pd.DataFrame(list_of_dicts, columns=이거)로 만들 때 명시적으로
+# 넘긴다 — 모든 행이 정규식에 실패하면 list_of_dicts가 빈 리스트가 되는데,
+# columns 없이 만들면 pandas가 컬럼 자체를 못 만들어서(0열) 이후
+# raw[WORK_HOURS_COLUMNS] 선택에서 KeyError로 죽는다.
+_WORK_HOURS_PARSE_KEYS = ["work_start_hour", "work_end_hour", "work_days_code", "work_days_raw", "parse_method", "parse_source", "parsed_at"]
 
 
 def _load_raw_work_hours_rows(bronze_root: Path) -> pd.DataFrame:
@@ -171,7 +178,7 @@ def extract_work_hours(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> 
     raw = raw[parsed.notna()].copy()
     parsed = parsed[parsed.notna()]
 
-    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index)
+    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index, columns=_WORK_HOURS_PARSE_KEYS)
     for col in parsed_df.columns:
         raw[col] = parsed_df[col]
 
@@ -211,15 +218,17 @@ def extract_work_hours(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> 
 EMBARGO_DATE = r"(\d{1,2}/\d{1,2}(?:/\d{2,4})?)"
 EMBARGO_TIME = r"(\d{1,2}(?::\d{2})?\s*[AP]M)"
 
+# 콜론 앞에 공백이 낀 변형("WORK EMBARGO : ...")이 실제로 있어서(quarantine
+# 검토 중 발견 — 영향받는 permit이 4만 건 넘음) 콜론 앞에도 \s*를 허용한다.
 # 1)+2)
 EMBARGO_RE_SINGLE = re.compile(
-    rf"^WORK EMBARGO:\s*{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*(?:-|to)\s*"
+    rf"^WORK EMBARGO\s*:\s*{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*(?:-|to)\s*"
     rf"(?:{EMBARGO_DATE}\s+)?{EMBARGO_TIME}\s+for\s+(.+)",
     re.IGNORECASE,
 )
 # 3)
 EMBARGO_RE_RECURRING = re.compile(
-    rf"^WORK EMBARGO:\s*{EMBARGO_DATE}\s+to\s+{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*-\s*{EMBARGO_TIME}\s+for\s+(.+)",
+    rf"^WORK EMBARGO\s*:\s*{EMBARGO_DATE}\s+to\s+{EMBARGO_DATE}\s+{EMBARGO_TIME}\s*-\s*{EMBARGO_TIME}\s+for\s+(.+)",
     re.IGNORECASE,
 )
 # reason 뒤에 붙는 "*NYC DOT REQUIRES FULL RESTORATION..." 보일러플레이트를 잘라낸다.
@@ -299,6 +308,13 @@ EMBARGO_COLUMNS = [
     "embargo_start_hour", "embargo_end_hour", "embargo_reason",
     "parse_method", "parse_source", "parsed_at",
 ]
+# _rule_parse_embargo_with_lineage()가 반환하는 dict의 키(permitnumber
+# 제외) — WORK_HOURS와 동일한 이유로 pd.DataFrame(...) 생성 시 명시적으로
+# 넘긴다(모든 행이 정규식 실패 시 빈 리스트가 되어 컬럼이 안 생기는 문제 방지).
+_EMBARGO_PARSE_KEYS = [
+    "embargo_start_date", "embargo_end_date", "embargo_start_hour", "embargo_end_hour",
+    "embargo_reason", "parse_method", "parse_source", "parsed_at",
+]
 # lineage(parsed_at)는 호출마다 값이 달라져서 이 컬럼까지 포함해 dedup하면
 # 사실상 아무것도 안 지워진다 — 의미 있는 값 컬럼만 기준으로 중복 제거한다.
 _EMBARGO_DEDUP_SUBSET = [
@@ -365,7 +381,7 @@ def extract_work_embargoes(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE)
     raw = raw[parsed.notna()].copy()
     parsed = parsed[parsed.notna()]
 
-    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index)
+    parsed_df = pd.DataFrame(parsed.tolist(), index=raw.index, columns=_EMBARGO_PARSE_KEYS)
     for col in parsed_df.columns:
         raw[col] = parsed_df[col]
 
@@ -379,9 +395,12 @@ EMBARGO_OUT_SOURCE = "construction_work_embargoes"
 # 정규식+LLM 둘 다 실패한 "신규"(오늘 처음 본) 고유 문구가 이 개수를 넘으면
 # validate_embargoes_output()이 예외를 던진다. 이미 예전부터 실패로 확정된
 # 캐시 항목은 매일 다시 세지 않는다(그건 못 고치는 기존 오탈자라 매번
-# 알림오면 무시하게 될 뿐) — 그래서 임계값을 낮게(사실상 "0개면 정상, 몇 개만
-# 나와도 이상 신호") 잡아도 노이즈가 안 된다.
-EMBARGO_NEW_FAILURE_ALERT_THRESHOLD = 5
+# 알림오면 무시하게 될 뿐). 알림 자체가 건별이 아니라 "하루치를 모아 한 번"
+# 체크하는 구조라(하루 1번 도는 배치 안에서 그날 신규분 전체를 합산), 임계값을
+# 낮춰도 알림 폭탄이 되지 않는다 — 실측 신규 발생률(embargo 하루 평균
+# 0.7개)이 이미 낮아서 0으로 잡아도(신규가 1건이라도 있으면 알림) 노이즈가
+# 안 되고, 오히려 새 포맷 변형을 그날 바로 알게 되는 이점이 크다.
+EMBARGO_NEW_FAILURE_ALERT_THRESHOLD = 0
 
 
 def build_embargoes(run_date: str | None = None) -> str:
@@ -416,7 +435,7 @@ def build_embargoes(run_date: str | None = None) -> str:
 
     parsed = raw["stipulationfulltext"].map(_rule_parse_embargo_with_lineage)
     regex_ok = raw[parsed.notna()].copy()
-    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index)
+    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index, columns=_EMBARGO_PARSE_KEYS)
     for col in parsed_df.columns:
         regex_ok[col] = parsed_df[col]
 
@@ -425,10 +444,15 @@ def build_embargoes(run_date: str | None = None) -> str:
 
     cache = load_llm_cache("embargo")
     known_texts = set(cache["stipulationfulltext"]) if not cache.empty else set()
-    new_texts = [t for t in failed_texts if t not in known_texts]
+    # 한 번 quarantine에 들어간 문구는 LLM이 다시 자동으로 안 건드린다 —
+    # 이 기능이 처음 생겼을 때 통째로 쌓여 있던 과거 백로그는 사람이 직접
+    # 매핑하기로 했고(quarantine에 이미 있음), 앞으로는 "역사상 이번에 처음
+    # 등장한" 문구만 자동 LLM 폴백 대상이 된다.
+    frozen_texts = quarantined_texts("embargo")
+    new_texts = [t for t in failed_texts if t not in known_texts and t not in frozen_texts]
 
     logger.info(
-        "정규식 실패 고유 문구=%d개, 이 중 LLM 캐시에 없는 신규 문구=%d개",
+        "정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개",
         len(failed_texts), len(new_texts),
     )
 
@@ -456,16 +480,20 @@ def build_embargoes(run_date: str | None = None) -> str:
         len(combined), len(regex_ok), len(llm_resolved), path,
     )
 
-    # quarantine: 지금 시점에 rule+LLM 둘 다 실패한 전체 후보(캐시에
-    # parseable=False로 남은 문구)를 permitnumber와 조인해서 기록한다.
-    # write_quarantine()은 이미 있는 키를 건드리지 않으니 매번 전체 백로그를
-    # 넘겨도 안전하다(idempotent).
-    llm_failed = cache[~cache["parseable"]] if not cache.empty else cache
-    if not llm_failed.empty:
-        quarantine_candidates = regex_failed.merge(
-            llm_failed[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
+    # quarantine: 지금 시점에 rule로도 안 잡히고 LLM으로 "성공"하지도 못한
+    # 전체 후보를 permitnumber와 조인해서 기록한다 — LLM이 명시적으로 실패
+    # 응답한 것뿐 아니라 아직 한 번도 시도 못 한 것(쿼터 소진 등, 캐시 자체가
+    # 없음)까지 전부 포함한다(left join). write_quarantine()은 이미 있는
+    # 키를 건드리지 않으니 매번 전체 백로그를 넘겨도 안전하다(idempotent) —
+    # 이렇게 한 번 들어가면 quarantined_texts()에 의해 이후 LLM 자동 재시도
+    # 대상에서 빠지고, 사람이 직접 검토해야 하는 몫이 된다.
+    llm_ok_texts = set(llm_ok["stipulationfulltext"]) if not llm_ok.empty else set()
+    still_unresolved = regex_failed[~regex_failed["stipulationfulltext"].isin(llm_ok_texts)]
+    if not still_unresolved.empty:
+        quarantine_candidates = still_unresolved.merge(
+            cache[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
             on="stipulationfulltext",
-            how="inner",
+            how="left",
         ).copy()
         quarantine_candidates["rule_failure_reason"] = "EMBARGO_RE_RECURRING/EMBARGO_RE_SINGLE 둘다 미매칭"
         write_quarantine(
@@ -477,10 +505,16 @@ def build_embargoes(run_date: str | None = None) -> str:
             run_date,
         )
 
-    # 품질 리포트(고유 문구 기준) + 직전 실행 대비 급락 감지
+    # 품질 리포트(고유 문구 기준) + 직전 실행 대비 급락 감지.
+    # llm_parsed_count는 llm_ok(캐시 전체, 예전에 LLM으로 풀렸던 문구까지
+    # 다 포함)가 아니라 llm_resolved(지금 이 실행에서 실제로 regex_failed와
+    # 합쳐진 것)로 세야 한다 — 안 그러면 나중에 rule 정규식이 개선돼서
+    # 예전에 LLM으로 풀렸던 문구를 rule이 잡게 됐을 때 그 문구가 rule_parsed_count와
+    # llm_parsed_count 양쪽에 다 잡혀서 합계가 100%를 넘고 quarantine_count가
+    # 0으로 뭉개져 drift 감지 신호가 왜곡된다.
     total_unique_texts = raw["stipulationfulltext"].nunique()
     rule_parsed_count = regex_ok["stipulationfulltext"].nunique()
-    llm_parsed_count = llm_ok["stipulationfulltext"].nunique() if not llm_ok.empty else 0
+    llm_parsed_count = llm_resolved["stipulationfulltext"].nunique() if not llm_resolved.empty else 0
     drift_message = compute_and_log_quality_report(
         "embargo", run_date, total_unique_texts, rule_parsed_count, llm_parsed_count,
     )
@@ -561,9 +595,9 @@ def load_construction_gold(run_date: str) -> pd.DataFrame:
 WORK_HOURS_OUT_SOURCE = "construction_work_hours_rules"
 
 # work_hours는 역사상 정규식 실패 문구가 1개뿐이라(embargo의 414개에 비해
-# 극히 적음) 임계값을 embargo보다 낮게 잡는다 — 신규 실패가 조금만 나와도
-# 이상 신호로 본다.
-WORK_HOURS_NEW_FAILURE_ALERT_THRESHOLD = 3
+# 극히 적음) — embargo와 동일한 이유로 신규 실패가 1건이라도 있으면 바로
+# 알린다(하루 배치 단위 합산 체크라 노이즈가 안 됨).
+WORK_HOURS_NEW_FAILURE_ALERT_THRESHOLD = 0
 
 
 def build_work_hours_rules(run_date: str | None = None) -> str:
@@ -586,7 +620,7 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
 
     parsed = raw["stipulationfulltext"].map(_rule_parse_work_hours_with_lineage)
     regex_ok = raw[parsed.notna()].copy()
-    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index)
+    parsed_df = pd.DataFrame(parsed[parsed.notna()].tolist(), index=regex_ok.index, columns=_WORK_HOURS_PARSE_KEYS)
     for col in parsed_df.columns:
         regex_ok[col] = parsed_df[col]
 
@@ -595,10 +629,13 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
 
     cache = load_llm_cache("work_hours")
     known_texts = set(cache["stipulationfulltext"]) if not cache.empty else set()
-    new_texts = [t for t in failed_texts if t not in known_texts]
+    # 한 번 quarantine에 들어간 문구는 LLM이 다시 자동으로 안 건드린다 —
+    # build_embargoes()와 동일한 정책(과거 백로그는 사람이 직접 매핑).
+    frozen_texts = quarantined_texts("work_hours")
+    new_texts = [t for t in failed_texts if t not in known_texts and t not in frozen_texts]
 
     logger.info(
-        "[work_hours] 정규식 실패 고유 문구=%d개, 이 중 LLM 캐시에 없는 신규 문구=%d개",
+        "[work_hours] 정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개",
         len(failed_texts), len(new_texts),
     )
 
@@ -626,12 +663,15 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
         len(combined), len(regex_ok), len(llm_resolved), path,
     )
 
-    llm_failed = cache[~cache["parseable"]] if not cache.empty else cache
-    if not llm_failed.empty:
-        quarantine_candidates = regex_failed.merge(
-            llm_failed[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
+    # build_embargoes()와 동일한 이유(left join으로 미시도 건까지 포함) —
+    # 위 주석 참고.
+    llm_ok_texts = set(llm_ok["stipulationfulltext"]) if not llm_ok.empty else set()
+    still_unresolved = regex_failed[~regex_failed["stipulationfulltext"].isin(llm_ok_texts)]
+    if not still_unresolved.empty:
+        quarantine_candidates = still_unresolved.merge(
+            cache[["stipulationfulltext", "llm_status", "llm_output_raw", "validation_failure_reason"]],
             on="stipulationfulltext",
-            how="inner",
+            how="left",
         ).copy()
         quarantine_candidates["rule_failure_reason"] = "WORK_HOUR_RE 미매칭"
         write_quarantine(
@@ -643,9 +683,12 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
             run_date,
         )
 
+    # llm_parsed_count는 llm_ok(캐시 전체)가 아니라 llm_resolved(이번 실행의
+    # regex_failed와 실제로 합쳐진 것)로 센다 — build_embargoes()의 동일한
+    # 수정 사항 참고(리뷰에서 발견된 이중 카운팅 문제).
     total_unique_texts = raw["stipulationfulltext"].nunique()
     rule_parsed_count = regex_ok["stipulationfulltext"].nunique()
-    llm_parsed_count = llm_ok["stipulationfulltext"].nunique() if not llm_ok.empty else 0
+    llm_parsed_count = llm_resolved["stipulationfulltext"].nunique() if not llm_resolved.empty else 0
     drift_message = compute_and_log_quality_report(
         "work_hours", run_date, total_unique_texts, rule_parsed_count, llm_parsed_count,
     )

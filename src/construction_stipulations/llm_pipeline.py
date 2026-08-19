@@ -301,6 +301,11 @@ def load_llm_cache(category: str) -> pd.DataFrame:
 
 
 def save_llm_cache(category: str, df: pd.DataFrame) -> None:
+    # stipulationfulltext는 캐시의 유니크 키다 — 중복이 생기면(이론상 없어야
+    # 하지만) 이후 merge(on="stipulationfulltext")가 fan-out되어 Silver
+    # 출력/quarantine에 중복 행을 만든다. 마지막 값을 우선해 안전망으로
+    # 제거한다.
+    df = df.drop_duplicates(subset=["stipulationfulltext"], keep="last")
     path = _CACHE_PATH_BY_CATEGORY[category]
     save_parquet(df, path.parent, filename=path.name)
 
@@ -408,7 +413,13 @@ def run_llm_fallback_batch(
 # 분석/패턴 발견 후 rule로 승격시킬 수 있게 보존한다(버리지 않음).
 # ─────────────────────────────────────────────────────────────
 
-QUARANTINE_PATH = SILVER_DIR / "stipulation_parse_quarantine" / "data.parquet"
+# 카테고리별로 파일을 분리한다(LLM 캐시와 동일한 이유) — build_work_hours_rules와
+# build_embargoes는 서로 의존 관계가 없어 Airflow가 동시에 실행할 수 있는데,
+# 두 태스크가 quarantine을 "전체 읽기 -> 수정 -> 전체 쓰기"로 갱신하다 보니
+# 하나의 공유 파일이었다면 서로의 신규 항목을 덮어써 유실시킬 수 있었다
+# (리뷰에서 발견된 실제 경합 조건). 카테고리별 파일 분리로 각 태스크가 자기
+# 파일만 건드리게 해서 이 경합을 없앤다.
+QUARANTINE_DIR = SILVER_DIR / "stipulation_parse_quarantine"
 QUARANTINE_COLUMNS = [
     "category", "permitnumber", "stipulationfulltext", "rule_failure_reason",
     "llm_status", "llm_output_raw", "validation_failure_reason",
@@ -416,10 +427,15 @@ QUARANTINE_COLUMNS = [
 ]
 
 
-def _load_quarantine() -> pd.DataFrame:
-    if not QUARANTINE_PATH.exists():
+def _quarantine_path(category: str) -> Path:
+    return QUARANTINE_DIR / f"category={category}" / "data.parquet"
+
+
+def _load_quarantine(category: str) -> pd.DataFrame:
+    path = _quarantine_path(category)
+    if not path.exists():
         return pd.DataFrame(columns=QUARANTINE_COLUMNS)
-    return pd.read_parquet(QUARANTINE_PATH)
+    return pd.read_parquet(path)
 
 
 def write_quarantine(category: str, candidates: pd.DataFrame, run_date: str) -> None:
@@ -428,15 +444,21 @@ def write_quarantine(category: str, candidates: pd.DataFrame, run_date: str) -> 
     validation_failure_reason 컬럼 포함) — 매 실행마다 전체 백로그를 다시
     넘겨도 안전하다: 이미 quarantine에 있는 키(category, permitnumber,
     stipulationfulltext)는 절대 덮어쓰지 않는다(사람이 resolved를 True로
-    바꿔놨을 수 있어서). 신규 키만 追加한다."""
+    바꿔놨을 수 있어서). 신규 키만 추가한다."""
     if candidates.empty:
         return
 
-    existing = _load_quarantine()
+    # candidates 자체에 (permitnumber, stipulationfulltext) 중복이 있으면(상류
+    # merge 결과가 우연히 fan-out됐을 경우) is_new 체크가 existing만 보고
+    # candidates끼리는 비교 안 해서 같은 배치 안에서 중복 삽입될 수 있다 —
+    # 먼저 자체 중복부터 제거한다.
+    candidates = candidates.drop_duplicates(subset=["permitnumber", "stipulationfulltext"])
+
+    existing = _load_quarantine(category)
     if not existing.empty:
-        existing_keys = set(zip(existing["category"], existing["permitnumber"], existing["stipulationfulltext"]))
+        existing_keys = set(zip(existing["permitnumber"], existing["stipulationfulltext"]))
         is_new = candidates.apply(
-            lambda r: (category, r["permitnumber"], r["stipulationfulltext"]) not in existing_keys, axis=1
+            lambda r: (r["permitnumber"], r["stipulationfulltext"]) not in existing_keys, axis=1
         )
         new_rows = candidates[is_new].copy()
     else:
@@ -454,8 +476,21 @@ def write_quarantine(category: str, candidates: pd.DataFrame, run_date: str) -> 
         pd.concat([existing, new_rows[QUARANTINE_COLUMNS]], ignore_index=True)
         if not existing.empty else new_rows[QUARANTINE_COLUMNS]
     )
-    save_parquet(combined, QUARANTINE_PATH.parent, filename=QUARANTINE_PATH.name)
+    path = _quarantine_path(category)
+    save_parquet(combined, path.parent, filename=path.name)
     logger.info("[%s] quarantine 신규 %d건 추가(누적 %d건)", category, len(new_rows), len(combined))
+
+
+def quarantined_texts(category: str) -> set[str]:
+    """이미 quarantine에 들어간(resolved 여부 무관) 문구 집합. 한 번
+    quarantine에 들어간 문구는 LLM이 다시 자동으로 건드리지 않는다 — 과거
+    통째로 쌓여있던 백로그를 "사람이 직접 처리할 몫"으로 못박아 두고, 이후
+    로직(build_embargoes/build_work_hours_rules)이 그 문구들을 신규 문구
+    선정에서 제외하는 데 쓴다."""
+    df = _load_quarantine(category)
+    if df.empty:
+        return set()
+    return set(df["stipulationfulltext"])
 
 
 def summarize_quarantine(category: str | None = None, top_n: int = 20) -> pd.DataFrame:
@@ -464,12 +499,11 @@ def summarize_quarantine(category: str | None = None, top_n: int = 20) -> pd.Dat
     패턴을 찾아 rule로 승격시킬지 판단하는 용도. 셸/노트북에서 직접 호출,
     DAG에는 연결하지 않는다(요구사항 5 Feedback Loop의 전체 구현 — 자동
     rule 승격은 하지 않는다)."""
-    df = _load_quarantine()
+    categories = [category] if category is not None else list(VALIDATORS.keys())
+    df = pd.concat([_load_quarantine(c) for c in categories], ignore_index=True)
     if df.empty:
         return df
     df = df[~df["resolved"]]
-    if category is not None:
-        df = df[df["category"] == category]
     if df.empty:
         return df
     return (
@@ -492,7 +526,10 @@ def summarize_quarantine(category: str | None = None, top_n: int = 20) -> pd.Dat
 # on_failure_callback(Slack 알림)이 그대로 전달하게 한다(새 알림 코드 없음).
 # ─────────────────────────────────────────────────────────────
 
-QUALITY_HISTORY_PATH = SILVER_DIR / "stipulation_parse_quality_history" / "data.parquet"
+# quarantine과 동일한 이유(build_work_hours_rules/build_embargoes가 서로
+# 의존관계 없이 동시에 실행될 수 있음)로 카테고리별 파일 분리 — 공유 파일
+# 하나였다면 두 태스크가 서로의 신규 이력 행을 덮어쓸 수 있었다.
+QUALITY_HISTORY_DIR = SILVER_DIR / "stipulation_parse_quality_history"
 QUALITY_HISTORY_COLUMNS = [
     "run_date", "category", "total_unique_texts", "rule_parsed_count", "rule_rate",
     "llm_parsed_count", "llm_rate", "quarantine_count", "quarantine_rate", "created_at",
@@ -505,10 +542,15 @@ DRIFT_ALERT_THRESHOLD_PCT_POINTS = 5.0
 DRIFT_MIN_SAMPLE_SIZE = 30
 
 
-def _load_quality_history() -> pd.DataFrame:
-    if not QUALITY_HISTORY_PATH.exists():
+def _quality_history_path(category: str) -> Path:
+    return QUALITY_HISTORY_DIR / f"category={category}" / "data.parquet"
+
+
+def _load_quality_history(category: str) -> pd.DataFrame:
+    path = _quality_history_path(category)
+    if not path.exists():
         return pd.DataFrame(columns=QUALITY_HISTORY_COLUMNS)
-    return pd.read_parquet(QUALITY_HISTORY_PATH)
+    return pd.read_parquet(path)
 
 
 def compute_and_log_quality_report(
@@ -535,8 +577,8 @@ def compute_and_log_quality_report(
         quarantine_count, quarantine_rate,
     )
 
-    history = _load_quality_history()
-    prior = history[history["category"] == category].sort_values("run_date")
+    history = _load_quality_history(category)
+    prior = history.sort_values("run_date")
 
     alert_message = None
     if not prior.empty and total_unique_texts >= DRIFT_MIN_SAMPLE_SIZE:
@@ -560,8 +602,9 @@ def compute_and_log_quality_report(
     }])
     # 같은 (run_date, category)로 재시도하면 이전 행을 지우고 새로 남긴다 —
     # 안 그러면 재시도 때마다 이력에 같은 날짜가 중복으로 쌓인다.
-    history = history[~((history["run_date"] == run_date) & (history["category"] == category))]
+    history = history[history["run_date"] != run_date]
     combined = pd.concat([history, new_row], ignore_index=True) if not history.empty else new_row
-    save_parquet(combined, QUALITY_HISTORY_PATH.parent, filename=QUALITY_HISTORY_PATH.name)
+    path = _quality_history_path(category)
+    save_parquet(combined, path.parent, filename=path.name)
 
     return alert_message

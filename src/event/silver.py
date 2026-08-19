@@ -142,7 +142,18 @@ def normalize_event_street(value):
 
 
 def parse_location(raw):
-    """행사 위치에서 도로 구간 정보를 분리."""
+    """행사 위치에서 도로 구간 정보를 분리.
+
+    행진/퍼레이드류 행사는 콤마로 구간을 여러 개 나열한다(예: "113 BAXTER
+    STREET, BAXTER STREET between HESTER STREET and CANAL STREET, ...").
+    첫 구간이 "between X and Y" 형태가 아닌 경우가 많다 — 시작 지점 주소나
+    반복된 장소명이 먼저 나오고 실제 파싱 가능한 구간은 그 뒤에 있는 경우가
+    실측으로 확인됨. 그래서 첫 구간만 보지 않고, 콤마로 나눈 구간을 순서대로
+    보다가 "between" 패턴에 맞는 첫 구간을 쓴다. 여러 구간 전체를 다 담진
+    않는다(Silver 스키마가 행사당 도로 구간 하나라 다른 구간들은 여전히
+    버려짐 — 이건 범위 밖이고, 최소한 대표 구간 하나는 진짜 도로 구간으로
+    잡히게 하는 게 목적).
+    """
 
     if not isinstance(raw, str) or not raw.strip():
         return {
@@ -151,18 +162,21 @@ def parse_location(raw):
             "to_street": None,
         }
 
-    first = raw.split(",")[0].strip()
+    segments = [s.strip() for s in raw.split(",") if s.strip()]
 
-    # 예: WEST 23 STREET between 8 AVENUE and 9 AVENUE
-    match = RE_BETWEEN.match(first)
+    for segment in segments:
+        # 예: WEST 23 STREET between 8 AVENUE and 9 AVENUE
+        match = RE_BETWEEN.match(segment)
+        if match:
+            return {
+                "on_street": normalize_event_street(match.group(1)),
+                "from_street": normalize_event_street(match.group(2)),
+                "to_street": normalize_event_street(match.group(3)),
+            }
 
-    if match:
-        return {
-            "on_street": normalize_event_street(match.group(1)),
-            "from_street": normalize_event_street(match.group(2)),
-            "to_street": normalize_event_street(match.group(3)),
-        }
-
+    # 어느 구간도 "between" 패턴이 아니면(전 구간 통제, 단일 주소 등) 첫
+    # 구간을 on_street로만 쓴다 — 기존 동작 유지.
+    first = segments[0] if segments else raw.strip()
     return {
         "on_street": normalize_event_street(first),
         "from_street": None,
@@ -250,6 +264,20 @@ def transform(df, run_date):
     ]].reset_index(drop=True)
 
 
+UNMATCHED_LOCATION_PATH = SILVER_DIR / "event_location_parse_unmatched" / "data.parquet"
+UNMATCHED_LOCATION_COLUMNS = ["on_street", "first_seen_date", "resolved"]
+
+
+def _load_unmatched_locations() -> pd.DataFrame:
+    if not UNMATCHED_LOCATION_PATH.exists():
+        return pd.DataFrame(columns=UNMATCHED_LOCATION_COLUMNS)
+    return pd.read_parquet(UNMATCHED_LOCATION_PATH)
+
+
+def _save_unmatched_locations(df: pd.DataFrame) -> None:
+    save_parquet(df, UNMATCHED_LOCATION_PATH.parent, filename=UNMATCHED_LOCATION_PATH.name)
+
+
 def validate(df):
 
     if df.empty:
@@ -290,6 +318,37 @@ def validate(df):
         "closure_type 분포:\n%s",
         df["closure_type"].value_counts().to_string(),
     )
+
+    # on_street는 있는데 from_street/to_street 중 하나라도 없으면 event_lion
+    # 매핑 단계에서 block을 못 찾는다("missing_from_to"). LLM은 안 거치고
+    # (자연어 해석이 아니라 콤마로 나열된 구간 중 쓸 만한 게 하나도 없다는
+    # 뜻이라 LLM을 붙여도 얻을 게 적음 — parse_location() docstring 참고)
+    # 대신, 이미 본 적 있는 on_street 패턴은 다시 신규로 안 세고, 처음 보는
+    # 패턴이 하나라도 있으면 그때만 알린다. 실측 발생량이 극히 적어서(전체
+    # 이력 기준 1,978행 중 5행, 그마저 이번에 2/3 고쳐서 더 줄었음) 건별이
+    # 아니라 배치당 1번 체크해도 임계값을 0으로 잡아 노이즈가 안 된다 —
+    # construction_stipulations의 동일한 판단 참고.
+    unmatched_mask = df["on_street"].notna() & (df["from_street"].isna() | df["to_street"].isna())
+    unmatched_count = int(unmatched_mask.sum())
+    if unmatched_count:
+        logger.warning("도로 구간(from/to) 미확인: rows=%d", unmatched_count)
+
+        unmatched_streets = set(df.loc[unmatched_mask, "on_street"].unique())
+        existing = _load_unmatched_locations()
+        known_streets = set(existing["on_street"]) if not existing.empty else set()
+        new_streets = unmatched_streets - known_streets
+
+        if new_streets:
+            new_rows = pd.DataFrame([
+                {"on_street": s, "first_seen_date": date.today().isoformat(), "resolved": False}
+                for s in new_streets
+            ])
+            combined = pd.concat([existing, new_rows], ignore_index=True) if not existing.empty else new_rows
+            _save_unmatched_locations(combined)
+            raise ValueError(
+                f"행사 도로 구간(from/to) 파싱에 실패한 신규 on_street 패턴이 {len(new_streets)}개 발생 — "
+                f"샘플: {list(new_streets)[:3]}"
+            )
 
 
 def build(run_date: str | None = None) -> str:
