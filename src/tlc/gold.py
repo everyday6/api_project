@@ -107,7 +107,7 @@ def _expand_zone_to_segment_hour(
     """
 
     segment_zone = map_zone_segment[["segment_id", "zone_id"]].copy()
-    segment_zone["zone_id"] = segment_zone["zone_id"].astype("int64")
+    segment_zone = segment_zone.assign(zone_id=segment_zone["zone_id"].astype("int64"))
 
     weights = map_segment_spatial_weight[["segment_id", "spatial_weight"]]
     segment_zone = segment_zone.merge(weights, on="segment_id", how="left")
@@ -118,19 +118,21 @@ def _expand_zone_to_segment_hour(
             f"[tlc_gold] map_segment_spatial_weight에 없는 세그먼트 {int(missing_weight.sum())}개, "
             "spatial_weight=1.0으로 폴백"
         )
-        segment_zone["spatial_weight"] = segment_zone["spatial_weight"].fillna(1.0)
+        segment_zone = segment_zone.assign(spatial_weight=segment_zone["spatial_weight"].fillna(1.0))
 
     hours = pd.DataFrame({"hour": HOURS})
 
     grid = segment_zone.merge(hours, how="cross")
 
     counts = zone_hour_counts.copy()
-    counts["zone_id"] = counts["zone_id"].astype("int64")
-    counts["hour"] = counts["hour"].astype("int64")
+    counts = counts.assign(
+        zone_id=counts["zone_id"].astype("int64"),
+        hour=counts["hour"].astype("int64"),
+    )
 
     merged = grid.merge(counts, on=["zone_id", "hour"], how="left")
-    merged["dropoff_count"] = merged["dropoff_count"].fillna(0)
-    merged["dropoff_count_raw"] = merged["dropoff_count"] * merged["spatial_weight"]
+    merged = merged.assign(dropoff_count=merged["dropoff_count"].fillna(0))
+    merged = merged.assign(dropoff_count_raw=merged["dropoff_count"] * merged["spatial_weight"])
 
     return merged[["segment_id", "hour", "dropoff_count_raw"]]
 
