@@ -27,6 +27,8 @@ from shapely.strtree import STRtree
 from src.common.config import (
     BQ_HOTSPOT_CRS,
     BRONZE_DIR,
+    HOTSPOT_INVERSE_DISTANCE_EPSILON_FT,
+    HOTSPOT_SEGMENT_BUFFER_FT,
     LAPLACE_SMOOTHING_ALPHA,
     LION_CRS,
     PROJECT_ROOT,
@@ -118,3 +120,62 @@ def _match_points_to_zone(
     matched = result.dropna(subset=["zone_id"]).copy()
     matched = matched.astype({"zone_id": "int64"})
     return matched[["geometry", "dropoff_count", "zone_id"]]
+
+
+def _match_points_to_segment(
+    points_with_zone: pd.DataFrame,
+    map_zone_segment: pd.DataFrame,
+    dim_segment: pd.DataFrame,
+    buffer_ft: float = HOTSPOT_SEGMENT_BUFFER_FT,
+    epsilon_ft: float = HOTSPOT_INVERSE_DISTANCE_EPSILON_FT,
+) -> pd.DataFrame:
+    """zone_id별로 그룹화해, 그 zone에 속한 세그먼트 중 point 반경 buffer_ft(feet)
+    이내 전부에 거리 역가중(1/(distance+epsilon_ft))으로 dropoff_count를 나눠
+    배분한다. 반경 안에 세그먼트가 하나도 없으면 zone 내 최근접 세그먼트 1개로
+    fallback한다(그때는 dropoff_count 전부가 그 세그먼트로 간다) —
+    `src/mapping/ticketmaster_lion.py`의 buffer+nearest-fallback 패턴과 동일하다.
+
+    zone 경계를 넘는 매칭을 막아야 zone 내부 spatial_weight 합이 정확히 1이
+    된다. 세그먼트 집계(같은 segment_id로 여러 point가 매칭되는 경우 합산)는
+    이 함수의 책임이 아니라 다음 단계(_aggregate_hotspot_counts)에서 한다.
+    """
+    segments = dim_segment[["segment_id", "geometry"]].merge(
+        map_zone_segment[["segment_id", "zone_id"]], on="segment_id", how="inner"
+    )
+    segments["geom"] = segments["geometry"].apply(wkt.loads)
+
+    matched_rows = []
+    for zone_id, zone_points in points_with_zone.groupby("zone_id"):
+        zone_segments = segments[segments["zone_id"] == zone_id]
+        if zone_segments.empty:
+            continue
+
+        geoms = zone_segments["geom"].tolist()
+        segment_ids = zone_segments["segment_id"].tolist()
+        tree = STRtree(geoms)
+
+        for point, dropoff_count in zip(zone_points["geometry"], zone_points["dropoff_count"]):
+            idxs = tree.query(point.buffer(buffer_ft), predicate="intersects")
+
+            if len(idxs) == 0:
+                nearest_idx = tree.nearest(point)
+                matched_rows.append({
+                    "segment_id": segment_ids[nearest_idx],
+                    "dropoff_count": float(dropoff_count),
+                })
+                continue
+
+            distances = np.array([point.distance(geoms[i]) for i in idxs])
+            inv_distance = 1.0 / (distances + epsilon_ft)
+            shares = inv_distance / inv_distance.sum()
+
+            for idx, share in zip(idxs, shares):
+                matched_rows.append({
+                    "segment_id": segment_ids[idx],
+                    "dropoff_count": float(dropoff_count) * float(share),
+                })
+
+    if not matched_rows:
+        return pd.DataFrame({"segment_id": pd.Series(dtype="object"), "dropoff_count": pd.Series(dtype="float64")})
+
+    return pd.DataFrame(matched_rows)
