@@ -119,6 +119,18 @@ def construction_pipeline():
         from src.construction.gold import validate_output
         return validate_output(path)
 
+    @task(task_id="build_work_hours_rules")
+    def build_work_hours_rules():
+        from src.construction_stipulations.silver import build_work_hours_rules as _build_work_hours_rules
+        context = get_current_context()
+        return _build_work_hours_rules(context["ds"])
+
+    @task(task_id="validate_work_hours_rules")
+    def validate_work_hours_rules(path: str):
+        from src.construction_stipulations.silver import validate_work_hours_rules_output
+        context = get_current_context()
+        return validate_work_hours_rules_output(path, context["ds"])
+
     @task(task_id="build_work_hours")
     def build_work_hours():
         from src.construction_stipulations.silver import build
@@ -201,8 +213,12 @@ def construction_pipeline():
     construction_silver_validated >> construction_gold_path
     construction_gold_validated = validate_construction_gold(construction_gold_path)
 
+    work_hours_rules_path = build_work_hours_rules()
+    stipulations_validated >> work_hours_rules_path
+    work_hours_rules_validated = validate_work_hours_rules(work_hours_rules_path)
+
     work_hours_path = build_work_hours()
-    [construction_gold_validated, stipulations_validated] >> work_hours_path
+    [construction_gold_validated, work_hours_rules_validated] >> work_hours_path
     work_hours_validated = validate_work_hours(work_hours_path)
 
     embargoes_path = build_embargoes()
