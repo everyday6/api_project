@@ -70,3 +70,51 @@ def ingest_hotspot_grid(
 
     logger.info(f"[map_segment_spatial_weight] hotspot grid {len(df)}행 저장 완료 -> {bronze_path}")
     return str(bronze_path)
+
+
+def _points_from_grid(bronze_df: pd.DataFrame) -> pd.DataFrame:
+    """Bronze grid(lat_bin, lon_bin, dropoff_count, EPSG:4326)를 EPSG:2263 Point로 변환한다."""
+    transformer = Transformer.from_crs(BQ_HOTSPOT_CRS, LION_CRS, always_xy=True)
+    x, y = transformer.transform(bronze_df["lon_bin"].to_numpy(), bronze_df["lat_bin"].to_numpy())
+
+    result = bronze_df[["dropoff_count"]].copy()
+    result["geometry"] = [Point(xi, yi) for xi, yi in zip(x, y)]
+    return result
+
+
+def _match_points_to_zone(
+    points: pd.DataFrame,
+    zone_shapefile_path: Path = TAXI_ZONE_SHAPEFILE,
+) -> pd.DataFrame:
+    """grid point(EPSG:2263 Point)를 Taxi Zone 폴리곤에 point-in-polygon으로 매칭한다.
+
+    `src/mapping/zone_segment.py`의 세그먼트-zone 매칭과 동일한 STRtree 패턴이다.
+    매칭 안 되는 포인트는 제외하고 건수만 로그로 남긴다.
+    """
+    zones = _load_zones(zone_shapefile_path)
+    tree = STRtree(zones["geom"].tolist())
+
+    zone_ids: list[int | None] = []
+    unmatched = 0
+    multi_match = 0
+    for point in points["geometry"]:
+        idxs = tree.query(point, predicate="intersects")
+        if len(idxs) == 0:
+            unmatched += 1
+            zone_ids.append(None)
+            continue
+        if len(idxs) > 1:
+            multi_match += 1
+        zone_ids.append(zones.iloc[idxs[0]]["LocationID"])
+
+    result = points.copy()
+    result["zone_id"] = zone_ids
+
+    if multi_match:
+        logger.warning(f"[map_segment_spatial_weight] grid point가 zone 경계에 걸쳐 2개 이상 매칭 {multi_match}건 (첫 번째로 결정)")
+    if unmatched:
+        logger.warning(f"[map_segment_spatial_weight] zone을 못 찾은 grid point {unmatched}건 (제외)")
+
+    matched = result.dropna(subset=["zone_id"]).copy()
+    matched = matched.astype({"zone_id": "int64"})
+    return matched[["geometry", "dropoff_count", "zone_id"]]
