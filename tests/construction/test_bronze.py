@@ -77,6 +77,22 @@ def test_find_recent_bronze_snapshot_ignores_unmarked_folder_even_with_data_file
     assert found is None
 
 
+def test_find_recent_bronze_snapshot_skips_past_unmarked_day_to_older_valid_one(tmp_path):
+    # 2026-08-19(하루 전, 그날 검증 실패라 마커 없음)이 더 최근이지만 후보가
+    # 아니므로, 그보다 하루 더 전인 2026-08-18(검증 통과, 마커 있음)을
+    # 찾아내야 한다 — "최신 것부터 훑다가 실패한 날은 건너뛰고 그 이전에
+    # 통과한 날을 쓴다"는 이 fix의 핵심 동작을 직접 증명하는 테스트.
+    failed_path = _write_bronze_snapshot(tmp_path, "2026-08-19", _valid_row())
+    passed_path = _write_bronze_snapshot(tmp_path, "2026-08-18", _valid_row())
+    _mark_validated(passed_path.parent)
+    # failed_path의 dt=2026-08-19에는 의도적으로 마커를 남기지 않는다.
+    assert not (failed_path.parent / bronze.VALIDATED_MARKER_NAME).exists()
+
+    found = bronze._find_recent_bronze_snapshot(tmp_path, "2026-08-20", max_age_days=2)
+
+    assert found == str(tmp_path / "dt=2026-08-18" / "data.parquet")
+
+
 def test_find_recent_bronze_snapshot_picks_the_latest_of_several(tmp_path):
     path_17 = _write_bronze_snapshot(tmp_path, "2026-08-17", _valid_row())
     path_19 = _write_bronze_snapshot(tmp_path, "2026-08-19", _valid_row())
@@ -148,6 +164,48 @@ def test_validate_output_raises_when_backup_too_old(tmp_path, monkeypatch):
 
     with pytest.raises(ValueError):
         bronze.validate_output(str(bad_path))
+
+
+def test_validate_output_escalates_to_raise_after_repeated_critical_failures(tmp_path, monkeypatch):
+    # 이 fix가 고치려던 바로 그 시나리오: critical 실패가 반복되면 실패한
+    # 날의 파일이 다음 날의 "백업"이 되어 영원히 조용히 skip만 반복하면
+    # 안 되고, MAX_FALLBACK_AGE_DAYS(2일)를 넘어가면 결국 raise로
+    # 승격돼야 한다.
+    monkeypatch.setattr(bronze, "BRONZE_DIR", tmp_path)
+    construction_dir = tmp_path / "construction"
+
+    def _bad_row():
+        row = _valid_row()
+        del row["wkt"]
+        return row
+
+    good_path = _write_bronze_snapshot(construction_dir, "2026-08-17", _valid_row())
+    _mark_validated(good_path.parent)
+
+    day18 = _write_bronze_snapshot(construction_dir, "2026-08-18", _bad_row())
+    day19 = _write_bronze_snapshot(construction_dir, "2026-08-19", _bad_row())
+    day20 = _write_bronze_snapshot(construction_dir, "2026-08-20", _bad_row())
+
+    with patch.object(bronze, "notify_slack_message") as mock_notify:
+        # 1일 전 백업 존재 -> skip
+        with pytest.raises(AirflowSkipException):
+            bronze.validate_output(str(day18))
+        assert not (day18.parent / bronze.VALIDATED_MARKER_NAME).exists()
+
+        # 2일 전 백업이지만 아직 임계값(2일) 이내 -> skip
+        with pytest.raises(AirflowSkipException):
+            bronze.validate_output(str(day19))
+        assert not (day19.parent / bronze.VALIDATED_MARKER_NAME).exists()
+
+        assert mock_notify.call_count == 2
+
+        # 3일 전 백업은 임계값 초과 -> 더 이상 skip 못 하고 raise로 승격
+        with pytest.raises(ValueError):
+            bronze.validate_output(str(day20))
+        assert not (day20.parent / bronze.VALIDATED_MARKER_NAME).exists()
+
+    # 마지막 raise 단계에서는 알릴 백업이 없으므로 Slack이 추가로 불리지 않는다.
+    assert mock_notify.call_count == 2
 
 
 def test_validate_output_logs_but_passes_when_only_log_only_issue(tmp_path, monkeypatch, caplog):

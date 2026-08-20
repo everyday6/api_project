@@ -141,6 +141,9 @@ def _find_recent_bronze_snapshot(
         if not (entry / VALIDATED_MARKER_NAME).exists():
             continue
 
+        if not (entry / "data.parquet").exists():
+            continue
+
         candidates.append(snapshot_date)
 
     if not candidates:
