@@ -28,6 +28,42 @@ from src.common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="alerts")
 
 SLACK_TIMEOUT = 10
+MAX_ERROR_SUMMARY_LENGTH = 500
+
+
+def _summarize_exception(exception: object) -> str:
+    """Slack에는 원인 파악에 필요한 짧은 예외 요약만 보낸다.
+
+    GDAL처럼 실패 원인 뒤에 지원 드라이버 전체 목록을 붙이는 예외와 긴
+    여러 줄 메시지가 채널을 도배하지 않도록 정리한다. 전체 내용과 traceback은
+    Airflow 로그에 그대로 남아 있으므로 Slack에서는 길이만 제한한다.
+    """
+
+    if exception is None:
+        return "알 수 없는 오류"
+
+    text = str(exception).strip()
+    if not text:
+        return type(exception).__name__
+
+    # GDAL/OGR 오류가 실제 원인 뒤에 붙이는 수십 줄짜리 드라이버 목록 제거.
+    driver_marker = "with the following drivers."
+    if driver_marker in text:
+        text = text.split(driver_marker, 1)[0].rstrip()
+
+    # 래퍼 메시지의 FAILURE와 다음 줄의 실제 원인을 한 문장으로 합친다.
+    text = text.replace("FAILURE:", "")
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    summary = " ".join(lines)
+
+    error_type = type(exception).__name__
+    if error_type not in {"str", "NoneType"}:
+        summary = f"{error_type}: {summary}"
+
+    if len(summary) > MAX_ERROR_SUMMARY_LENGTH:
+        summary = summary[: MAX_ERROR_SUMMARY_LENGTH - 1].rstrip() + "…"
+
+    return summary
 
 
 def _build_message(context: dict) -> str:
@@ -48,13 +84,14 @@ def _build_message(context: dict) -> str:
     # Airflow 3.x는 execution_date 대신 logical_date를 쓴다 — 버전 차이에
     # 안전하게 둘 다 확인한다.
     run_time = context.get("logical_date") or context.get("execution_date")
+    error_summary = _summarize_exception(exception)
 
     lines = [
         ":red_circle: *Airflow 태스크 실패*",
         f"*DAG*: `{dag_id}`",
         f"*Task*: `{task_id}` (시도 {try_number}회 모두 소진)",
         f"*실행 시각*: {run_time}",
-        f"*에러*: `{exception}`",
+        f"*에러 요약*: {error_summary}",
     ]
 
     if log_url:

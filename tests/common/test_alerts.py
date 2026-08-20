@@ -63,6 +63,30 @@ def test_notify_slack_failure_still_works_after_refactor(monkeypatch):
     assert "store_bronze" in sent_text
 
 
+def test_summarize_exception_removes_gdal_driver_list():
+    exception = RuntimeError(
+        "zone shapefile 변환 실패: FAILURE:\n"
+        "Unable to open datasource `/tmp/taxi_zones.shp' with the following drivers.\n"
+        "  -> `FITS'\n"
+        "  -> `ESRI Shapefile'"
+    )
+
+    summary = alerts._summarize_exception(exception)
+
+    assert "RuntimeError" in summary
+    assert "Unable to open datasource" in summary
+    assert "/tmp/taxi_zones.shp" in summary
+    assert "FITS" not in summary
+    assert "ESRI Shapefile" not in summary
+
+
+def test_summarize_exception_truncates_long_message():
+    summary = alerts._summarize_exception(ValueError("x" * 1_000))
+
+    assert len(summary) == alerts.MAX_ERROR_SUMMARY_LENGTH
+    assert summary.endswith("…")
+
+
 def test_notify_slack_failure_swallows_build_message_exception(monkeypatch, caplog):
     """notify_slack_failure는 메시지 생성 실패도 삼켜야 한다."""
     monkeypatch.setattr(alerts, "SLACK_WEBHOOK_URL", "https://hooks.slack.test/webhook")
