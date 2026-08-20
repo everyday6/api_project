@@ -41,7 +41,7 @@ x-airflow-env: &airflow-env
   GEMINI_API_KEY: ${GEMINI_API_KEY}
 
   # S3(Bronze/Silver/Gold)/RDS(Gold 서빙 테이블) 접속 정보. S3는 정적 키
-  # 없이 EC2 인스턴스 롤(traffic-score-ec2-s3-role)로 인증한다.
+  # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
   AWS_REGION: ${AWS_REGION}
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
   S3_BUCKET_DASHBOARD: ${S3_BUCKET_DASHBOARD}
