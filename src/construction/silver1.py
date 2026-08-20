@@ -29,7 +29,7 @@ import pyarrow.parquet as pq
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from common.config import BRONZE_DIR, SILVER_DIR
+from common.config import BRONZE_DIR, SILVER1_DIR
 from common.logger import get_logger
 from common.utils import clean_street, save_parquet
 
@@ -288,7 +288,7 @@ def build(run_date: str | None = None) -> str:
     df = load_bronze(run_date)
     df = transform(df)
 
-    path = save_parquet(df, SILVER_DIR / SOURCE / f"dt={run_date}")
+    path = save_parquet(df, SILVER1_DIR / SOURCE / f"dt={run_date}")
 
     logger.info(
         "공사 Silver 빌드 완료: rows=%d columns=%d path=%s",

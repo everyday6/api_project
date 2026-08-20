@@ -72,7 +72,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import GOLD_DIR, SILVER_DIR
+from src.common.config import GOLD1_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.construction_stipulations.silver import load_built_embargoes
@@ -84,7 +84,8 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="closure_penalty")
 OUT_SOURCE = "dim_segment_closure_penalty"
 MAP_ROAD_CONTROL_SEGMENT_DIR = SILVER_DIR / "map_road_control_segment"
 MAP_ROAD_CLOSURE_SEGMENT_DIR = SILVER_DIR / "map_road_closure_segment"
-CONSTRUCTION_GOLD_DIR = GOLD_DIR / "construction"
+# construction Gold1(Manhattan/상태/시리즈로 걸러진 permit)을 읽는다.
+CONSTRUCTION_GOLD_DIR = GOLD1_DIR / "construction"
 
 MAX_HOPS = 3
 # TODO(팀 검토 필요): 근거 없는 초안 — "홉이 멀수록 영향이 줄어든다"는 정성적

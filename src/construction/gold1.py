@@ -21,7 +21,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import BOROUGH, GOLD_DIR, SILVER_DIR
+from src.common.config import BOROUGH, GOLD1_DIR, SILVER1_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 
@@ -29,7 +29,7 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="construction_gold
 
 SOURCE = "construction"
 
-CONSTRUCTION_SILVER_DIR = SILVER_DIR / SOURCE
+CONSTRUCTION_SILVER1_DIR = SILVER1_DIR / SOURCE
 
 # 행정성 permit type
 ADMIN_TYPES = [
@@ -58,14 +58,14 @@ DROP_SERIES = [
 
 
 def load_silver(run_date: str) -> pd.DataFrame:
-    """run_date에 해당하는 construction Silver 스냅샷을 읽는다."""
+    """run_date에 해당하는 construction Silver1 스냅샷을 읽는다."""
 
-    path = CONSTRUCTION_SILVER_DIR / f"dt={run_date}" / "data.parquet"
+    path = CONSTRUCTION_SILVER1_DIR / f"dt={run_date}" / "data.parquet"
 
     if not path.exists():
-        raise FileNotFoundError(f"{SOURCE}: Silver 파일 없음: {path}")
+        raise FileNotFoundError(f"{SOURCE}: Silver1 파일 없음: {path}")
 
-    logger.info("공사 Silver 로드: path=%s", path)
+    logger.info("공사 Silver1 로드: path=%s", path)
 
     return pd.read_parquet(path)
 
@@ -145,7 +145,7 @@ def build(run_date: str | None = None) -> str:
     df = load_silver(run_date)
     df = filter_for_traffic_score(df)
 
-    path = save_parquet(df, GOLD_DIR / SOURCE / f"dt={run_date}")
+    path = save_parquet(df, GOLD1_DIR / SOURCE / f"dt={run_date}")
 
     logger.info(
         "공사 Gold 빌드 완료: rows=%d columns=%d path=%s",
