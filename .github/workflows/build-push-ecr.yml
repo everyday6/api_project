@@ -1,0 +1,57 @@
+# EC2(2 vCPU)에서 docker compose build로 이미지를 직접 빌드하면 pip install 등
+# 빌드 자체가 CPU를 잡아먹어 배포 시점에 파이프라인 태스크와 자원 경합이 난다.
+# 대신 여기서 미리 빌드해서 ECR에 push해두고, EC2는 docker compose pull만 하도록 한다.
+#
+# 필요한 사전 준비 (AWS 콘솔, 리포지토리 관리자):
+#   1. ECR 리포지토리 생성 (예: three-idiots-airflow)
+#   2. GitHub Actions가 push할 수 있는 IAM 롤 생성 (OIDC 신뢰 관계:
+#      token.actions.githubusercontent.com, 이 리포지토리로 조건 제한)
+#   3. 리포지토리 Settings > Secrets에 AWS_ECR_PUSH_ROLE_ARN 등록
+#   4. EC2 인스턴스 롤에 ecr:GetAuthorizationToken / BatchGetImage /
+#      GetDownloadUrlForLayer 권한 추가
+
+name: Build and Push to ECR
+
+on:
+  push:
+    branches: [develop]
+    paths:
+      - Dockerfile
+      - requirements.txt
+      - src/**
+      - dags/**
+      - .github/workflows/build-push-ecr.yml
+  workflow_dispatch: {}
+
+permissions:
+  id-token: write
+  contents: read
+
+env:
+  AWS_REGION: ap-northeast-2
+  ECR_REPOSITORY: traffic-score-airflow
+
+jobs:
+  build-and-push:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY"
+          docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
+          docker push "$IMAGE:${{ github.sha }}"
+          docker push "$IMAGE:latest"
