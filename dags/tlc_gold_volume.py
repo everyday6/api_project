@@ -19,6 +19,12 @@ build_dim_segment_tlc_volume(집계 결과를 세그먼트로 펼치고 정규�
 (없으면 이 태스크가 바로 실패해서 알 수 있음). TLC silver 파일도 tlc_pipeline /
 ingest_daily / ingest_weekly로 이미 적재돼 있어야 한다.
 
+data/silver/map_segment_spatial_weight.parquet도 먼저 있어야 한다
+(build_dim_segment_tlc_volume이 zone -> segment 분배에 이 테이블의 spatial_weight를
+쓴다, 2026-08-19 개정). 이 테이블은 DAG로 연결돼 있지 않은 정적 산출물이라
+src/mapping/segment_spatial_weight.py의 빌드 파이프라인을 직접 실행해서 미리
+만들어둬야 한다 — 없으면 이 태스크도 마찬가지로 바로 실패해서 알 수 있음.
+
 지금은 검증 목적의 수동 트리거만 지원한다(schedule=None). 운영 주기는 확정되면
 추가한다.
 """
