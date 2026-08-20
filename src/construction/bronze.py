@@ -54,6 +54,13 @@ WHERE = "issuedworkstartdate >= '2025-01-01T00:00:00'"
 # 신선도 fallback 임계값. 이보다 오래된 스냅샷은 백업으로 인정하지 않는다.
 MAX_FALLBACK_AGE_DAYS = 2
 
+# validate_output()이 이 날짜의 검증을 통과시켰다는 표시. data.parquet은
+# critical 검증에 실패한 날에도 이미 저장돼 있으므로, 신선도 fallback의
+# "최근 정상 스냅샷" 판정은 파일 존재가 아니라 이 마커로 해야 한다 — 안 그러면
+# 검증에 실패한 날의 파일이 그 다음 날의 "백업"이 되어, 2일 초과 시 실패로
+# 확실히 승격돼야 할 상황에서도 영원히 조용히 스킵만 반복하게 된다.
+VALIDATED_MARKER_NAME = "_VALIDATED"
+
 
 def build() -> str:
     """Socrata에서 전체를 받아 저장만 한다(validate 없음) — build/validate를
@@ -106,9 +113,12 @@ def _find_recent_bronze_snapshot(
     run_date: str,
     max_age_days: int = MAX_FALLBACK_AGE_DAYS,
 ) -> str | None:
-    """base_dir 안에서 run_date보다 이전이면서 max_age_days 이내인 dt= 폴더 중
-    가장 최근 것을 찾는다. data.parquet이 실제로 있는 폴더만 후보로 본다.
+    """base_dir 안에서 run_date보다 이전이면서 max_age_days 이내인, 검증을
+    통과한(= VALIDATED_MARKER_NAME이 있는) dt= 폴더 중 가장 최근 것을 찾는다.
     """
+
+    if not base_dir.exists():
+        return None
 
     today = date.fromisoformat(run_date)
 
@@ -128,7 +138,7 @@ def _find_recent_bronze_snapshot(
         if snapshot_date >= today:
             continue
 
-        if not (entry / "data.parquet").exists():
+        if not (entry / VALIDATED_MARKER_NAME).exists():
             continue
 
         candidates.append(snapshot_date)
@@ -144,16 +154,52 @@ def _find_recent_bronze_snapshot(
     return str(base_dir / f"dt={most_recent.isoformat()}" / "data.parquet")
 
 
+def _handle_critical_failure(reasons: list, path: str) -> None:
+    """critical 검증 실패(또는 Bronze 파일 자체가 없음)를 신선도 fallback
+    정책에 따라 처리한다. 항상 예외를 던지며 정상적으로 반환하지 않는다 —
+    최근(MAX_FALLBACK_AGE_DAYS 이내) 검증 통과 스냅샷이 있으면 로그+Slack
+    알림 후 AirflowSkipException을 던져 오늘 하루를 조용히 건너뛰고(하위
+    태스크 전부 자동 skip), 없으면 일반 예외를 던져 DAG를 실패시킨다(기존
+    on_failure_callback 경로).
+    """
+
+    run_date = Path(path).parent.name.removeprefix("dt=")
+    fallback_path = _find_recent_bronze_snapshot(BRONZE_DIR / SOURCE, run_date)
+
+    if fallback_path:
+
+        logger.error(
+            "공사 Bronze critical 검증 실패, 최근 검증 통과 스냅샷 유지 : %s (사유: %s)",
+            fallback_path,
+            reasons,
+        )
+
+        notify_slack_message(
+            f":warning: 공사 Bronze 검증 실패, 오늘 업데이트 스킵\n"
+            f"*사유*: {reasons}\n*유지되는 데이터*: `{fallback_path}`"
+        )
+
+        raise AirflowSkipException(
+            f"critical 검증 실패, 최근 스냅샷으로 대체(오늘 스킵) : {reasons}"
+        )
+
+    raise ValueError(
+        f"공사 Bronze critical 검증 실패, 최근 백업도 없음 : {reasons}"
+    )
+
+
 def validate_output(path: str) -> str:
     """저장된 Bronze 파일을 GX로 검증한다.
 
-    critical 검증 실패 시: 최근(MAX_FALLBACK_AGE_DAYS 이내) 정상 스냅샷이
-    있으면 로그+Slack 알림 후 AirflowSkipException을 던져 오늘 하루를
-    조용히 건너뛴다(기존 Silver/Gold/Mapping 결과 유지 — 이 태스크가 skip되면
-    Airflow 기본 trigger rule에 따라 하위 태스크 전부 자동으로 skip된다).
-    없으면 일반 예외를 던져 DAG를 실패시킨다(기존 on_failure_callback 경로).
-    log-only 검증 실패는 로그만 남기고 통과시킨다.
+    Bronze 파일 자체가 없거나(Socrata가 0건을 반환해 build()가 아무것도
+    저장하지 못한 경우 포함) critical 검증에 실패하면 _handle_critical_failure로
+    처리를 위임한다. log-only 검증 실패는 로그만 남기고 통과시킨다. 정상
+    통과 시(log-only 실패 포함) VALIDATED_MARKER_NAME 마커를 남겨, 이 날짜가
+    이후 신선도 fallback의 후보가 될 수 있게 한다.
     """
+
+    if not Path(path).exists():
+        _handle_critical_failure([f"bronze_file_missing({path})"], path)
 
     df = pd.read_parquet(path)
 
@@ -166,35 +212,11 @@ def validate_output(path: str) -> str:
     failed_critical = [r for r in critical_results if not r["success"]]
 
     if failed_critical:
-
         reasons = [
             f"{r['expectation_type']}({r['kwargs'].get('column', '-')})"
             for r in failed_critical
         ]
-
-        run_date = Path(path).parent.name.removeprefix("dt=")
-        fallback_path = _find_recent_bronze_snapshot(BRONZE_DIR / SOURCE, run_date)
-
-        if fallback_path:
-
-            logger.error(
-                "공사 Bronze critical 검증 실패, 최근 스냅샷 유지 : %s (사유: %s)",
-                fallback_path,
-                reasons,
-            )
-
-            notify_slack_message(
-                f":warning: 공사 Bronze 검증 실패, 오늘 업데이트 스킵\n"
-                f"*사유*: {reasons}\n*유지되는 데이터*: `{fallback_path}`"
-            )
-
-            raise AirflowSkipException(
-                f"critical 검증 실패, 최근 스냅샷으로 대체(오늘 스킵) : {reasons}"
-            )
-
-        raise ValueError(
-            f"공사 Bronze critical 검증 실패, 최근 백업도 없음 : {reasons}"
-        )
+        _handle_critical_failure(reasons, path)
 
     log_results = validate_pandas_dataframe(
         df,
@@ -214,6 +236,8 @@ def validate_output(path: str) -> str:
                 result["result"],
                 result["exception_info"],
             )
+
+    (Path(path).parent / VALIDATED_MARKER_NAME).touch()
 
     return path
 
