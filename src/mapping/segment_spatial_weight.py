@@ -36,7 +36,7 @@ from src.common.config import (
 )
 from src.common.logger import get_logger
 from src.lion.silver import DIM_SEGMENT_PATH
-from src.mapping.zone_segment import MAP_ZONE_SEGMENT_PATH, TAXI_ZONE_SHAPEFILE, _load_zones
+from src.silver2.zone_segment import MAP_ZONE_SEGMENT_PATH, TAXI_ZONE_SHAPEFILE, _load_zones
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_segment_spatial_weight")
 

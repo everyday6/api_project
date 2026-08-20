@@ -21,7 +21,7 @@ from src.common.config import BOROUGH_EVENT, GOLD_DIR, SILVER_DIR, TAXI_TYPES
 from src.common.logger import get_logger
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.mapping.segment_spatial_weight import MAP_SEGMENT_SPATIAL_WEIGHT_PATH
-from src.mapping.zone_segment import MAP_ZONE_SEGMENT_PATH
+from src.silver2.zone_segment import MAP_ZONE_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_gold")
 

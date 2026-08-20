@@ -72,13 +72,13 @@ def event_pipeline():
 
     @task(task_id="map_event_lion", outlets=[MAP_EVENT_LION])
     def map_event_lion():
-        from src.mapping.event_lion import build_event_lion_mapping
+        from src.silver2.event_lion import build_event_lion_mapping
         context = get_current_context()
         return build_event_lion_mapping(context["ds"])
 
     @task(task_id="validate_map_event_lion")
     def validate_map_event_lion(path: str):
-        from src.mapping.event_lion import validate_output
+        from src.silver2.event_lion import validate_output
         return validate_output(path)
 
     bronze_path = fetch_event()

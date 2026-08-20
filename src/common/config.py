@@ -63,6 +63,11 @@ BRONZE_DIR = DATA_DIR / "bronze"
 SILVER_DIR = DATA_DIR / "silver"
 GOLD_DIR = DATA_DIR / "gold"
 
+SILVER1_DIR = DATA_DIR / "silver1"
+SILVER2_DIR = DATA_DIR / "silver2"
+GOLD1_DIR = DATA_DIR / "gold1"
+GOLD2_DIR = DATA_DIR / "gold2"
+
 # ==========================
 # HTTP 설정
 # ==========================

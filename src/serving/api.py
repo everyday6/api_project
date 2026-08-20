@@ -2,11 +2,11 @@
 Traffic Score 조회 API.
 
 프론트(대시보드)는 이 API만 호출하고 parquet을 직접 읽지 않는다. 실제 조회
-로직은 전부 src/scoring/traffic_score.py의 get_traffic_score()/get_map_data()에
+로직은 전부 src/gold2/traffic_score.py의 get_traffic_score()/get_map_data()에
 있고, 여기서는 그걸 HTTP로 감싸기만 한다.
 
 로컬 실행:
-    uvicorn src.scoring.api:app --reload --port 8000
+    uvicorn src.serving.api:app --reload --port 8000
 그리고 http://localhost:8000 접속하면 대시보드가 뜬다.
 """
 
@@ -21,7 +21,7 @@ from fastapi.responses import FileResponse, JSONResponse
 from shapely import wkt
 
 from src.common.logger import get_logger
-from src.scoring.traffic_score import (
+from src.gold2.traffic_score import (
     get_active_closures,
     get_closure_data_date_range,
     get_map_data,

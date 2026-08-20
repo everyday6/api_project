@@ -74,13 +74,13 @@ def ticketmaster_pipeline():
 
     @task(task_id="map_ticketmaster_lion", outlets=[MAP_TICKETMASTER_LION])
     def map_ticketmaster_lion():
-        from src.mapping.ticketmaster_lion import build_ticketmaster_lion_mapping
+        from src.silver2.ticketmaster_lion import build_ticketmaster_lion_mapping
         context = get_current_context()
         return build_ticketmaster_lion_mapping(context["ds"])
 
     @task(task_id="validate_map_ticketmaster_lion")
     def validate_map_ticketmaster_lion(path: str):
-        from src.mapping.ticketmaster_lion import validate_output
+        from src.silver2.ticketmaster_lion import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 

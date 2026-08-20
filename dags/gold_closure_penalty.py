@@ -50,12 +50,12 @@ def gold_closure_penalty():
 
     @task(task_id="build_closure_penalty")
     def build_closure_penalty():
-        from src.scoring.closure_penalty import build
+        from src.gold2.closure_penalty import build
         return build()
 
     @task(task_id="validate_closure_penalty")
     def validate_closure_penalty(path: str):
-        from src.scoring.closure_penalty import validate_output
+        from src.gold2.closure_penalty import validate_output
         return validate_output(path)
 
     validate_closure_penalty(build_closure_penalty())

@@ -41,7 +41,7 @@ from src.lion.bronze import ingest_lion
 from src.lion.segment_adjacency import build_graph_segment_adjacency, validate_graph_segment_adjacency
 from src.lion.silver import build_dim_segment, validate_dim_segment
 from src.lion.traffic_score import build_dim_segment_traffic_score, validate_dim_segment_traffic_score
-from src.mapping.zone_segment import build_map_zone_segment, validate_map_zone_segment
+from src.silver2.zone_segment import build_map_zone_segment, validate_map_zone_segment
 
 default_args = {
     "retries": 3,

@@ -39,7 +39,7 @@ import pandas as pd
 
 from src.common.config import SILVER_DIR
 from src.common.logger import get_logger
-from src.scoring.closure_penalty import spread_with_decay
+from src.gold2.closure_penalty import spread_with_decay
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="event_boost")
 

@@ -173,25 +173,25 @@ def construction_pipeline():
 
     @task(task_id="map_road_control_segment", outlets=[MAP_ROAD_CONTROL_SEGMENT])
     def map_road_control_segment():
-        from src.mapping.road_control_segment import build
+        from src.silver2.road_control_segment import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_map_road_control_segment")
     def validate_map_road_control_segment(path: str):
-        from src.mapping.road_control_segment import validate_output
+        from src.silver2.road_control_segment import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
     @task(task_id="map_road_closure_segment", outlets=[MAP_ROAD_CLOSURE_SEGMENT])
     def map_road_closure_segment():
-        from src.mapping.road_closure_segment import build
+        from src.silver2.road_closure_segment import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_map_road_closure_segment")
     def validate_map_road_closure_segment(path: str):
-        from src.mapping.road_closure_segment import validate_output
+        from src.silver2.road_closure_segment import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
