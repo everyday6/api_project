@@ -1,8 +1,9 @@
 """
 Gold1 — NYC 행사 관련성 필터
 
-event Silver1(전 자치구, 전체 기간)에서 Traffic Score에 사용할 "차량 통행에
-영향을 주는, 아직 끝나지 않은 Manhattan 행사"만 남긴다.
+Event-LION Silver2(전 자치구, 전체 기간, 도로 매핑 완료)에서 Traffic
+Score에 사용할 "차량 통행에 영향을 주는, 아직 끝나지 않은 Manhattan
+행사"만 남긴다.
 
 필터 순서
 1. 맨해튼
@@ -17,7 +18,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import BOROUGH_EVENT, GOLD1_DIR, SILVER1_DIR
+from src.common.config import BOROUGH_EVENT, GOLD1_DIR, SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.event.silver1 import SOURCE
@@ -31,11 +32,11 @@ SIDEWALK_ONLY = [
 ]
 
 
-def load_silver1(run_date: str) -> pd.DataFrame:
-    """run_date에 해당하는 event Silver1 스냅샷을 읽는다."""
-    path = SILVER1_DIR / SOURCE / f"dt={run_date}" / "data.parquet"
+def load_silver2(run_date: str) -> pd.DataFrame:
+    """run_date에 해당하는 Event-LION Silver2 스냅샷을 읽는다."""
+    path = SILVER2_DIR / "event_lion" / f"dt={run_date}" / "data.parquet"
     if not path.exists():
-        raise FileNotFoundError(f"{SOURCE}: Silver1 파일 없음 - {path}")
+        raise FileNotFoundError(f"{SOURCE}: Event-LION Silver2 파일 없음 - {path}")
     return pd.read_parquet(str(path))
 
 
@@ -65,6 +66,10 @@ def filter_for_traffic_score(df: pd.DataFrame, run_date: str) -> pd.DataFrame:
         "on_street",
         "from_street",
         "to_street",
+        "segment_id",
+        "is_routable",
+        "mapping_status",
+        "unmatched_reason",
     ]].reset_index(drop=True)
 
 
@@ -75,8 +80,8 @@ def validate(df: pd.DataFrame) -> None:
     if df["event_id"].isna().any():
         raise ValueError("event_id NULL 발생")
 
-    if df.duplicated(subset=["event_id", "start_ts"]).any():
-        raise ValueError("(event_id, start_ts) 중복 발생")
+    if df.duplicated(subset=["event_id", "start_ts", "segment_id"]).any():
+        raise ValueError("(event_id, start_ts, segment_id) 중복 발생")
 
     logger.info(
         "행사 Gold1 검증 완료: rows=%d events=%d",
@@ -92,7 +97,7 @@ def build(run_date: str | None = None) -> str:
 
     logger.info("행사 Gold1 필터 시작: run_date=%s", run_date)
 
-    df = load_silver1(run_date)
+    df = load_silver2(run_date)
     df = filter_for_traffic_score(df, run_date)
 
     path = save_parquet(df, GOLD1_DIR / SOURCE / f"dt={run_date}")

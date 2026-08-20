@@ -85,7 +85,12 @@ def match(
 
 def validate(df: pd.DataFrame, total_rows: int) -> None:
     if df.empty:
-        raise ValueError("map_road_closure_segment 결과가 비었습니다.")
+        # construction_work_hours_join.py가 Silver1(전 지역, 필터링 전)을 읽도록
+        # 바뀐 뒤로는 road_closures 전체가 construction과 겹쳐 흡수되는 날도
+        # 생길 수 있다(실측: 2026-08-20에 50,639건 전부 겹침) — 매칭 로직 오류가
+        # 아니라 conflation 범위가 넓어진 결과라 하드 실패시키지 않는다.
+        logger.warning("map_road_closure_segment 결과가 비었습니다 — other_road_control 행이 0건.")
+        return
 
     matched = df["segment_id"].notna().sum()
     logger.info(

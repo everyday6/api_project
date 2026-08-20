@@ -75,14 +75,25 @@ COMPONENT_SOURCES: dict[str, str | None] = {
 # 훨씬 싼 delta 계산으로 따로 처리한다(closure_penalty.compute_site_exclusion_delta
 # 참고) — 이 딕셔너리에 넣으면 exclude_site별로 캐시 키가 갈라져서 카드를
 # 클릭할 때마다 도시 전체를 다시 계산하게 된다.
-HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
-    "closure_penalty": lambda ts_date: closure_penalty.compute_hourly_penalty(
+def _closure_penalty_hourly_table(ts_date: str) -> pd.DataFrame:
+    """gold_closure_penalty DAG가 이 ts_date를 이미 배치로 계산해놨으면
+    그 결과를 그대로 읽는다 — 없는 날짜(과거/미래처럼 배치가 안 구워둔
+    날짜)만 온디맨드로 계산한다(closure_penalty.load_precomputed 참고)."""
+    precomputed = closure_penalty.load_precomputed(ts_date)
+    if precomputed is not None:
+        return precomputed
+
+    return closure_penalty.compute_hourly_penalty(
         closure_penalty.load_ground_zero_records(_latest_mapping_dt()),
         ts_date,
         _load_adjacency(),
         _load_capacity_by_segment(),
         _load_lanes_by_segment(),
-    ),
+    )
+
+
+HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
+    "closure_penalty": _closure_penalty_hourly_table,
     "tlc_volume": lambda ts_date: _load_tlc_volume_table(),
     "event_boost": lambda ts_date: _event_boost_table_for_date(ts_date),
 }
@@ -139,13 +150,13 @@ def _load_lanes_by_segment() -> dict:
 
 
 def _event_boost_table_for_date(ts_date: str) -> pd.DataFrame:
-    """event_lion Silver2 또는 ticketmaster Gold1이 아직 없으면 빈 테이블을
+    """Event Gold1 또는 Ticketmaster Gold1이 아직 없으면 빈 테이블을
     반환한다. 이 경우 event_boost는 0(영향 없음)으로 처리된다."""
-    event_dt = _latest_run_date(event_boost.MAP_EVENT_LION_DIR)
+    event_dt = _latest_run_date(event_boost.EVENT_GOLD1_DIR)
     ticketmaster_dt = _latest_run_date(event_boost.TICKETMASTER_GOLD1_DIR)
     if event_dt is None or ticketmaster_dt is None:
         logger.warning(
-            "[scoring] event_lion 매핑 또는 ticketmaster Gold1이 없습니다 — "
+            "[scoring] Event Gold1 또는 Ticketmaster Gold1이 없습니다 — "
             "event_boost를 0으로 처리합니다. 관련 daily pipeline을 실행하면 반영됩니다."
         )
         return pd.DataFrame(columns=["segment_id", "hour", "event_boost"])
@@ -270,6 +281,19 @@ def _load_ground_zero_records_cached(mapping_dt: str) -> pd.DataFrame:
     return records
 
 
+def _load_ground_zero_details_cached(mapping_dt: str) -> pd.DataFrame:
+    """closure_penalty.load_ground_zero_details()는 map_road_control_segment
+    (전 지역, 백만 건대) 전체를 매번 다시 읽어서 nearby_closures/active_closures/
+    newly_issued_closures를 부를 때마다 몇 초씩 걸린다 — 요청마다 다시 읽지
+    않도록 mapping_dt별로 캐싱한다."""
+    cache_key = f"ground_zero_details::{mapping_dt}"
+    if cache_key in _cache:
+        return _cache[cache_key]
+    details = closure_penalty.load_ground_zero_details(mapping_dt)
+    _cache[cache_key] = details
+    return details
+
+
 def _closure_intensity_lookup(ts_date: str) -> dict[tuple[str, int], float]:
     """(segment_id, hour) -> 도시 전체 기준 closure_intensity(가공 전 원값).
     _hourly_lookup("closure_penalty", ts_date)이 이미 계산해서 캐싱해 둔
@@ -286,6 +310,24 @@ def _closure_intensity_lookup(ts_date: str) -> dict[tuple[str, int], float]:
     }
     _cache[cache_key] = lookup
     return lookup
+
+
+def _find_exclude_site_row_cached(records: pd.DataFrame, exclude_site: dict, mapping_dt: str) -> pd.DataFrame:
+    """closure_penalty.find_exclude_site_row()는 records(현재 76만 건대)
+    전체에 대한 boolean mask라, 하루 24시간 막대 그래프를 그릴 때(같은
+    exclude_site로 get_traffic_score()를 24번 부름) 매번 다시 돌리면 그만큼
+    낭비다(실측 24회에 ~2.5초) — hour와 무관한 부분이라 exclude_site
+    조합별로 한 번만 계산해 캐싱한다."""
+    cache_key = "exclude_site_row::" + "::".join([
+        mapping_dt,
+        str(exclude_site["on_street"]), str(exclude_site["from_street"]), str(exclude_site["to_street"]),
+        str(exclude_site["work_start_ts"]), str(exclude_site["work_end_ts"]), str(exclude_site["segment_id"]),
+    ])
+    if cache_key in _cache:
+        return _cache[cache_key]
+    site_row = closure_penalty.find_exclude_site_row(records, exclude_site)
+    _cache[cache_key] = site_row
+    return site_row
 
 
 def _closure_penalty_value(segment_id: str, hour: int, ts_date: str, exclude_site: dict | None) -> float:
@@ -311,9 +353,11 @@ def _closure_penalty_value(segment_id: str, hour: int, ts_date: str, exclude_sit
         return _hourly_lookup("closure_penalty", ts_date).get((segment_id, hour), 0.0)
 
     full_intensity = _closure_intensity_lookup(ts_date).get((segment_id, hour), 0.0)
-    records = _load_ground_zero_records_cached(_latest_mapping_dt())
+    mapping_dt = _latest_mapping_dt()
+    records = _load_ground_zero_records_cached(mapping_dt)
     contribution = closure_penalty.compute_site_exclusion_delta(
         records, exclude_site, ts_date, hour, _load_adjacency(), segment_id,
+        site_row=_find_exclude_site_row_cached(records, exclude_site, mapping_dt),
     )
     remaining_intensity = max(0.0, full_intensity - contribution)
     if remaining_intensity <= 0:
@@ -575,13 +619,28 @@ def get_nearby_closures(segment_id: str, ts_hour: int | None = None, ts_date: st
     if ts_date is None:
         ts_date = _current_date()
 
+    mapping_dt = _latest_mapping_dt()
     return closure_penalty.get_nearby_closures(
         segment_id,
-        mapping_dt=_latest_mapping_dt(),
+        mapping_dt=mapping_dt,
         query_date=ts_date,
         hour=ts_hour,
         adjacency=_load_adjacency(),
+        details=_load_ground_zero_details_cached(mapping_dt),
     )
+
+
+def _manhattan_segment_ids() -> set[str]:
+    """대시보드 지도(get_map_data(), Manhattan만)에 실제로 그려지는
+    segment_id 집합. get_active_closures()/get_newly_issued_closures()가
+    map_road_control_segment(전 지역, 필터링 전)를 읽는 load_ground_zero_details()
+    기반이라 다른 자치구 segment_id도 그대로 섞여 나온다 — 그 카드를 클릭하면
+    지도에 없는 segment_id라 panToSegment()가 조용히 아무 반응도 안 한다.
+    두 함수 모두 "맨해튼 목록"이라고 문서화돼 있으므로 여기서 실제로 걸러낸다."""
+    if "manhattan_segment_ids" not in _cache:
+        df = _load_base_data()
+        _cache["manhattan_segment_ids"] = set(df.loc[df["borough_code"] == DASHBOARD_BOROUGH_CODE, "segment_id"])
+    return _cache["manhattan_segment_ids"]
 
 
 def get_closure_data_date_range() -> tuple[str, str]:
@@ -599,11 +658,15 @@ def get_active_closures(ts_hour: int | None = None, ts_date: str | None = None) 
     if ts_date is None:
         ts_date = _current_date()
 
-    return closure_penalty.get_active_closures(
-        mapping_dt=_latest_mapping_dt(),
+    mapping_dt = _latest_mapping_dt()
+    rows = closure_penalty.get_active_closures(
+        mapping_dt=mapping_dt,
         query_date=ts_date,
         hour=ts_hour,
+        details=_load_ground_zero_details_cached(mapping_dt),
     )
+    manhattan_ids = _manhattan_segment_ids()
+    return [r for r in rows if r["segment_id"] in manhattan_ids]
 
 
 def _load_permit_types() -> pd.DataFrame:
@@ -629,12 +692,16 @@ def get_newly_issued_closures(ts_date: str | None = None) -> list[dict]:
     if ts_date is None:
         ts_date = _current_date()
 
-    return closure_penalty.get_newly_issued_closures(
-        mapping_dt=_latest_mapping_dt(),
+    mapping_dt = _latest_mapping_dt()
+    rows = closure_penalty.get_newly_issued_closures(
+        mapping_dt=mapping_dt,
         query_date=ts_date,
         permit_types=_load_permit_types(),
         embargoes_by_permit=_load_embargoes_by_permit(),
+        details=_load_ground_zero_details_cached(mapping_dt),
     )
+    manhattan_ids = _manhattan_segment_ids()
+    return [r for r in rows if r["segment_id"] in manhattan_ids]
 
 
 # LION borough_code(문자열) — 1=Manhattan, 2=Bronx, 3=Brooklyn, 4=Queens,
@@ -709,4 +776,8 @@ def get_map_data(ts_hour: int | None = None, ts_date: str | None = None) -> pd.D
 
     out = df[["segment_id", "geometry", "road_class"]].copy()
     out["traffic_score"] = demand_value / capacity_value.replace(0, pd.NA)
+
+    # capacity_per_hour(lanes_total) 결측 세그먼트는 traffic_score를 낼 수 없다 —
+    # 확인해보니 대부분 인도 등 실제 차량 도로가 아닌 케이스라 지도에서 아예 뺀다.
+    out = out[out["traffic_score"].notna()].reset_index(drop=True)
     return out
