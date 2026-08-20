@@ -36,6 +36,7 @@ CLI)로 필요한 컬럼 + WKT 지오메트리만 CSV로 평탄화한 뒤 그 CS
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -79,6 +80,23 @@ def _find_gdb(version_dir: Path) -> Path:
     if not gdbs:
         raise FileNotFoundError(f"{version_dir} 안에 .gdb가 없습니다")
     return gdbs[0]
+
+
+def _stage_gdb_locally(gdb_path, work_dir: Path) -> Path:
+    """ogr2ogr가 읽을 수 있도록 S3의 .gdb 디렉터리를 로컬에 준비한다."""
+
+    if isinstance(gdb_path, Path):
+        return gdb_path
+
+    local_gdb = work_dir / gdb_path.name
+    downloaded_path = Path(gdb_path.download_to(local_gdb))
+
+    if not downloaded_path.is_dir() or not any(
+        path.is_file() for path in downloaded_path.rglob("*")
+    ):
+        raise RuntimeError(f"LION .gdb 로컬 다운로드 검증 실패: {gdb_path}")
+
+    return downloaded_path
 
 
 def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
@@ -127,15 +145,17 @@ def build_dim_segment_base(
     gdb_path = _find_gdb(version_dir)
     logger.info(f"[lion_silver] 입력 bronze: {gdb_path}")
 
-    # ogr2ogr(네이티브 GDAL 바이너리)은 S3 경로에 못 쓰므로, silver1_root(S3)가
-    # 아니라 진짜 로컬 스크래치 공간(TMP_DIR)에 만든다.
-    # 주의: 파일명이 "_"로 시작하면 Hadoop/Spark 계열 도구가 숨김 파일(_SUCCESS 등과
-    # 동일 취급)로 보고 무시하는 경우가 있어(직접 겪은 문제) 밑줄로 시작하지 않게 짓는다.
+    # ogr2ogr는 s3:// 경로의 File Geodatabase를 직접 읽을 수 없으므로 .gdb를
+    # 로컬 스크래치 공간에 받은 뒤 CSV로 변환한다. 실행별 임시 폴더를 사용해
+    # 동시에 실행되거나 이전 실행이 실패해도 임시 파일이 충돌하지 않게 한다.
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_csv = TMP_DIR / "lion_flat_tmp.csv"
-    _gdb_to_flat_csv(gdb_path, tmp_csv)
+    with tempfile.TemporaryDirectory(prefix="lion_silver1_", dir=TMP_DIR) as tmp:
+        work_dir = Path(tmp)
+        local_gdb_path = _stage_gdb_locally(gdb_path, work_dir)
+        tmp_csv = work_dir / "lion_flat.csv"
+        _gdb_to_flat_csv(local_gdb_path, tmp_csv)
 
-    df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
+        df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
 
     # ogr2ogr -lco GEOMETRY=AS_WKT로 만든 geometry 컬럼 이름이 GDAL 버전마다 다르다
     # (직접 확인: 로컬 GDAL 3.13은 "SHAPE", Docker 이미지의 GDAL 3.6.2는 "WKT").
@@ -194,7 +214,6 @@ def build_dim_segment_base(
 
     logger.info(f"[lion_silver] dim_segment(Silver1) {len(dim_segment)}행 저장 -> {dim_segment_path}")
 
-    tmp_csv.unlink(missing_ok=True)
     return str(dim_segment_path)
 
 
