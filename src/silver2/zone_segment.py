@@ -30,13 +30,15 @@ import pandas as pd
 from shapely import wkt
 from shapely.strtree import STRtree
 
-from src.common.config import BRONZE_DIR, SILVER_DIR
+from src.common.config import SILVER_DIR, SILVER1_DIR
 from src.common.logger import get_logger
 from src.lion.gold2 import DIM_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
 
-TAXI_ZONE_SHAPEFILE = BRONZE_DIR / "taxi_zone" / "shapefile" / "taxi_zones" / "taxi_zones.shp"
+# taxi_zone Silver1(검증 통과한 원본)을 읽는다 — Silver2는 항상 상위 도메인의
+# Silver1을 읽는다는 원칙(예전에는 taxi_zone Bronze를 직접 읽었음).
+TAXI_ZONE_SHAPEFILE = SILVER1_DIR / "taxi_zone" / "shapefile" / "taxi_zones" / "taxi_zones.shp"
 MAP_ZONE_SEGMENT_PATH = SILVER_DIR / "map_zone_segment.parquet"
 
 ZONE_COLUMNS = ["LocationID", "borough"]
