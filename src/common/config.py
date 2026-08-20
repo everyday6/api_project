@@ -196,9 +196,10 @@ LION_CRS = "EPSG:2263"
 # venue 주변 도로 매핑 반경 (feet)
 TICKETMASTER_LION_BUFFER_FT = 200
 
-# fallback nearest 매핑 품질 기준
+# fallback nearest 매핑 품질 기준. 최대 거리보다 멀면 도로에 억지로
+# 연결하지 않고 unmapped_too_far로 보존한다.
 TICKETMASTER_LION_WARN_DISTANCE_FT = 500
-TICKETMASTER_LION_FAIL_DISTANCE_FT = 3000
+TICKETMASTER_LION_MAX_DISTANCE_FT = 3000
 
 # ==========================
 # 2016 하차 위경도 Hotspot 설정

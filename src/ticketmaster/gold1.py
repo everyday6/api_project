@@ -66,6 +66,15 @@ def filter_for_traffic_score(df: pd.DataFrame, run_date: str) -> pd.DataFrame:
     df = df[~df["is_excluded"]].copy()
     logger.info("서비스 제외 venue 제거: %d → %d", before, len(df))
 
+    # Silver2에는 추적 목적으로 먼 이벤트도 남아 있다. 실제 Traffic Score에는
+    # 신뢰할 수 있는 LION segment가 연결된 이벤트만 사용한다.
+    before = len(df)
+    df = df[
+        df["segment_id"].notna()
+        & (df["mapping_method"] != "unmapped_too_far")
+    ].copy()
+    logger.info("LION 매핑 불가 이벤트 제외: %d → %d", before, len(df))
+
     return df[[
         "event_id",
         "event_date",
@@ -90,6 +99,9 @@ def validate(df: pd.DataFrame) -> None:
 
     if df["event_date"].isna().any():
         raise ValueError("Ticketmaster event_date 결측 발생")
+
+    if df["segment_id"].isna().any():
+        raise ValueError("Ticketmaster Gold1 segment_id 결측 발생")
 
     logger.info("Ticketmaster Gold1 검증 완료: rows=%d", len(df))
 
