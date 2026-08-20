@@ -14,12 +14,15 @@ $limit/$offset 같은 행 단위 API 조회가 불가능하다 (실제로 시도
 from __future__ import annotations
 
 import io
+import shutil
+import tempfile
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
 
 import requests
 
+from src.common.config import BRONZE_DIR, TMP_DIR
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion")
@@ -33,10 +36,34 @@ HEADERS = {
                   "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0 Safari/537.36"
 }
 
-from src.common.config import BRONZE_DIR
 BRONZE_ROOT = BRONZE_DIR / "lion"
 
-def ingest_lion(version_date: str | None = None, bronze_root: Path = BRONZE_ROOT) -> Path:
+
+def _contains_gdb_file(root) -> bool:
+    """root 아래에 실제 내용이 들어 있는 File Geodatabase가 있는지 확인한다."""
+
+    return any(
+        path.is_file() and ".gdb/" in str(path).replace("\\", "/").lower()
+        for path in root.rglob("*")
+    )
+
+
+def _upload_tree(local_root: Path, destination) -> None:
+    """로컬 디렉터리의 파일을 로컬/S3 목적지에 재귀적으로 복사한다."""
+
+    if isinstance(destination, Path):
+        shutil.copytree(local_root, destination, dirs_exist_ok=True)
+        return
+
+    destination.mkdir(parents=True, exist_ok=True)
+    for local_path in local_root.rglob("*"):
+        if not local_path.is_file():
+            continue
+        relative_path = local_path.relative_to(local_root)
+        (destination / relative_path.as_posix()).upload_from(local_path)
+
+
+def ingest_lion(version_date: str | None = None, bronze_root=BRONZE_ROOT) -> str:
     """
     version_date: 'YYYY-MM-DD' 형식. 안 주면 오늘 날짜로 자동 태깅.
     (Airflow에서는 '{{ ds }}'를 그대로 넘기면 됨)
@@ -54,18 +81,35 @@ def ingest_lion(version_date: str | None = None, bronze_root: Path = BRONZE_ROOT
         logger.exception(f"[lion] version_date={version_date} 다운로드 실패: {LION_ZIP_URL}")
         raise
 
-    dest_dir = bronze_root / f"version_date={version_date}"
-    dest_dir.mkdir(parents=True, exist_ok=True)
+    # zipfile은 S3Path에 직접 압축을 풀 수 없다. 로컬 스크래치 공간에 먼저
+    # 압축을 푼 다음 완성된 파일만 Bronze(S3)에 올린다.
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="lion_bronze_", dir=TMP_DIR) as tmp:
+        extract_dir = Path(tmp) / "extracted"
+        extract_dir.mkdir()
 
-    with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
-        z.extractall(dest_dir)
+        with zipfile.ZipFile(io.BytesIO(resp.content)) as z:
+            z.extractall(extract_dir)
 
-    marker_path = dest_dir / "_metadata.txt"
-    marker_path.write_text(
-        f"_ingested_at={datetime.now(timezone.utc).isoformat()}\n"
-        f"_source=nyc_dcp_lion\n"
-        f"_source_url={LION_ZIP_URL}\n"
-    )
+        if not _contains_gdb_file(extract_dir):
+            raise RuntimeError("LION ZIP 안에 유효한 .gdb 파일이 없습니다")
+
+        dest_dir = bronze_root / f"version_date={version_date}"
+        _upload_tree(extract_dir, dest_dir)
+
+        # 업로드가 일부만 됐는데 성공 로그가 찍히는 false success를 막는다.
+        if not _contains_gdb_file(dest_dir):
+            raise RuntimeError(f"LION .gdb S3 업로드 검증 실패: {dest_dir}")
+
+        marker_path = dest_dir / "_metadata.txt"
+        marker_path.write_text(
+            f"_ingested_at={datetime.now(timezone.utc).isoformat()}\n"
+            f"_source=nyc_dcp_lion\n"
+            f"_source_url={LION_ZIP_URL}\n"
+        )
+
+        if not marker_path.exists():
+            raise RuntimeError(f"LION 메타데이터 업로드 검증 실패: {marker_path}")
 
     logger.info(f"[lion] version_date={version_date} 압축 해제 완료 -> {dest_dir}")
     return str(dest_dir)

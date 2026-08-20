@@ -28,42 +28,48 @@ from src.common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="alerts")
 
 SLACK_TIMEOUT = 10
-MAX_ERROR_SUMMARY_LENGTH = 500
+MAX_ERROR_SUMMARY_CHARS = 500
+MAX_ERROR_SUMMARY_LINES = 3
 
 
-def _summarize_exception(exception: object) -> str:
-    """Slack에는 원인 파악에 필요한 짧은 예외 요약만 보낸다.
-
-    GDAL처럼 실패 원인 뒤에 지원 드라이버 전체 목록을 붙이는 예외와 긴
-    여러 줄 메시지가 채널을 도배하지 않도록 정리한다. 전체 내용과 traceback은
-    Airflow 로그에 그대로 남아 있으므로 Slack에서는 길이만 제한한다.
-    """
+def _summarize_exception(exception: object) -> tuple[str, str]:
+    """긴 Spark/Java 스택 트레이스에서 Slack에 보낼 핵심 내용만 추린다."""
 
     if exception is None:
-        return "알 수 없는 오류"
-
-    text = str(exception).strip()
-    if not text:
-        return type(exception).__name__
-
-    # GDAL/OGR 오류가 실제 원인 뒤에 붙이는 수십 줄짜리 드라이버 목록 제거.
-    driver_marker = "with the following drivers."
-    if driver_marker in text:
-        text = text.split(driver_marker, 1)[0].rstrip()
-
-    # 래퍼 메시지의 FAILURE와 다음 줄의 실제 원인을 한 문장으로 합친다.
-    text = text.replace("FAILURE:", "")
-    lines = [line.strip() for line in text.splitlines() if line.strip()]
-    summary = " ".join(lines)
+        return "UnknownError", "에러 정보가 없습니다. Airflow 로그를 확인하세요."
 
     error_type = type(exception).__name__
-    if error_type not in {"str", "NoneType"}:
-        summary = f"{error_type}: {summary}"
+    raw_lines = [line.strip() for line in str(exception).splitlines() if line.strip()]
 
-    if len(summary) > MAX_ERROR_SUMMARY_LENGTH:
-        summary = summary[: MAX_ERROR_SUMMARY_LENGTH - 1].rstrip() + "…"
+    # Java/Spark 예외는 가장 마지막 Caused by가 실제 근본 원인인 경우가 많다.
+    caused_by_indexes = [
+        index for index, line in enumerate(raw_lines)
+        if "Caused by:" in line
+    ]
+    start_index = caused_by_indexes[-1] if caused_by_indexes else 0
 
-    return summary
+    meaningful_lines = []
+    for line in raw_lines[start_index:]:
+        if (
+            line.startswith("at ")
+            or line.startswith("Traceback ")
+            or line.startswith("File ")
+            or (line.startswith("...") and line.endswith("more"))
+        ):
+            continue
+
+        meaningful_lines.append(line)
+        if len(meaningful_lines) >= MAX_ERROR_SUMMARY_LINES:
+            break
+
+    if not meaningful_lines:
+        meaningful_lines = [raw_lines[0]] if raw_lines else [error_type]
+
+    summary = "\n".join(meaningful_lines)
+    if len(summary) > MAX_ERROR_SUMMARY_CHARS:
+        summary = summary[: MAX_ERROR_SUMMARY_CHARS - 3].rstrip() + "..."
+
+    return error_type, summary
 
 
 def _build_message(context: dict) -> str:
@@ -72,6 +78,7 @@ def _build_message(context: dict) -> str:
     task_instance = context.get("task_instance")
     dag = context.get("dag")
     exception = context.get("exception")
+    error_type, error_summary = _summarize_exception(exception)
 
     dag_id = (
         task_instance.dag_id if task_instance
@@ -91,7 +98,8 @@ def _build_message(context: dict) -> str:
         f"*DAG*: `{dag_id}`",
         f"*Task*: `{task_id}` (시도 {try_number}회 모두 소진)",
         f"*실행 시각*: {run_time}",
-        f"*에러 요약*: {error_summary}",
+        f"*에러 타입*: `{error_type}`",
+        f"*핵심 내용*: {error_summary}",
     ]
 
     if log_url:
