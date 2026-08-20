@@ -7,6 +7,7 @@ Ticketmaster Silver1 -> LION segment mapping
 - 차량 통행 가능한 LION segment만 사용
 - venue 기준 200ft 이내의 모든 segment 매핑
 - 200ft 안에 segment가 없는 venue는 nearest segment 1개 fallback
+- nearest segment도 3000ft보다 멀면 unmapped_too_far로 보존
 - mapping 결과를 run_date 기준 Parquet으로 저장
 """
 
@@ -27,7 +28,7 @@ from src.common.config import (
     LION_CRS,
     TICKETMASTER_LION_BUFFER_FT,
     TICKETMASTER_LION_WARN_DISTANCE_FT,
-    TICKETMASTER_LION_FAIL_DISTANCE_FT,
+    TICKETMASTER_LION_MAX_DISTANCE_FT,
 )
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
@@ -445,6 +446,22 @@ def map_ticketmaster_to_lion(
             "nearest_fallback"
         )
 
+        # 너무 먼 도로에 억지로 연결하면 엉뚱한 segment의 Traffic Score에
+        # 영향을 준다. 이벤트 자체는 추적할 수 있도록 남기되 매핑 불가로
+        # 표시하고, 서비스 대상 선정 단계인 Gold1에서 제외한다.
+        too_far = (
+            nearest["distance_ft"]
+            > TICKETMASTER_LION_MAX_DISTANCE_FT
+        )
+        if too_far.any():
+            logger.warning(
+                "nearest fallback 최대 거리 %dft 초과: %d건을 매핑 불가로 보존",
+                TICKETMASTER_LION_MAX_DISTANCE_FT,
+                int(too_far.sum()),
+            )
+            nearest.loc[too_far, "segment_id"] = pd.NA
+            nearest.loc[too_far, "mapping_method"] = "unmapped_too_far"
+
     else:
 
         nearest = None
@@ -587,6 +604,13 @@ def _validate_result(
         ).sum()
     )
 
+    unmapped_rows = int(
+        (
+            df["mapping_method"]
+            == "unmapped_too_far"
+        ).sum()
+    )
+
     unique_events = (
         df["event_id"]
         .nunique()
@@ -608,13 +632,14 @@ def _validate_result(
         "매핑 검증 완료: "
         "events=%d mapping_rows=%d "
         "avg_segments=%.2f max_segments=%d "
-        "buffer_rows=%d fallback_rows=%d",
+        "buffer_rows=%d fallback_rows=%d unmapped_rows=%d",
         unique_events,
         len(df),
         avg_segments,
         max_segments,
         buffer_rows,
         fallback_rows,
+        unmapped_rows,
     )
 
     # fallback 거리 품질 검사
@@ -632,21 +657,12 @@ def _validate_result(
             ).sum()
         )
 
-        over_fail = int(
-            (
-                fallback["distance_ft"]
-                > TICKETMASTER_LION_FAIL_DISTANCE_FT
-            ).sum()
-        )
-
         logger.info(
             "fallback 거리 품질: "
-            "count=%d >%dft=%d >%dft=%d",
+            "count=%d >%dft=%d",
             len(fallback),
             TICKETMASTER_LION_WARN_DISTANCE_FT,
             over_warn,
-            TICKETMASTER_LION_FAIL_DISTANCE_FT,
-            over_fail,
         )
 
         if over_warn:
@@ -656,12 +672,12 @@ def _validate_result(
                 over_warn,
             )
 
-        if over_fail:
-            raise ValueError(
-                "fallback 매핑 거리가 "
-                f"{TICKETMASTER_LION_FAIL_DISTANCE_FT}ft를 "
-                f"초과한 이벤트 {over_fail}건 발생"
-            )
+    if unmapped_rows:
+        logger.warning(
+            "최대 매핑 거리 %dft 초과로 Traffic Score에서 제외될 이벤트: %d건",
+            TICKETMASTER_LION_MAX_DISTANCE_FT,
+            unmapped_rows,
+        )
 
 
 # =========================================================

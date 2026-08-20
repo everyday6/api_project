@@ -36,7 +36,9 @@ def test_gold1_filters_region_date_and_excluded_venue():
         ("excluded", date(2026, 9, 1), "BANKSY MUSEUM", 40.75),
         ("outside", date(2026, 9, 1), "MADISON SQUARE GARDEN", 40.95),
         ("past", date(2026, 7, 1), "MADISON SQUARE GARDEN", 40.75),
+        ("unmapped", date(2026, 9, 1), "MADISON SQUARE GARDEN", 40.75),
     ]:
+        is_unmapped = event_id == "unmapped"
         rows.append({
             "event_id": event_id,
             "event_date": event_date,
@@ -46,9 +48,9 @@ def test_gold1_filters_region_date_and_excluded_venue():
             "venue_name_norm": venue_name_norm,
             "lat": lat,
             "lon": -73.98,
-            "segment_id": f"segment-{event_id}",
-            "distance_ft": 10.0,
-            "mapping_method": "buffer",
+            "segment_id": pd.NA if is_unmapped else f"segment-{event_id}",
+            "distance_ft": 3500.0 if is_unmapped else 10.0,
+            "mapping_method": "unmapped_too_far" if is_unmapped else "buffer",
         })
 
     result = filter_for_traffic_score(pd.DataFrame(rows), "2026-08-20")
