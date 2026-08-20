@@ -1,6 +1,6 @@
 """Construction Bronze Expectation 정의.
 
-필수 컬럼 목록은 src.construction.silver.READ_COLS를 그대로 재사용한다 —
+필수 컬럼 목록은 src.construction.silver1.READ_COLS를 그대로 재사용한다 —
 Silver가 실제로 무엇을 요구하는지와 어긋나지 않게 하기 위해서다.
 
 컬럼 존재 여부는 전부 critical이다. Silver의 load_bronze()가 READ_COLS를
@@ -13,7 +13,7 @@ validate()가 빈 결과에 raise한다.
 
 import great_expectations as gx
 
-from src.construction.silver import READ_COLS
+from src.construction.silver1 import READ_COLS
 
 
 def critical_expectations() -> list:

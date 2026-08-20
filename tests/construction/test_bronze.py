@@ -7,7 +7,7 @@ import pytest
 from airflow.sdk.exceptions import AirflowSkipException
 
 from src.construction import bronze
-from src.construction.silver import READ_COLS
+from src.construction.silver1 import READ_COLS
 
 
 def _write_bronze_snapshot(base_dir: Path, run_date: str, row: dict) -> Path:

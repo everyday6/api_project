@@ -1,7 +1,7 @@
 import great_expectations as gx
 
 from src.construction.expectations import critical_expectations, log_only_expectations
-from src.construction.silver import READ_COLS
+from src.construction.silver1 import READ_COLS
 
 
 def test_critical_expectations_includes_row_count_check():
