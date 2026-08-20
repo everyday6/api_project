@@ -99,15 +99,14 @@ def event_pipeline():
     bronze_validated >> silver_path
     silver_validated = validate_event(silver_path)
 
-    # map_event_lion은 지역/활성기간 필터 이전의 전체 event Silver1을 그대로
-    # 매칭 대상으로 삼는다(Silver2는 전 지역을 유지한다는 원칙) — gold1은
-    # 별도 병렬 분기로 둔다.
+    # Silver2에서 전체 Event와 LION을 먼저 매핑한 뒤, Gold1이
+    # 맨해튼/활성기간/차량 관련 필터를 적용한다.
     mapping_path = map_event_lion()
     silver_validated >> mapping_path
-    validate_map_event_lion(mapping_path)
+    mapping_validated = validate_map_event_lion(mapping_path)
 
     gold1_path = build_event_gold1()
-    silver_validated >> gold1_path
+    mapping_validated >> gold1_path
     validate_event_gold1(gold1_path)
 
 

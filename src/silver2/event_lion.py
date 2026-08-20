@@ -19,7 +19,6 @@ from pathlib import Path
 import networkx as nx
 import pandas as pd
 
-from src.common import db
 from src.common.config import SILVER1_DIR, SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import clean_street, save_parquet
@@ -30,7 +29,13 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="map_event_lion")
 
 SOURCE = "event"
 
-MANHATTAN_BOROUGH_CODE = "1"
+EVENT_BOROUGH_TO_LION_CODE = {
+    "MANHATTAN": "1",
+    "BRONX": "2",
+    "BROOKLYN": "3",
+    "QUEENS": "4",
+    "STATEN ISLAND": "5",
+}
 
 
 # =========================================================
@@ -211,6 +216,7 @@ def prepare_event(df: pd.DataFrame) -> pd.DataFrame:
 
     required = [
         "event_id",
+        "event_borough",
         "start_ts",
         "end_ts",
         "closure_type",
@@ -247,12 +253,12 @@ def prepare_lion(df: pd.DataFrame) -> pd.DataFrame:
     if missing:
         raise ValueError(f"LION 필수 컬럼 없음: {missing}")
 
-    # Event가 맨해튼만이므로 LION도 맨해튼만 사용한다.
-    #
+    # Silver2는 지역 필터를 적용하지 않고 NYC 전체 LION을 유지한다.
+    # 맨해튼 행사 선정은 src/event/gold1.py에서 처리한다.
     # is_routable=False는 여기서 제거하지 않는다.
     # 타임스퀘어 브로드웨이처럼 실제 Event 위치가
     # non_routable로 분류된 사례가 있어 결과 컬럼으로만 남긴다.
-    work = df[df["borough_code"] == MANHATTAN_BOROUGH_CODE].copy()
+    work = df.copy()
 
     work["street_name"] = work["street_name"].map(normalize_street)
 
@@ -261,7 +267,7 @@ def prepare_lion(df: pd.DataFrame) -> pd.DataFrame:
     )
 
     logger.info(
-        "맨해튼 LION: rows=%d routable=%d non_routable=%d",
+        "전체 LION: rows=%d routable=%d non_routable=%d",
         len(work),
         int(work["is_routable"].sum()),
         int((~work["is_routable"]).sum()),
@@ -444,13 +450,26 @@ def map_event_to_lion(
     lion_df: pd.DataFrame,
 ) -> pd.DataFrame:
 
-    street_nodes = build_street_nodes(lion_df)
-    graph_cache = {}
+    # 같은 도로명이 여러 자치구에 존재할 수 있으므로, Event 행의 borough와
+    # 같은 LION 부분집합 안에서만 구간을 찾는다. 전체 지역 행을 유지하면서도
+    # 자치구가 다른 동명 도로로 잘못 연결되는 것을 막는다.
+    lion_by_borough = {
+        code: group.copy()
+        for code, group in lion_df.groupby("borough_code")
+    }
+    street_nodes_by_borough = {
+        code: build_street_nodes(group)
+        for code, group in lion_by_borough.items()
+    }
+    graph_cache_by_borough = {
+        code: {}
+        for code in lion_by_borough
+    }
 
     failure_reasons = Counter()
 
     # 같은 도로 구간이 여러 날짜에 반복되므로 위치 조합은 한 번만 계산한다.
-    locations = event_df[STREET_COLS].drop_duplicates()
+    locations = event_df[["event_borough", *STREET_COLS]].drop_duplicates()
 
     logger.info("고유 Event 도로 구간: %d", len(locations))
 
@@ -458,26 +477,35 @@ def map_event_to_lion(
 
     for row in locations.itertuples(index=False):
 
-        key = (row.on_street, row.from_street, row.to_street)
+        borough_name = str(row.event_borough).strip().upper()
+        borough_code = EVENT_BOROUGH_TO_LION_CODE.get(borough_name)
+        key = (borough_name, row.on_street, row.from_street, row.to_street)
 
         # 위치 단위로 실패를 격리한다.
         # 특정 구간의 오류로 전체 배치를 죽이지 않는다.
-        try:
-            segments, reason = find_segment_path(
-                lion_df,
-                street_nodes,
-                graph_cache,
-                row.on_street,
-                row.from_street,
-                row.to_street,
-            )
+        if borough_code is None or borough_code not in lion_by_borough:
+            segments, reason = None, "borough_not_found"
+        else:
+            borough_lion = lion_by_borough[borough_code]
+            street_nodes = street_nodes_by_borough[borough_code]
+            graph_cache = graph_cache_by_borough[borough_code]
 
-        except Exception as exc:
-            logger.warning(
-                "위치 매핑 예외: on=%s from=%s to=%s error=%s",
-                row.on_street, row.from_street, row.to_street, exc,
-            )
-            segments, reason = None, "unexpected_error"
+            try:
+                segments, reason = find_segment_path(
+                    borough_lion,
+                    street_nodes,
+                    graph_cache,
+                    row.on_street,
+                    row.from_street,
+                    row.to_street,
+                )
+
+            except Exception as exc:
+                logger.warning(
+                    "위치 매핑 예외: borough=%s on=%s from=%s to=%s error=%s",
+                    row.event_borough, row.on_street, row.from_street, row.to_street, exc,
+                )
+                segments, reason = None, "unexpected_error"
 
         location_mapping[key] = (segments, reason)
 
@@ -488,7 +516,8 @@ def map_event_to_lion(
 
     for row in event_df.itertuples(index=False):
 
-        key = (row.on_street, row.from_street, row.to_street)
+        borough_name = str(row.event_borough).strip().upper()
+        key = (borough_name, row.on_street, row.from_street, row.to_street)
 
         segments, reason = location_mapping.get(
             key, (None, "mapping_not_found")
@@ -496,6 +525,7 @@ def map_event_to_lion(
 
         base = {
             "event_id": row.event_id,
+            "event_borough": row.event_borough,
             "start_ts": row.start_ts,
             "end_ts": row.end_ts,
             "closure_type": row.closure_type,
@@ -605,10 +635,6 @@ def build_event_lion_mapping(run_date: str) -> str:
     result = map_event_to_lion(event_df, lion_df)
 
     path = save_parquet(result, output_dir(run_date))
-
-    # 서빙 API(event_boost.load_ground_zero_records)가 RDS에서 읽으므로,
-    # S3 dt= 파티션과 동일한 dt로 RDS에도 쓴다.
-    db.write_partitioned_table(result, "map_event_lion", run_date)
 
     logger.info(
         "Event-LION 매핑 빌드 완료: rows=%d elapsed=%.2fs path=%s",

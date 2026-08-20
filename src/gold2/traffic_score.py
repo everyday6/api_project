@@ -139,13 +139,13 @@ def _load_lanes_by_segment() -> dict:
 
 
 def _event_boost_table_for_date(ts_date: str) -> pd.DataFrame:
-    """event_lion Silver2 또는 ticketmaster Gold1이 아직 없으면 빈 테이블을
+    """Event Gold1 또는 Ticketmaster Gold1이 아직 없으면 빈 테이블을
     반환한다. 이 경우 event_boost는 0(영향 없음)으로 처리된다."""
-    event_dt = _latest_run_date(event_boost.MAP_EVENT_LION_DIR)
+    event_dt = _latest_run_date(event_boost.EVENT_GOLD1_DIR)
     ticketmaster_dt = _latest_run_date(event_boost.TICKETMASTER_GOLD1_DIR)
     if event_dt is None or ticketmaster_dt is None:
         logger.warning(
-            "[scoring] event_lion 매핑 또는 ticketmaster Gold1이 없습니다 — "
+            "[scoring] Event Gold1 또는 Ticketmaster Gold1이 없습니다 — "
             "event_boost를 0으로 처리합니다. 관련 daily pipeline을 실행하면 반영됩니다."
         )
         return pd.DataFrame(columns=["segment_id", "hour", "event_boost"])
