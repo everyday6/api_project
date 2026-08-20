@@ -95,13 +95,13 @@ def construction_pipeline():
 
     @task(task_id="build_construction")
     def build_construction():
-        from src.construction.silver import build
+        from src.construction.silver1 import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_construction")
     def validate_construction(path: str):
-        from src.construction.silver import validate_output
+        from src.construction.silver1 import validate_output
         return validate_output(path)
 
     # ───────────────────────────
@@ -110,13 +110,13 @@ def construction_pipeline():
 
     @task(task_id="build_construction_gold")
     def build_construction_gold():
-        from src.construction.gold import build
+        from src.construction.gold1 import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_construction_gold")
     def validate_construction_gold(path: str):
-        from src.construction.gold import validate_output
+        from src.construction.gold1 import validate_output
         return validate_output(path)
 
     @task(task_id="build_work_hours_rules")
