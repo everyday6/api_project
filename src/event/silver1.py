@@ -1,19 +1,14 @@
 """
-Silver — NYC 행사 (Permitted Event Information)
+Silver1 — NYC 행사 (Permitted Event Information) 정제
 
-Traffic Score에 사용할 "차량 통행에 영향을 주는 도로 통제 행사"만 남긴다.
-
-필터 순서
-1. 맨해튼
-2. 시작/종료 시각 유효성
-3. run_date 기준 종료된 행사 제외
-4. 도로 통제 없는 장소 행사(place_event) 제외
-5. 보도만 막는 유형 제외 (차량 무관)
+날짜 파싱, 도로 구간 파싱(도로 통제 매핑용) 등 event Bronze 자체의 정제만
+한다. Manhattan 한정, "차량 통행에 영향을 주는 도로 통제만" 필터, run_date
+기준 종료 행사 제외는 src/event/gold1.py에서 한다.
 
 다일 행사는 같은 event_id가 날짜별로 여러 건 들어온다.
 따라서 키는 (event_id, start_ts)이다.
 
-closure_type별 가중치는 Gold에서 계산한다.
+closure_type별 가중치는 Gold2(교차도메인, src/gold2/event_boost.py)에서 계산한다.
 """
 
 import sys
@@ -26,19 +21,13 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from common.config import BRONZE_DIR, SILVER_DIR, BOROUGH_EVENT
+from common.config import BRONZE_DIR, SILVER1_DIR
 from common.utils import save_parquet, clean_street
 from common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="event_silver")
 
 SOURCE = "event"
-
-# 보도만 막아 차량 통행에는 영향이 없는 유형
-SIDEWALK_ONLY = [
-    "Partial Sidewalk Closure",
-    "Full Sidewalk Closure",
-]
 
 RE_BETWEEN = re.compile(
     r"^(.*?)\s+between\s+(.*?)\s+and\s+(.*)$",
@@ -184,14 +173,9 @@ def parse_location(raw):
     }
 
 
-def transform(df, run_date):
+def transform(df):
 
-    # 1. 맨해튼만
-    df = df[
-        df["event_borough"] == BOROUGH_EVENT
-    ].copy()
-
-    # 2. 날짜/시간 변환
+    # 1. 날짜/시간 변환
     df["start_ts"] = pd.to_datetime(
         df["start_date_time"],
         errors="coerce",
@@ -209,35 +193,13 @@ def transform(df, run_date):
         & (df["end_ts"] > df["start_ts"])
     ].copy()
 
-    # 3. run_date 기준으로 이미 끝난 행사 제외
-    cutoff = pd.Timestamp(run_date)
-    before = len(df)
-    df = df[df["end_ts"] >= cutoff].copy()
-    logger.info(
-        "종료 행사 제외: %d → %d (기준 %s)",
-        before,
-        len(df),
-        run_date,
-    )
-
-    # 4. 차량 통행에 영향 있는 도로 통제만 유지
+    # 2. closure_type 정규화(필터는 gold1에서 — SIDEWALK_ONLY/N_A 제외)
     df["closure_type"] = (
         df["street_closure_type"]
         .fillna("N/A")
     )
 
-    before = len(df)
-    df = df[
-        df["closure_type"].ne("N/A")
-        & ~df["closure_type"].isin(SIDEWALK_ONLY)
-    ].copy()
-    logger.info(
-        "차량 무관 행사 제외: %d → %d",
-        before,
-        len(df),
-    )
-
-    # 5. 도로 구간 파싱
+    # 3. 도로 구간 파싱
     location = (
         df["event_location"]
         .apply(parse_location)
@@ -252,9 +214,11 @@ def transform(df, run_date):
         axis=1,
     )
 
-    # 6. Silver 컬럼
+    # 4. Silver1 컬럼 — event_borough/end_ts는 gold1의 지역·활성기간 필터가
+    # 써야 하므로 남겨둔다.
     return df[[
         "event_id",
+        "event_borough",
         "start_ts",
         "end_ts",
         "closure_type",
@@ -264,7 +228,7 @@ def transform(df, run_date):
     ]].reset_index(drop=True)
 
 
-UNMATCHED_LOCATION_PATH = SILVER_DIR / "event_location_parse_unmatched" / "data.parquet"
+UNMATCHED_LOCATION_PATH = SILVER1_DIR / "event_location_parse_unmatched" / "data.parquet"
 UNMATCHED_LOCATION_COLUMNS = ["on_street", "first_seen_date", "resolved"]
 
 
@@ -282,7 +246,7 @@ def validate(df):
 
     if df.empty:
         raise ValueError(
-            "event Silver 결과가 비었습니다."
+            "event Silver1 결과가 비었습니다."
         )
 
     if df["event_id"].isna().any():
@@ -309,7 +273,7 @@ def validate(df):
         )
 
     logger.info(
-        "행사 Silver 검증 완료: rows=%d events=%d",
+        "행사 Silver1 검증 완료: rows=%d events=%d",
         len(df),
         df["event_id"].nunique(),
     )
@@ -360,22 +324,22 @@ def build(run_date: str | None = None) -> str:
         )
 
     logger.info(
-        "행사 Silver 변환 시작: run_date=%s",
+        "행사 Silver1 변환 시작: run_date=%s",
         run_date,
     )
 
     df = load_bronze(run_date)
-    df = transform(df, run_date)
+    df = transform(df)
 
     path = save_parquet(
         df,
-        SILVER_DIR
+        SILVER1_DIR
         / SOURCE
         / f"dt={run_date}",
     )
 
     logger.info(
-        "행사 Silver 빌드 완료: "
+        "행사 Silver1 빌드 완료: "
         "rows=%d columns=%d path=%s",
         len(df),
         len(df.columns),
