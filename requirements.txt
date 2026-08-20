@@ -8,6 +8,12 @@ geopandas
 shapely
 networkx
 
+# src/mapping/segment_spatial_weight.py가 직접 씀(Transformer). 지금은
+# geopandas의 전이 의존성으로 딸려 들어와 있어서 없어도 동작하지만, geopandas가
+# pyproj 의존을 바꾸면 조용히 깨질 수 있어 명시한다. 버전은 안 박아서 이미
+# 설치된 버전(geopandas가 요구하는 버전)과 충돌하지 않게 한다.
+pyproj
+
 pyarrow==25.0.1
 python-dotenv==1.2.2
 pytest==8.4.2

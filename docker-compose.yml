@@ -20,6 +20,12 @@ x-airflow-env: &airflow-env
 
   AIRFLOW__CORE__LOAD_EXAMPLES: "false"
 
+  # EC2(vCPU 2개)에서 mapped download_file 태스크가 다수 동시에 뜨면
+  # 각 태스크 프로세스가 tlc_pipeline.py(scipy 등 무거운 import 포함)를
+  # 재import하며 CPU를 다같이 나눠쓰다 기본 30초를 넘겨 DagBag import
+  # timeout이 나던 문제 → 넉넉하게 늘림
+  AIRFLOW__CORE__DAGBAG_IMPORT_TIMEOUT: "120"
+
   # Airflow 3.x: Scheduler/Worker/DAG Processor가 Task 실행 정보를 가져오는 API 서버 주소
   AIRFLOW__CORE__EXECUTION_API_SERVER_URL: http://airflow-apiserver:8080/execution/
 
