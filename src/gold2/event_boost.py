@@ -7,7 +7,8 @@ closure_penalty.py와 대칭 구조다 — 저긴 공사/통제가 용량을 깎
 없어서 closure_penalty.py 걸 그대로 재사용한다.
 
 설계:
-1. "진앙" 레코드 = event_lion(도로 통제형 행사, mapping_status=="matched"만)
+1. "진앙" 레코드 = Event Gold1(도로 매핑 후 지역/기간/차량 관련 필터 완료,
+   mapping_status=="matched"만)
    + ticketmaster Gold1(공연장, 서비스 대상 필터 완료, segment_id 있는 행 전부) 둘
    다 합쳐서 만든다.
    - event는 closure_type(차량 통행에 얼마나 방해되는지)별로 가중치를 다르게
@@ -37,19 +38,14 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.common.config import GOLD1_DIR, SILVER2_DIR
+from src.common.config import GOLD1_DIR
 from src.common.logger import get_logger
 from src.gold2.closure_penalty import spread_with_decay
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="event_boost")
 
-MAP_EVENT_LION_DIR = SILVER2_DIR / "event_lion"
+EVENT_GOLD1_DIR = GOLD1_DIR / "event"
 TICKETMASTER_GOLD1_DIR = GOLD1_DIR / "ticketmaster"
-
-# RDS 서빙 테이블 이름(dt 컬럼으로 파티션 흉내) — S3의 위 두 디렉터리와
-# 같은 데이터를 들고 있다. 서빙 API는 이쪽에서 읽는다.
-MAP_EVENT_LION_TABLE = "map_event_lion"
-MAP_TICKETMASTER_LION_TABLE = "map_ticketmaster_lion"
 
 # TODO(팀 검토 필요): 근거 없는 초안 — closure_type별 "차량 통행에 얼마나
 # 방해되는가"를 정성적으로 매긴 가중치.
@@ -75,15 +71,15 @@ TICKETMASTER_DEFAULT_DURATION_HOURS = 3
 EVENT_HALF_SATURATION_INTENSITY = 1.5
 
 
-def load_ground_zero_records(event_mapping_dt: str, ticketmaster_gold1_dt: str) -> pd.DataFrame:
+def load_ground_zero_records(event_gold1_dt: str, ticketmaster_gold1_dt: str) -> pd.DataFrame:
     """
-    event_lion Silver2 + ticketmaster Gold1 결과를 합쳐 segment_id x start_ts x
+    Event Gold1 + Ticketmaster Gold1 결과를 합쳐 segment_id x start_ts x
     end_ts x weight 레코드로 만든다. weight는 그 행이 활성일 때 이 segment에
     기여하는 강도(진앙 intensity 집계의 기본 단위).
     """
-    events = db.read_partition(
-        MAP_EVENT_LION_TABLE,
-        event_mapping_dt,
+    event_path = EVENT_GOLD1_DIR / f"dt={event_gold1_dt}" / "data.parquet"
+    events = pd.read_parquet(
+        str(event_path),
         columns=["segment_id", "start_ts", "end_ts", "closure_type", "mapping_status"],
     )
     events = events[(events["mapping_status"] == "matched") & events["segment_id"].notna()]
@@ -92,7 +88,7 @@ def load_ground_zero_records(event_mapping_dt: str, ticketmaster_gold1_dt: str) 
     events = events[["segment_id", "start_ts", "end_ts", "weight"]]
 
     tm_path = TICKETMASTER_GOLD1_DIR / f"dt={ticketmaster_gold1_dt}" / "data.parquet"
-    tm = pd.read_parquet(tm_path, columns=["segment_id", "start_ts", "end_ts"])
+    tm = pd.read_parquet(str(tm_path), columns=["segment_id", "start_ts", "end_ts"])
     tm = tm[tm["segment_id"].notna() & tm["start_ts"].notna()].copy()
     # end_ts가 없으면(대부분) start_ts + 기본 지속시간으로 가정한다.
     fallback_end = tm["start_ts"] + pd.Timedelta(hours=TICKETMASTER_DEFAULT_DURATION_HOURS)
