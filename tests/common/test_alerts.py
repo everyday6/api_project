@@ -63,6 +63,40 @@ def test_notify_slack_failure_still_works_after_refactor(monkeypatch):
     assert "store_bronze" in sent_text
 
 
+def test_build_message_summarizes_spark_stack_trace():
+    exception = RuntimeError(
+        "An error occurred while calling parquet.\n"
+        "at org.apache.spark.sql.DataFrameReader.load(DataFrameReader.scala:109)\n"
+        "Caused by: java.io.FileNotFoundException: s3://bucket/missing.parquet\n"
+        "at org.apache.hadoop.fs.s3a.S3AFileSystem.open(S3AFileSystem.java:1)\n"
+        "... 42 more"
+    )
+    context = {
+        "task_instance": MagicMock(
+            dag_id="tlc_pipeline", task_id="build_silver",
+            try_number=4, log_url="http://example.com/log",
+        ),
+        "exception": exception,
+        "logical_date": "2026-08-20",
+    }
+
+    message = alerts._build_message(context)
+
+    assert "RuntimeError" in message
+    assert "FileNotFoundException" in message
+    assert "DataFrameReader.load" not in message
+    assert "S3AFileSystem.open" not in message
+    assert "로그 보기" in message
+
+
+def test_summarize_exception_limits_message_length():
+    error_type, summary = alerts._summarize_exception(ValueError("x" * 1_000))
+
+    assert error_type == "ValueError"
+    assert len(summary) <= alerts.MAX_ERROR_SUMMARY_CHARS
+    assert summary.endswith("...")
+
+
 def test_notify_slack_failure_swallows_build_message_exception(monkeypatch, caplog):
     """notify_slack_failure는 메시지 생성 실패도 삼켜야 한다."""
     monkeypatch.setattr(alerts, "SLACK_WEBHOOK_URL", "https://hooks.slack.test/webhook")

@@ -28,6 +28,48 @@ from src.common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="alerts")
 
 SLACK_TIMEOUT = 10
+MAX_ERROR_SUMMARY_CHARS = 500
+MAX_ERROR_SUMMARY_LINES = 3
+
+
+def _summarize_exception(exception: object) -> tuple[str, str]:
+    """긴 Spark/Java 스택 트레이스에서 Slack에 보낼 핵심 내용만 추린다."""
+
+    if exception is None:
+        return "UnknownError", "에러 정보가 없습니다. Airflow 로그를 확인하세요."
+
+    error_type = type(exception).__name__
+    raw_lines = [line.strip() for line in str(exception).splitlines() if line.strip()]
+
+    # Java/Spark 예외는 가장 마지막 Caused by가 실제 근본 원인인 경우가 많다.
+    caused_by_indexes = [
+        index for index, line in enumerate(raw_lines)
+        if "Caused by:" in line
+    ]
+    start_index = caused_by_indexes[-1] if caused_by_indexes else 0
+
+    meaningful_lines = []
+    for line in raw_lines[start_index:]:
+        if (
+            line.startswith("at ")
+            or line.startswith("Traceback ")
+            or line.startswith("File ")
+            or (line.startswith("...") and line.endswith("more"))
+        ):
+            continue
+
+        meaningful_lines.append(line)
+        if len(meaningful_lines) >= MAX_ERROR_SUMMARY_LINES:
+            break
+
+    if not meaningful_lines:
+        meaningful_lines = [raw_lines[0]] if raw_lines else [error_type]
+
+    summary = "\n".join(meaningful_lines)
+    if len(summary) > MAX_ERROR_SUMMARY_CHARS:
+        summary = summary[: MAX_ERROR_SUMMARY_CHARS - 3].rstrip() + "..."
+
+    return error_type, summary
 
 
 def _build_message(context: dict) -> str:
@@ -36,6 +78,7 @@ def _build_message(context: dict) -> str:
     task_instance = context.get("task_instance")
     dag = context.get("dag")
     exception = context.get("exception")
+    error_type, error_summary = _summarize_exception(exception)
 
     dag_id = (
         task_instance.dag_id if task_instance
@@ -54,7 +97,8 @@ def _build_message(context: dict) -> str:
         f"*DAG*: `{dag_id}`",
         f"*Task*: `{task_id}` (시도 {try_number}회 모두 소진)",
         f"*실행 시각*: {run_time}",
-        f"*에러*: `{exception}`",
+        f"*에러 타입*: `{error_type}`",
+        f"*핵심 내용*: {error_summary}",
     ]
 
     if log_url:
