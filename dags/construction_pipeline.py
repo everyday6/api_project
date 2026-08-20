@@ -121,37 +121,37 @@ def construction_pipeline():
 
     @task(task_id="build_work_hours_rules")
     def build_work_hours_rules():
-        from src.construction_stipulations.silver import build_work_hours_rules as _build_work_hours_rules
+        from src.construction_stipulations.silver1 import build_work_hours_rules as _build_work_hours_rules
         context = get_current_context()
         return _build_work_hours_rules(context["ds"])
 
     @task(task_id="validate_work_hours_rules")
     def validate_work_hours_rules(path: str):
-        from src.construction_stipulations.silver import validate_work_hours_rules_output
+        from src.construction_stipulations.silver1 import validate_work_hours_rules_output
         context = get_current_context()
         return validate_work_hours_rules_output(path, context["ds"])
 
     @task(task_id="build_work_hours")
     def build_work_hours():
-        from src.construction_stipulations.silver import build
+        from src.silver2.construction_work_hours_join import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_work_hours")
     def validate_work_hours(path: str):
-        from src.construction_stipulations.silver import validate_output
+        from src.silver2.construction_work_hours_join import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
     @task(task_id="build_embargoes")
     def build_embargoes():
-        from src.construction_stipulations.silver import build_embargoes as _build_embargoes
+        from src.construction_stipulations.silver1 import build_embargoes as _build_embargoes
         context = get_current_context()
         return _build_embargoes(context["ds"])
 
     @task(task_id="validate_embargoes")
     def validate_embargoes(path: str):
-        from src.construction_stipulations.silver import validate_embargoes_output
+        from src.construction_stipulations.silver1 import validate_embargoes_output
         context = get_current_context()
         return validate_embargoes_output(path, context["ds"])
 
