@@ -27,7 +27,7 @@ from datetime import date, datetime, timezone
 
 import pandas as pd
 
-from src.common.config import GEMINI_API_KEY, SILVER_DIR
+from src.common.config import GEMINI_API_KEY, SILVER1_DIR
 from src.common.gemini import GeminiUnavailable
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
@@ -259,8 +259,8 @@ VALIDATORS = {
 # ─────────────────────────────────────────────────────────────
 
 _CACHE_PATH_BY_CATEGORY = {
-    "embargo": SILVER_DIR / "embargo_llm_cache" / "data.parquet",
-    "work_hours": SILVER_DIR / "work_hours_llm_cache" / "data.parquet",
+    "embargo": SILVER1_DIR / "embargo_llm_cache" / "data.parquet",
+    "work_hours": SILVER1_DIR / "work_hours_llm_cache" / "data.parquet",
 }
 
 _CACHE_EXTRA_COLUMNS_BY_CATEGORY = {
@@ -419,7 +419,7 @@ def run_llm_fallback_batch(
 # 하나의 공유 파일이었다면 서로의 신규 항목을 덮어써 유실시킬 수 있었다
 # (리뷰에서 발견된 실제 경합 조건). 카테고리별 파일 분리로 각 태스크가 자기
 # 파일만 건드리게 해서 이 경합을 없앤다.
-QUARANTINE_DIR = SILVER_DIR / "stipulation_parse_quarantine"
+QUARANTINE_DIR = SILVER1_DIR / "stipulation_parse_quarantine"
 QUARANTINE_COLUMNS = [
     "category", "permitnumber", "stipulationfulltext", "rule_failure_reason",
     "llm_status", "llm_output_raw", "validation_failure_reason",
@@ -529,7 +529,7 @@ def summarize_quarantine(category: str | None = None, top_n: int = 20) -> pd.Dat
 # quarantine과 동일한 이유(build_work_hours_rules/build_embargoes가 서로
 # 의존관계 없이 동시에 실행될 수 있음)로 카테고리별 파일 분리 — 공유 파일
 # 하나였다면 두 태스크가 서로의 신규 이력 행을 덮어쓸 수 있었다.
-QUALITY_HISTORY_DIR = SILVER_DIR / "stipulation_parse_quality_history"
+QUALITY_HISTORY_DIR = SILVER1_DIR / "stipulation_parse_quality_history"
 QUALITY_HISTORY_COLUMNS = [
     "run_date", "category", "total_unique_texts", "rule_parsed_count", "rule_rate",
     "llm_parsed_count", "llm_rate", "quarantine_count", "quarantine_rate", "created_at",

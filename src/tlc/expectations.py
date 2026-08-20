@@ -1,13 +1,13 @@
 """TLC Bronze taxi_type별 Great Expectations 정의.
 
-컬럼 구성은 src.tlc.transform.COLUMN_MAPPING(원본 컬럼명 → Silver 컬럼명)을
+컬럼 구성은 src.tlc.silver1_transform.COLUMN_MAPPING(원본 컬럼명 → Silver 컬럼명)을
 뒤집어 재사용한다 — taxi_type별 컬럼 구성을 여기 따로 하드코딩하면
-transform.py와 어긋날 위험이 있다.
+silver1_transform.py와 어긋날 위험이 있다.
 """
 
 import great_expectations as gx
 
-from src.tlc.transform import COLUMN_MAPPING
+from src.tlc.silver1_transform import COLUMN_MAPPING
 
 
 def _raw_columns(taxi_type: str) -> dict:

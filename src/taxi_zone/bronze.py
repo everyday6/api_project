@@ -8,13 +8,14 @@ Bronze ingestion: NYC TLC Taxi Zone
 정적 참조 테이블이라 날짜 파라미터가 없고, 파티션도 나누지 않는다.
 직접 실행(python taxi_zone.py)도 가능하고, Airflow PythonOperator가
 ingest_taxi_zone_lookup / ingest_taxi_zone_shapefile 함수를 그대로 가져다 쓸 수도 있다.
+
+필수컬럼/유니크/row-count 범위 같은 무거운 검증은 src/taxi_zone/silver1.py로
+옮겼다 — Bronze는 파일이 실제로 받아졌는지(존재 여부)만 확인한다.
 """
 
 from __future__ import annotations
 
 import io
-import re
-import subprocess
 import zipfile
 from datetime import datetime, timezone
 from pathlib import Path
@@ -22,6 +23,7 @@ from pathlib import Path
 import pandas as pd
 import requests
 
+from src.common.config import BRONZE_DIR
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="taxi_zone")
@@ -29,8 +31,8 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="taxi_zone")
 LOOKUP_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zone_lookup.csv"
 SHAPEFILE_URL = "https://d37ci6vzurychx.cloudfront.net/misc/taxi_zones.zip"
 
-from src.common.config import BRONZE_DIR
 BRONZE_ROOT = BRONZE_DIR / "taxi_zone"
+
 
 def ingest_taxi_zone_lookup(bronze_root: Path = BRONZE_ROOT) -> Path:
     """LocationID <-> Borough/Zone 매핑 테이블을 받아서 Parquet로 저장한다."""
@@ -88,70 +90,14 @@ def ingest_taxi_zone_shapefile(bronze_root: Path = BRONZE_ROOT) -> Path:
     return str(dest_dir)
 
 
-def validate_taxi_zone_lookup(path: str) -> str:
-    """taxi_zone_lookup.parquet의 최소 불변식을 확인한다."""
-    df = pd.read_parquet(path)
-
-    required_cols = {"LocationID", "Borough", "Zone", "service_zone"}
-    missing = required_cols - set(df.columns)
-    if missing:
-        raise ValueError(f"필수 컬럼 없음: {missing}")
-
-    if df["LocationID"].isna().any():
-        raise ValueError("LocationID NULL 발생")
-
-    if not df["LocationID"].is_unique:
-        raise ValueError("LocationID 중복 발생")
-
-    # 실측 기준 TLC Taxi Zone은 265개 zone(103~105 등 결번 포함) — 여유를 두고 범위 확인.
-    n = len(df)
-    if not (250 <= n <= 280):
-        raise ValueError(f"행 수가 예상 범위(250~280) 밖입니다: {n}")
-
-    logger.info(f"[taxi_zone_lookup] 검증 통과: {n}행")
-    return path
-
-
-def validate_taxi_zone_shapefile(path: str) -> str:
-    """taxi_zones shapefile이 실제로 열리고 zone 폴리곤 개수가 예상 범위인지 확인한다."""
-    shapefile_path = Path(path) / "taxi_zones" / "taxi_zones.shp"
-    if not shapefile_path.exists():
-        raise FileNotFoundError(f"taxi_zones.shp가 없습니다: {shapefile_path}")
-
-    result = subprocess.run(
-        ["ogrinfo", "-so", str(shapefile_path), "taxi_zones"],
-        capture_output=True, text=True,
-    )
-    if result.returncode != 0:
-        logger.error(f"[taxi_zone_shapefile] ogrinfo 실패: {result.stderr}")
-        raise RuntimeError(f"shapefile을 열 수 없습니다: {result.stderr}")
-
-    match = re.search(r"Feature Count:\s*(\d+)", result.stdout)
-    feature_count = int(match.group(1)) if match else 0
-    if not (250 <= feature_count <= 280):
-        raise ValueError(f"zone 폴리곤 개수가 예상 범위(250~280) 밖입니다: {feature_count}")
-
-    logger.info(f"[taxi_zone_shapefile] 검증 통과: {feature_count}개 zone")
-    return path
-
-
-def get_manhattan_zone_ids(lookup_path: Path = BRONZE_ROOT / "lookup" / "taxi_zone_lookup.parquet") -> list[int]:
-    """
-    Bronze에 저장된 lookup 테이블에서 Borough == 'Manhattan'인 LocationID만 뽑는다.
-
-    지도에서 눈으로 세면 육지에서 떨어진 103(Governor's Island 등),
-    104(Marble Hill), 105(Roosevelt Island) 같은 존을 놓치기 쉬운데,
-    행정구역 분류는 Borough 컬럼 기준이 정확하다.
-    """
-    df = pd.read_parquet(lookup_path)
-    manhattan_ids = sorted(df.loc[df["Borough"] == "Manhattan", "LocationID"].tolist())
-    logger.info(f"[manhattan_zone_ids] 맨해튼 zone {len(manhattan_ids)}개 확인")
-    return manhattan_ids
+def validate_bronze_output(lookup_path: Path, shapefile_dir: Path) -> None:
+    """Bronze가 실제로 받아졌는지(존재 여부)만 확인한다 — 내용 검증은 Silver1의 몫."""
+    if not lookup_path.exists():
+        raise FileNotFoundError(f"taxi_zone lookup bronze 파일이 없습니다: {lookup_path}")
+    if not shapefile_dir.exists() or not any(shapefile_dir.iterdir()):
+        raise FileNotFoundError(f"taxi_zone shapefile bronze가 없습니다: {shapefile_dir}")
 
 
 if __name__ == "__main__":
     ingest_taxi_zone_lookup()
     ingest_taxi_zone_shapefile()
-
-    manhattan_ids = get_manhattan_zone_ids()
-    logger.info(manhattan_ids)
