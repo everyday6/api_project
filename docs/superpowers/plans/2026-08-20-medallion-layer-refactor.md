@@ -1185,22 +1185,19 @@ is_routable을 검증하므로 매핑표 초안과 달리 gold2로 재분류."
 
 ---
 
-### Task 8: tlc 도메인 — `feature/segment-spatial-weight` 머지 + silver1.py 통합 + gold1.py/gold2.py 분리
+### Task 8: tlc 도메인 — silver1.py 통합 + gold1.py/gold2.py 분리
 
-이 태스크를 시작하기 전, 아직 develop에 머지되지 않은 `feature/segment-spatial-weight`
-브랜치(zone 내부 spatial_weight 계산)를 현재 리팩토링 브랜치로 가져온다 — `tlc/gold2.py`가
-그 파일(`segment_spatial_weight.py`)의 로직을 담아야 하는데 지금 이 브랜치엔 소스 자체가
-없기 때문이다.
+(갱신: `feature/segment-spatial-weight`는 PR #58로 이미 `develop`에 머지됐고, 이 리팩토링
+브랜치도 2026-08-20에 `origin/develop`을 merge하며 `src/mapping/segment_spatial_weight.py`를
+이미 확보했다. 별도 머지 단계 불필요 — 아래는 이미 존재하는 파일 기준으로 진행한다.)
 
 **Files:**
-- Merge: `feature/segment-spatial-weight` 브랜치를 현재 브랜치로
 - Create: `src/tlc/silver1.py` (구 silver.py + transform.py 통합)
 - Create: `src/tlc/gold1.py`
 - Create: `src/tlc/gold2.py` (구 gold.py 대부분 + segment_spatial_weight.py 이관)
 - Delete: `src/tlc/silver.py`, `src/tlc/transform.py`, `src/tlc/gold.py`,
-  `src/mapping/segment_spatial_weight.py`(머지로 생기는 파일)
+  `src/mapping/segment_spatial_weight.py`
 - Modify: `dags/tlc_pipeline.py`, `dags/tlc_daily.py`, `dags/tlc_gold_volume.py`
-- Modify: `src/common/config.py` (머지로 들어오는 hotspot 상수 유지)
 
 **Interfaces:**
 - Produces: `src.tlc.silver1.{transform, build_silver, chunk_bronze_files}` (task 함수는
@@ -1209,18 +1206,7 @@ is_routable을 검증하므로 매핑표 초안과 달리 gold2로 재분류."
   build_map_segment_spatial_weight, validate_map_segment_spatial_weight,
   DIM_SEGMENT_TLC_VOLUME_PATH}`
 
-- [ ] **Step 1: feature/segment-spatial-weight 머지**
-
-```bash
-git status  # 작업트리 깨끗한지 확인
-git fetch origin
-git merge origin/feature/segment-spatial-weight
-```
-충돌 나면(주로 `src/tlc/gold.py`, `src/common/config.py`) — 이 시점엔 아직 이 태스크의
-분리 작업을 안 했으므로 머지 충돌은 발생하지 않는 게 정상이다(Task 1-7이 tlc 파일을
-안 건드림). 만약 충돌 나면 원인을 먼저 파악하고 해결한다(자동으로 한쪽을 버리지 말 것).
-
-- [ ] **Step 2: silver1.py 생성 — silver.py + transform.py 통합**
+- [ ] **Step 1: silver1.py 생성 — silver.py + transform.py 통합**
 
 `src/tlc/transform.py`(383줄) 전체(`SILVER_SCHEMA`(58-65), `SILVER_COLUMNS`(70-73),
 `COLUMN_MAPPING`(86-133), `rename_columns`(140-171), `add_missing_columns`(178-206),
@@ -1230,7 +1216,7 @@ git merge origin/feature/segment-spatial-weight
 `src/tlc/silver1.py` 하나로 합친다. `union_all`(363-383행)은 호출부가 repo 전체에 없는
 것으로 확인됐으니 **옮기지 않고 삭제**(죽은 코드).
 
-- [ ] **Step 3: gold1.py 신규 작성 — 평일 필터 + zone_id notna**
+- [ ] **Step 2: gold1.py 신규 작성 — 평일 필터 + zone_id notna**
 
 `src/tlc/gold.py`(머지 후 버전)의 `collect_zone_hour_counts` 안에 있던 63행(평일 필터)과
 79-84행(zone_id notna 드롭)을 분리한 새 함수로 작성:
@@ -1247,7 +1233,7 @@ def filter_weekday_and_known_zone(df: DataFrame) -> DataFrame:
 ```
 정확한 컬럼명/조건식은 머지 후 `src/tlc/gold.py`의 실제 63행, 79-84행을 그대로 옮겨 적을 것.
 
-- [ ] **Step 4: gold2.py 생성**
+- [ ] **Step 3: gold2.py 생성**
 
 `src/tlc/gold.py`에서 `filter_weekday_and_known_zone`으로 옮긴 부분만 빼고 나머지
 (`collect_zone_hour_counts`의 파일읽기/groupBy/toPandas 부분, `_expand_zone_to_segment_hour`,
@@ -1266,13 +1252,13 @@ Task 7 결과에 맞게 `from src.lion.silver2 import GRAPH_SEGMENT_ADJACENCY_PA
 `from src.lion.silver import DIM_SEGMENT_PATH`를 `from src.lion.gold2 import DIM_SEGMENT_PATH`로,
 `from src.mapping.zone_segment import ...`를 `from src.silver2.zone_segment import ...`로 갱신.
 
-- [ ] **Step 5: 구 파일 삭제**
+- [ ] **Step 4: 구 파일 삭제**
 
 ```bash
 git rm src/tlc/silver.py src/tlc/transform.py src/tlc/gold.py src/mapping/segment_spatial_weight.py
 ```
 
-- [ ] **Step 6: DAG 수정**
+- [ ] **Step 5: DAG 수정**
 
 `dags/tlc_pipeline.py`, `dags/tlc_daily.py`: `from src.tlc.silver import build_silver,
 chunk_bronze_files` → `from src.tlc.silver1 import build_silver, chunk_bronze_files`
@@ -1288,7 +1274,7 @@ from src.tlc.gold2 import build_dim_segment_tlc_volume, collect_zone_hour_counts
 같은 파일 19-24행 부근 docstring이 `data/silver/map_segment_spatial_weight.parquet`를
 언급하는데, 이 산출물이 이제 `data/gold2/`로 가므로 docstring도 갱신한다.
 
-- [ ] **Step 7: 테스트 이관 — tests/tlc/test_gold.py 분리**
+- [ ] **Step 6: 테스트 이관 — tests/tlc/test_gold.py 분리**
 
 `tests/tlc/test_gold.py`(574줄)를 아래 표에 따라 나눈다(기존 general-purpose 조사 결과
 그대로):
@@ -1315,7 +1301,7 @@ from src.tlc.gold2 import build_dim_segment_tlc_volume, collect_zone_hour_counts
 `from src.tlc.gold2 import (...)`로 나눠 쓴다. `tests/mapping/test_segment_spatial_weight.py`도
 `tests/tlc/test_gold2.py`에 흡수(import 경로를 `src.tlc.gold2`로 변경)한다.
 
-- [ ] **Step 8: 테스트 실행**
+- [ ] **Step 7: 테스트 실행**
 
 ```bash
 pytest tests/tlc/ -v
@@ -1324,7 +1310,7 @@ Expected: 머지 전과 동일한 개수의 테스트가 전부 PASS(파일만 �
 테스트 결과가 바뀌면 안 됨 — `test_collect_zone_hour_counts_filters_weekday_and_counts`처럼
 재작성한 테스트만 새로 통과 여부 확인).
 
-- [ ] **Step 9: 커밋**
+- [ ] **Step 8: 커밋**
 
 ```bash
 git add src/tlc src/common/config.py tests/tlc dags/tlc_pipeline.py dags/tlc_daily.py \
