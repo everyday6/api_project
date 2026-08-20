@@ -29,7 +29,7 @@ SILVER1_ROOT = SILVER1_DIR / "taxi_zone"
 
 def validate_taxi_zone_lookup(path: str) -> str:
     """taxi_zone_lookup.parquet의 최소 불변식을 확인한다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     required_cols = {"LocationID", "Borough", "Zone", "service_zone"}
     missing = required_cols - set(df.columns)

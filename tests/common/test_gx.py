@@ -1,8 +1,9 @@
 import great_expectations as gx
+import pandas as pd
 import pytest
 from pyspark.sql import SparkSession
 
-from src.common.gx import validate_spark_dataframe
+from src.common.gx import validate_pandas_dataframe, validate_spark_dataframe
 
 
 @pytest.fixture(scope="module")
@@ -71,3 +72,53 @@ def test_validate_spark_dataframe_runs_multiple_expectations_in_order(spark):
     for result in results:
         assert "exception_info" in result
         assert isinstance(result["exception_info"], dict)
+
+
+def test_validate_pandas_dataframe_detects_null():
+    df = pd.DataFrame({"trip_id": [1, 2, 3], "taxi_type": ["yellow", "green", None]})
+
+    results = validate_pandas_dataframe(
+        df,
+        [gx.expectations.ExpectColumnValuesToNotBeNull(column="taxi_type")],
+        datasource_name="test_pd_ds",
+        asset_name="test_pd_asset",
+    )
+
+    assert len(results) == 1
+    assert results[0]["success"] is False
+    assert results[0]["expectation_type"] == "expect_column_values_to_not_be_null"
+    assert results[0]["result"]["unexpected_count"] == 1
+    assert "exception_info" in results[0]
+
+
+def test_validate_pandas_dataframe_all_pass():
+    df = pd.DataFrame({"trip_id": [1, 2], "taxi_type": ["yellow", "green"]})
+
+    results = validate_pandas_dataframe(
+        df,
+        [gx.expectations.ExpectColumnValuesToNotBeNull(column="taxi_type")],
+        datasource_name="test_pd_ds2",
+        asset_name="test_pd_asset2",
+    )
+
+    assert results[0]["success"] is True
+
+
+def test_validate_pandas_dataframe_runs_multiple_expectations_in_order():
+    df = pd.DataFrame({"id": [1, 2]})
+
+    results = validate_pandas_dataframe(
+        df,
+        [
+            gx.expectations.ExpectTableRowCountToBeBetween(min_value=1, max_value=None),
+            gx.expectations.ExpectColumnToExist(column="does_not_exist"),
+        ],
+        datasource_name="test_pd_ds3",
+        asset_name="test_pd_asset3",
+    )
+
+    assert len(results) == 2
+    assert results[0]["expectation_type"] == "expect_table_row_count_to_be_between"
+    assert results[0]["success"] is True
+    assert results[1]["expectation_type"] == "expect_column_to_exist"
+    assert results[1]["success"] is False

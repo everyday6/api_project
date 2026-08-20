@@ -122,7 +122,7 @@ def validate_output(path: str | None) -> str | None:
         logger.info("공사 스티퓰레이션 검증 스킵: 그날 신규 0건(정상 케이스)")
         return path
 
-    df = pd.read_parquet(path, columns=["permitnumber"])
+    df = pd.read_parquet(str(path), columns=["permitnumber"])
     if df.empty:
         raise ValueError(f"공사 스티퓰레이션 파일이 비어 있습니다: {path}")
 

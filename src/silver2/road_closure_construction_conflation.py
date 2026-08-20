@@ -51,7 +51,7 @@ CONSTRUCTION_WORK_HOURS_DIR = SILVER2_DIR / "construction_work_hours"
 
 def load_construction_work_hours(run_date: str) -> pd.DataFrame:
     path = CONSTRUCTION_WORK_HOURS_DIR / f"dt={run_date}" / "data.parquet"
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def _combine(construction_work_hours: pd.DataFrame, road_closures: pd.DataFrame) -> pd.DataFrame:
@@ -133,7 +133,7 @@ def build(run_date: str | None = None) -> str:
 def validate_output(path: str, run_date: str) -> str:
     """build()가 저장한 결과를 다시 읽어, 그 run_date의 원본 두 개(construction_
     work_hours, road_closures) 행수와 비교하며 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     construction_rows = len(load_construction_work_hours(run_date))
     road_closures_rows = len(load_road_closures())
     validate(df, construction_rows=construction_rows, road_closures_rows=road_closures_rows)

@@ -46,7 +46,9 @@ from src.common.config import (
     SILVER1_DIR,
     TAXI_TYPES,
 )
+from src.common import db
 from src.common.logger import get_logger
+from src.common.spark import to_spark_path
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.lion.silver2 import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.silver2.zone_segment import MAP_ZONE_SEGMENT_PATH, TAXI_ZONE_SHAPEFILE, _load_zones
@@ -94,7 +96,7 @@ def collect_zone_hour_counts(
     """
 
     paths = [
-        str(path)
+        to_spark_path(path)
         for taxi_type in taxi_types
         for path in sorted(silver_dir.glob(f"{taxi_type}_tripdata_*"))
     ]
@@ -216,11 +218,11 @@ def build_dim_segment_tlc_volume(
     수 없는 규모로 커지는 것만 막는다.
     """
 
-    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
+    map_zone_segment = pd.read_parquet(str(map_zone_segment_path), columns=["segment_id", "zone_id", "borough"])
     map_zone_segment = map_zone_segment.loc[map_zone_segment["borough"] == borough, ["segment_id", "zone_id"]]
 
     map_segment_spatial_weight = pd.read_parquet(
-        map_segment_spatial_weight_path, columns=["segment_id", "spatial_weight"]
+        str(map_segment_spatial_weight_path), columns=["segment_id", "spatial_weight"]
     )
 
     zone_segment_ids = set(map_zone_segment["segment_id"])
@@ -257,9 +259,14 @@ def build_dim_segment_tlc_volume(
 
     out_path = gold_dir / "dim_segment_tlc_volume.parquet"
     gold_dir.mkdir(parents=True, exist_ok=True)
-    result.to_parquet(out_path, index=False)
+    result.to_parquet(str(out_path), index=False)
 
-    logger.info(f"[tlc_gold] dim_segment_tlc_volume 저장 완료: {len(result)}행 -> {out_path}")
+    # 서빙 API(src/gold2/traffic_score.py)가 RDS에서 읽으므로, S3(이력)와
+    # 별도로 서빙 테이블도 같이 갱신한다. 매번 전체 재계산 결과로 통째로
+    # 덮어쓴다(기존 parquet 파일 통째로 덮어쓰기와 동일한 시맨틱).
+    db.write_table(result, "dim_segment_tlc_volume")
+
+    logger.info(f"[tlc_gold] dim_segment_tlc_volume 저장 완료: {len(result)}행 -> {out_path} (+ RDS)")
     return str(out_path)
 
 
@@ -278,14 +285,14 @@ def validate_dim_segment_tlc_volume(
     인자화했다.
     """
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     assert not df.duplicated(subset=["segment_id", "hour"]).any(), "(segment_id, hour) 중복 발견"
     assert df["hour"].between(0, 23).all(), "hour가 0~23 범위를 벗어남"
     assert df["tlc_volume"].between(0, 1).all(), "tlc_volume이 0~1 범위를 벗어남"
     assert (df["dropoff_count_raw"] >= 0).all(), "dropoff_count_raw에 음수 있음"
 
-    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "borough"])
+    map_zone_segment = pd.read_parquet(str(map_zone_segment_path), columns=["segment_id", "borough"])
     segment_count = map_zone_segment.loc[map_zone_segment["borough"] == borough, "segment_id"].nunique()
     assert segment_count > 0, (
         f"borough='{borough}'에 해당하는 세그먼트가 없습니다 (map_zone_segment의 borough 표기를 확인하세요)"
@@ -353,11 +360,11 @@ def get_tlc_traffic_score_for_construction(
     if not 0 <= hour <= 23:
         raise ValueError(f"hour는 0~23 범위여야 합니다: {hour}")
 
-    gold = pd.read_parquet(gold_path)
+    gold = pd.read_parquet(str(gold_path))
     if segment_id not in gold["segment_id"].values:
         raise KeyError(f"segment_id를 찾을 수 없습니다: {segment_id}")
 
-    adjacency = pd.read_parquet(adjacency_path, columns=["segment_id", "neighbor_segment_id"])
+    adjacency = pd.read_parquet(str(adjacency_path), columns=["segment_id", "neighbor_segment_id"])
     hop_distances = _neighbor_hop_distances(segment_id, adjacency, hops=hops)
 
     hour_scores = gold[gold["hour"] == hour].set_index("segment_id")["tlc_volume"]
@@ -414,7 +421,7 @@ def ingest_hotspot_grid(
     df["_source"] = "bq_2016_dropoff_grid"
 
     bronze_path.parent.mkdir(parents=True, exist_ok=True)
-    df.to_parquet(bronze_path, index=False)
+    df.to_parquet(str(bronze_path), index=False)
 
     logger.info(f"[tlc_gold] hotspot grid {len(df)}행 저장 완료 -> {bronze_path}")
     return str(bronze_path)
@@ -593,9 +600,9 @@ def build_map_segment_spatial_weight(
     alpha: float = LAPLACE_SMOOTHING_ALPHA,
 ) -> str:
     """2016 hotspot grid Bronze + map_zone_segment + dim_segment로 map_segment_spatial_weight를 만든다."""
-    bronze_df = pd.read_parquet(bronze_path, columns=["lat_bin", "lon_bin", "dropoff_count"])
-    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id"])
-    dim_segment = pd.read_parquet(dim_segment_path, columns=["segment_id", "geometry"])
+    bronze_df = pd.read_parquet(str(bronze_path), columns=["lat_bin", "lon_bin", "dropoff_count"])
+    map_zone_segment = pd.read_parquet(str(map_zone_segment_path), columns=["segment_id", "zone_id"])
+    dim_segment = pd.read_parquet(str(dim_segment_path), columns=["segment_id", "geometry"])
 
     points = _points_from_grid(bronze_df)
     points_with_zone = _match_points_to_zone(points, zone_shapefile_path=zone_shapefile_path)
@@ -605,7 +612,7 @@ def build_map_segment_spatial_weight(
 
     gold_root.mkdir(parents=True, exist_ok=True)
     out_path = gold_root / "map_segment_spatial_weight.parquet"
-    result.to_parquet(out_path, index=False)
+    result.to_parquet(str(out_path), index=False)
 
     logger.info(f"[tlc_gold] map_segment_spatial_weight {len(result)}행 저장 -> {out_path}")
     return str(out_path)
@@ -616,8 +623,8 @@ def validate_map_segment_spatial_weight(
     map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
 ) -> str:
     """map_segment_spatial_weight.parquet의 최소 불변식을 확인한다."""
-    df = pd.read_parquet(path)
-    map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id"])
+    df = pd.read_parquet(str(path))
+    map_zone_segment = pd.read_parquet(str(map_zone_segment_path), columns=["segment_id"])
 
     assert df["segment_id"].is_unique, "segment_id 중복 발견"
     assert set(df["segment_id"]) == set(map_zone_segment["segment_id"]), (

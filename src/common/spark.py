@@ -7,6 +7,17 @@ Spark Session 생성 모듈
 
 from pyspark.sql import SparkSession
 
+from src.common.config import AWS_REGION
+
+
+def to_spark_path(path) -> str:
+    """S3Path(또는 문자열)를 Spark/Hadoop이 이해하는 s3a:// 문자열로 바꾼다.
+
+    cloudpathlib은 "s3://"를 쓰지만 Hadoop S3A 커넥터는 "s3a://"만 인식한다.
+    """
+
+    return str(path).replace("s3://", "s3a://", 1)
+
 
 def get_spark() -> SparkSession:
     """Spark Session 반환"""
@@ -28,5 +39,17 @@ def get_spark() -> SparkSession:
         # 파일 하나를 처리하기엔 파티션이 지나치게 많아 스케줄링 오버헤드만 커진다.
         # 앱이 실제로 쓰는 코어 수에 맞춘다.
         .config("spark.sql.shuffle.partitions", "3")
+        # Bronze/Silver가 S3(s3a://)에 있어서 Spark에 Hadoop S3 커넥터가
+        # 필요하다. spark-worker 이미지의 Hadoop이 3.4.1이라 정확히 맞춘
+        # hadoop-aws를 쓴다(버전이 안 맞으면 클래스 충돌로 조용히 깨짐).
+        # 자격증명은 EC2 인스턴스 롤(DefaultAWSCredentialsProviderChain이
+        # 자동으로 찾음)을 쓰므로 여기 access key를 박지 않는다.
+        .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.4.1")
+        .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
+        .config(
+            "spark.hadoop.fs.s3a.aws.credentials.provider",
+            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+        )
+        .config("spark.hadoop.fs.s3a.endpoint.region", AWS_REGION)
         .getOrCreate()
     )

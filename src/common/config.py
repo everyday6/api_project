@@ -9,6 +9,7 @@ import os
 from datetime import datetime
 from pathlib import Path
 
+from cloudpathlib import S3Path
 from dotenv import load_dotenv
 
 load_dotenv()
@@ -52,19 +53,40 @@ RECENT_MONTHS_WINDOW = 3
 
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
 
-DATA_DIR = PROJECT_ROOT / "data"
 CONFIG_DIR = PROJECT_ROOT / "config"
-
 LOG_DIR = PROJECT_ROOT / "logs"
 
-TMP_DIR = DATA_DIR / "tmp"
+# 다운로드 스트리밍 중간 저장용 로컬 스크래치 공간. S3는 부분 업로드를
+# 노출하지 않아 스트리밍 write가 안 되므로, 로컬에 받았다가 완료 후
+# S3로 올린다(예: src/tlc/bronze.py의 store_bronze).
+TMP_DIR = PROJECT_ROOT / "data" / "tmp"
 
-BRONZE_DIR = DATA_DIR / "bronze"
+# S3 버킷 이름 (.env에서 불러옴). 로컬/EC2 밖에서는 SCP가 이 버킷 접근
+# 자체를 막아서 실제로는 EC2 인스턴스의 IAM 롤에서만 동작한다.
+AWS_REGION = os.getenv("AWS_REGION")
+S3_BUCKET_DATA = os.getenv("S3_BUCKET_DATA")
+S3_BUCKET_DASHBOARD = os.getenv("S3_BUCKET_DASHBOARD")
 
-SILVER1_DIR = DATA_DIR / "silver1"
-SILVER2_DIR = DATA_DIR / "silver2"
-GOLD1_DIR = DATA_DIR / "gold1"
-GOLD2_DIR = DATA_DIR / "gold2"
+# Bronze/Silver/Gold는 S3Path — cloudpathlib가 pathlib과 동일한 인터페이스
+# (glob/mkdir/exists/unlink/`/` 등)를 제공해서 기존 호출부 대부분은 그대로
+# 동작한다. 다만 pandas I/O(read_parquet/to_parquet 등)에 넘길 때는
+# str(path)로 변환해야 한다(안 그러면 pandas가 로컬 캐시 경로로 오해한다).
+BRONZE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/bronze")
+
+SILVER1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver1")
+SILVER2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver2")
+GOLD1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold1")
+GOLD2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold2")
+
+# ==========================
+# RDS (Gold 서빙 테이블) 설정
+# ==========================
+
+RDS_HOST = os.getenv("RDS_HOST")
+RDS_PORT = os.getenv("RDS_PORT", "5432")
+RDS_DB = os.getenv("RDS_DB")
+RDS_USER = os.getenv("RDS_USER")
+RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 
 # ==========================
 # HTTP 설정

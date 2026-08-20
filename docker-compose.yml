@@ -40,6 +40,18 @@ x-airflow-env: &airflow-env
 
   GEMINI_API_KEY: ${GEMINI_API_KEY}
 
+  # S3(Bronze/Silver/Gold)/RDS(Gold 서빙 테이블) 접속 정보. S3는 정적 키
+  # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
+  AWS_REGION: ${AWS_REGION}
+  S3_BUCKET_DATA: ${S3_BUCKET_DATA}
+  S3_BUCKET_DASHBOARD: ${S3_BUCKET_DASHBOARD}
+
+  RDS_HOST: ${RDS_HOST}
+  RDS_PORT: ${RDS_PORT}
+  RDS_DB: ${RDS_DB}
+  RDS_USER: ${RDS_USER}
+  RDS_PASSWORD: ${RDS_PASSWORD}
+
   PYTHONPATH: /opt/airflow
 
 x-airflow-volumes: &airflow-volumes
@@ -297,6 +309,17 @@ services:
 
     environment:
       PYTHONPATH: /opt/airflow
+
+      # x-airflow-env를 안 쓰는 별도 서비스라 여기 따로 선언해야 한다.
+      AWS_REGION: ${AWS_REGION}
+      S3_BUCKET_DATA: ${S3_BUCKET_DATA}
+      S3_BUCKET_DASHBOARD: ${S3_BUCKET_DASHBOARD}
+
+      RDS_HOST: ${RDS_HOST}
+      RDS_PORT: ${RDS_PORT}
+      RDS_DB: ${RDS_DB}
+      RDS_USER: ${RDS_USER}
+      RDS_PASSWORD: ${RDS_PASSWORD}
 
     volumes:
       - ./src:/opt/airflow/src

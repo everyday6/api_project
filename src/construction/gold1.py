@@ -21,6 +21,7 @@ from datetime import date
 
 import pandas as pd
 
+from src.common import db
 from src.common.config import BOROUGH, GOLD1_DIR, SILVER1_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
@@ -67,7 +68,7 @@ def load_silver(run_date: str) -> pd.DataFrame:
 
     logger.info("공사 Silver1 로드: path=%s", path)
 
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def filter_for_traffic_score(df: pd.DataFrame) -> pd.DataFrame:
@@ -147,16 +148,20 @@ def build(run_date: str | None = None) -> str:
 
     path = save_parquet(df, GOLD1_DIR / SOURCE / f"dt={run_date}")
 
+    # 서빙 API(gold2/closure_penalty.py의 load_permit_types)가 RDS에서
+    # 읽으므로, S3 dt= 파티션과 동일한 dt로 RDS에도 쓴다.
+    db.write_partitioned_table(df, "construction_gold", run_date)
+
     logger.info(
-        "공사 Gold 빌드 완료: rows=%d columns=%d path=%s",
-        len(df), len(df.columns), path,
+        "공사 Gold 빌드 완료: rows=%d columns=%d path=%s (+ RDS dt=%s)",
+        len(df), len(df.columns), path, run_date,
     )
     return str(path)
 
 
 def validate_output(path: str) -> str:
     """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     validate(df)
     return path
 

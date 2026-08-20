@@ -65,7 +65,7 @@ def load_bronze(run_date):
     )
 
     return pd.read_parquet(
-        path,
+        str(path),
         columns=READ_COLS,
     )
 
@@ -235,7 +235,7 @@ UNMATCHED_LOCATION_COLUMNS = ["on_street", "first_seen_date", "resolved"]
 def _load_unmatched_locations() -> pd.DataFrame:
     if not UNMATCHED_LOCATION_PATH.exists():
         return pd.DataFrame(columns=UNMATCHED_LOCATION_COLUMNS)
-    return pd.read_parquet(UNMATCHED_LOCATION_PATH)
+    return pd.read_parquet(str(UNMATCHED_LOCATION_PATH))
 
 
 def _save_unmatched_locations(df: pd.DataFrame) -> None:
@@ -350,7 +350,7 @@ def build(run_date: str | None = None) -> str:
 
 def validate_output(path: str) -> str:
     """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     validate(df)
     return path
 

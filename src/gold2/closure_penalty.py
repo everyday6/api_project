@@ -72,6 +72,7 @@ from datetime import date
 
 import pandas as pd
 
+from src.common import db
 from src.common.config import GOLD1_DIR, GOLD2_DIR, SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
@@ -177,9 +178,9 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     쓰는 것과 동일한 "물리적 현장" 식별 기준이라, compute_site_exclusion_delta()가
     이 조합으로 매칭한다.
     """
-    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
-    construction = pd.read_parquet(
-        construction_path,
+    construction = db.read_partition(
+        "map_road_control_segment",
+        mapping_dt,
         columns=[
             "permit_id", "segment_id", "on_street", "from_street", "to_street",
             "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
@@ -204,9 +205,9 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
          "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
     ]
 
-    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
-    closures = pd.read_parquet(
-        closure_path,
+    closures = db.read_partition(
+        "map_road_closure_segment",
+        mapping_dt,
         columns=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"],
     )
     closures = closures[closures["segment_id"].notna()]
@@ -275,9 +276,9 @@ def load_ground_zero_details(mapping_dt: str) -> pd.DataFrame:
     여기서는 대시보드 "현재 영향받는 공사" 상세 목록에 보여줄 on_street/
     from_street/to_street/work_start_ts/work_end_ts/purpose까지 전부 보존한다.
     """
-    construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
-    construction = pd.read_parquet(
-        construction_path,
+    construction = db.read_partition(
+        "map_road_control_segment",
+        mapping_dt,
         columns=[
             "permit_id", "segment_id", "on_street", "from_street", "to_street",
             "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
@@ -290,9 +291,9 @@ def load_ground_zero_details(mapping_dt: str) -> pd.DataFrame:
     construction["source"] = "construction"
     construction["purpose"] = pd.Series(None, index=construction.index, dtype="object")
 
-    closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
-    closures = pd.read_parquet(
-        closure_path,
+    closures = db.read_partition(
+        "map_road_closure_segment",
+        mapping_dt,
         columns=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id", "purpose"],
     )
     closures = closures[closures["segment_id"].notna()]
@@ -444,10 +445,8 @@ def load_permit_types() -> pd.DataFrame:
     "이 날짜에 새로 올라온 공사" 목록에서 어떤 공사인지 보여주는 용도.
     permit_series(대분류, 4종류뿐)보다 permit_type(154종류)이 더 구체적이라
     이쪽을 쓴다."""
-    partitions = sorted(CONSTRUCTION_GOLD_DIR.glob("dt=*/data.parquet"))
-    if not partitions:
-        return pd.DataFrame(columns=["permit_id", "permit_type"])
-    return pd.read_parquet(partitions[-1], columns=["permit_id", "permit_type"]).drop_duplicates()
+    df = db.read_latest_partition("construction_gold", columns=["permit_id", "permit_type"])
+    return df.drop_duplicates()
 
 
 def load_embargoes_by_permit() -> dict[str, list[dict]]:
@@ -567,18 +566,18 @@ def get_data_date_range(mapping_dt: str) -> tuple[str, str]:
 
 
 def load_adjacency() -> dict:
-    graph = pd.read_parquet(GRAPH_SEGMENT_ADJACENCY_PATH, columns=["segment_id", "neighbor_segment_id"])
+    graph = db.read_table("graph_segment_adjacency", columns=["segment_id", "neighbor_segment_id"])
     return graph.groupby("segment_id")["neighbor_segment_id"].apply(list).to_dict()
 
 
 def load_capacity_by_segment() -> dict:
-    dim = pd.read_parquet(DIM_SEGMENT_PATH, columns=["segment_id", "capacity_per_hour"])
+    dim = db.read_table("dim_segment", columns=["segment_id", "capacity_per_hour"])
     return dim.set_index("segment_id")["capacity_per_hour"].to_dict()
 
 
 def load_lanes_by_segment() -> dict:
     """_lane_aware_half_saturation()에 넘길 세그먼트별 전체 차로 수."""
-    dim = pd.read_parquet(DIM_SEGMENT_PATH, columns=["segment_id", "lanes_total"])
+    dim = db.read_table("dim_segment", columns=["segment_id", "lanes_total"])
     return dim.set_index("segment_id")["lanes_total"].to_dict()
 
 

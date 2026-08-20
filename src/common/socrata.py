@@ -28,6 +28,8 @@ import pyarrow as pa
 import pyarrow.parquet as pq
 import requests
 
+from src.common.config import TMP_DIR
+
 from requests.adapters import HTTPAdapter
 from requests.exceptions import (
     ChunkedEncodingError,
@@ -281,10 +283,17 @@ def fetch_all_streaming(
     writer = None
     schema = None
 
-    tmp_path = (
-        out_path.parent
-        / f"_tmp_{out_path.name}"
+    # out_path는 S3Path다 — pq.ParquetWriter는 페이지마다 이어 쓰는 스트리밍
+    # writer라 로컬 파일 핸들이 필요하고(S3는 부분 append를 지원 안 함),
+    # tmp_path.replace(out_path)도 로컬 전용 rename이라 S3엔 못 쓴다. 그래서
+    # out_path.parent가 아니라 진짜 로컬 스크래치 공간(TMP_DIR)에 스트리밍하고,
+    # 끝나면 완성된 파일을 S3로 업로드한다.
+    TMP_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
     )
+
+    tmp_path = TMP_DIR / f"_tmp_{out_path.name}"
 
     out_path.parent.mkdir(
         parents=True,
@@ -408,10 +417,9 @@ def fetch_all_streaming(
 
         return 0
 
-    # 전체 수집이 성공한 경우에만 최종 파일로 교체
-    tmp_path.replace(
-        out_path
-    )
+    # 전체 수집이 성공한 경우에만 로컬 tmp를 S3의 최종 경로로 올린다
+    out_path.upload_from(tmp_path)
+    tmp_path.unlink()
 
     logger.info(
         "Socrata streaming completed: "
