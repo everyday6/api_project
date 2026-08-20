@@ -18,6 +18,17 @@ pyarrow==25.0.1
 python-dotenv==1.2.2
 pytest==8.4.2
 
+# S3 마이그레이션: BRONZE/SILVER/GOLD 경로가 로컬 대신 S3에 있다.
+# cloudpathlib가 pathlib 인터페이스(glob/mkdir/exists/unlink 등)를 그대로
+# 흉내내주고, pandas I/O는 str(path)로 넘겨 s3fs가 처리한다.
+boto3
+cloudpathlib[s3]
+s3fs
+
+# RDS(Postgres) 서빙 테이블 읽기/쓰기(src/common/db.py)에 사용.
+psycopg2-binary
+sqlalchemy
+
 # TLC Bronze 데이터 품질 검증(Great Expectations)에 사용. 1.20.0 미만은
 # pyspark==4.0.4와의 호환성을 검증하지 않았으므로 이 하한을 지킨다.
 great_expectations>=1.20.0

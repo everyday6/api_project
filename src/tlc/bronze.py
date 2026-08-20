@@ -8,7 +8,6 @@ Bronze 적재 모듈
 Airflow Task 간 데이터 전달은 dict를 사용한다.
 """
 
-import shutil
 from pathlib import Path
 
 from airflow.decorators import task
@@ -84,10 +83,10 @@ def store_bronze(
 
     try:
 
-        shutil.move(
-            tmp_path,
-            bronze_path,
-        )
+        # bronze_path는 S3Path — 로컬 tmp 파일을 업로드하고, 성공하면
+        # 로컬 tmp는 지운다(shutil.move는 로컬 전용이라 S3엔 못 씀).
+        bronze_path.upload_from(tmp_path)
+        tmp_path.unlink()
 
         logger.info(
             f"Bronze 저장 완료 : {filename}"
