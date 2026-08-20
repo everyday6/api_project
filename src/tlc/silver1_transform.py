@@ -1,8 +1,7 @@
 """
-TLC 데이터 변환 모듈
+TLC Silver1 변환 로직 (순수 함수, Airflow/Spark 세션 관리 의존 없음)
 
-TLC의 4종류의 택시 데이터를
-하나의 공통된 Silver 데이터 형식으로 변환한다.
+TLC의 4종류의 택시 데이터를 하나의 공통된 Silver 형식으로 변환한다.
 
 주요 작업:
 1. 데이터별 컬럼명 통일
@@ -10,9 +9,8 @@ TLC의 4종류의 택시 데이터를
 3. 데이터 타입을 Silver 스키마에 맞게 통일
 4. Traffic 분석에 필요한 6개 컬럼만 선택
 5. 컬럼별 결측치 개수와 비율을 확인하고 로그로 기록
-6. 변환된 데이터를 하나의 DataFrame으로 병합
 
-최종 Silver 컬럼:
+최종 Silver1 컬럼:
 - 승차 시각
 - 하차 시각
 - 승차 위치 ID
@@ -20,11 +18,16 @@ TLC의 4종류의 택시 데이터를
 - 승객 수
 - 이동거리
 
-※ 결측치가 존재하더라도 데이터를 삭제하지 않고
-   결측치 현황만 로그로 기록한다.
-"""
+※ 결측치가 존재하더라도 데이터를 삭제하지 않고 결측치 현황만 로그로
+   기록한다(집계 편향 방지 목적의 의도된 정책 — 다른 도메인과 달리 여기서는
+   통일하지 않는다).
 
-from functools import reduce
+이 파일은 airflow를 import하지 않는다 — src/tlc/expectations.py처럼 순수
+변환 로직(COLUMN_MAPPING 등)만 필요한 소비처가 airflow 설치 없이도 import할
+수 있게 하기 위함(원래 transform.py/silver.py가 이렇게 나뉘어 있던 이유와
+동일). Airflow @task로 감싼 오케스트레이션(build_silver, chunk_bronze_files)은
+src/tlc/silver1.py에 있다.
+"""
 
 from pyspark.sql import DataFrame
 from pyspark.sql.functions import col, count, lit, when
@@ -38,17 +41,16 @@ from pyspark.sql.types import (
 
 from src.common.logger import get_logger
 
-
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver")
 
 
 # =========================================================
-# Silver 공통 스키마
+# Silver1 공통 스키마
 # =========================================================
-# 모든 택시 데이터를 Silver에서 동일한 구조로 통일한다.
+# 모든 택시 데이터를 Silver1에서 동일한 구조로 통일한다.
 #
 # 원본 데이터에 특정 컬럼이 존재하지 않는 경우에도
-# Silver에서는 해당 컬럼을 유지하고 NULL 값을 넣는다.
+# Silver1에서는 해당 컬럼을 유지하고 NULL 값을 넣는다.
 #
 # 예)
 # FHV → passenger_count 컬럼 없음
@@ -74,13 +76,13 @@ SILVER_COLUMNS = [
 
 
 # =========================================================
-# 택시 종류별 원본 컬럼명 → Silver 공통 컬럼명
+# 택시 종류별 원본 컬럼명 → Silver1 공통 컬럼명
 # =========================================================
 #
 # Yellow / Green / FHV / FHVHV는
 # 같은 의미의 데이터라도 원본 컬럼명이 서로 다르다.
 #
-# 따라서 Silver로 저장하기 전에 컬럼명을 통일한다.
+# 따라서 Silver1로 저장하기 전에 컬럼명을 통일한다.
 # =========================================================
 
 COLUMN_MAPPING = {
@@ -119,7 +121,7 @@ COLUMN_MAPPING = {
 
     # High Volume FHV
     #
-    # FHVHV의 trip_miles는 Silver의
+    # FHVHV의 trip_miles는 Silver1의
     # trip_distance로 이름을 통일한다.
     #
     # passenger_count는 원본에 없으므로 NULL 생성
@@ -143,7 +145,7 @@ def rename_columns(
 ) -> DataFrame:
     """
     택시 종류별 원본 컬럼명을
-    Silver 공통 컬럼명으로 변경한다.
+    Silver1 공통 컬럼명으로 변경한다.
     """
 
     # 지원하지 않는 택시 종류인지 확인
@@ -179,7 +181,7 @@ def add_missing_columns(
     df: DataFrame,
 ) -> DataFrame:
     """
-    Silver 스키마에는 존재하지만
+    Silver1 스키마에는 존재하지만
     원본 데이터에는 없는 컬럼을 추가한다.
 
     추가되는 컬럼의 모든 값은 NULL이다.
@@ -197,7 +199,7 @@ def add_missing_columns(
                 f"컬럼 없음 - {column} → NULL로 추가"
             )
 
-            # Silver 스키마에 정의된 타입으로 NULL 컬럼 생성
+            # Silver1 스키마에 정의된 타입으로 NULL 컬럼 생성
             df = df.withColumn(
                 column,
                 lit(None).cast(data_type),
@@ -215,7 +217,7 @@ def cast_columns(
 ) -> DataFrame:
     """
     모든 데이터의 컬럼 타입을
-    Silver 공통 스키마에 맞게 변환한다.
+    Silver1 공통 스키마에 맞게 변환한다.
     """
 
     for field in SILVER_SCHEMA.fields:
@@ -236,7 +238,7 @@ def select_columns(
     df: DataFrame,
 ) -> DataFrame:
     """
-    Silver에서 사용할 6개 컬럼만 선택한다.
+    Silver1에서 사용할 6개 컬럼만 선택한다.
     """
 
     return df.select(
@@ -316,7 +318,7 @@ def transform(
 ) -> DataFrame:
     """
     TLC 원본 DataFrame을
-    Silver 표준 형식으로 변환한다.
+    Silver1 표준 형식으로 변환한다.
 
     처리 순서:
     1. 컬럼명 통일
@@ -342,7 +344,7 @@ def transform(
         df,
     )
 
-    # 4. Silver에서 사용할 컬럼만 선택
+    # 4. Silver1에서 사용할 컬럼만 선택
     df = select_columns(
         df,
     )
@@ -354,30 +356,3 @@ def transform(
     )
 
     return df
-
-
-# =========================================================
-# 여러 DataFrame 병합
-# =========================================================
-
-def union_all(
-    dfs: list[DataFrame],
-) -> DataFrame:
-    """
-    여러 택시 종류의 DataFrame을 하나로 합친다.
-
-    모든 DataFrame이 동일한 Silver 스키마를
-    가지고 있기 때문에 unionByName을 사용할 수 있다.
-    """
-
-    if not dfs:
-        raise ValueError(
-            "병합할 DataFrame이 없습니다."
-        )
-
-    return reduce(
-        lambda left, right: left.unionByName(
-            right,
-        ),
-        dfs,
-    )

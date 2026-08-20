@@ -39,7 +39,7 @@ from src.common.config import CONFIG_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.gold2 import closure_penalty, event_boost
 from src.lion.gold2 import DIM_SEGMENT_PATH, DIM_SEGMENT_TRAFFIC_SCORE_PATH
-from src.tlc.gold import DIM_SEGMENT_TLC_VOLUME_PATH
+from src.tlc.gold2 import DIM_SEGMENT_TLC_VOLUME_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
 

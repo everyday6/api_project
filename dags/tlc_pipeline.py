@@ -36,7 +36,7 @@ from src.tlc.bronze import (
     store_bronze,
 )
 
-from src.tlc.silver import (
+from src.tlc.silver1 import (
     build_silver,
     chunk_bronze_files,
 )
