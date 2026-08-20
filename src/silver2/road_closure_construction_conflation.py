@@ -1,8 +1,9 @@
 """
-Silver — road_closures + construction_work_hours 통합 (road_control_events)
+Silver2 — road_closures + construction_work_hours(Silver2, 허가 + 작업 시간대
+제약) 통합 (road_control_events)
 
-road_closures Bronze의 각 폐쇄 레코드를 construction_work_hours(허가 + 작업
-시간대 제약, src/construction_stipulations/silver.py)와 "도로명 일치 + 기간
+road_closures Silver1의 각 폐쇄 레코드를 construction_work_hours(허가 + 작업
+시간대 제약, src/silver2/construction_work_hours_join.py)와 "도로명 일치 + 기간
 겹침"으로 대조한다.
 
 - 겹치면: 이미 construction_work_hours에 있는 같은 공사로 보고 road_closures
@@ -14,7 +15,12 @@ road_closures Bronze의 각 폐쇄 레코드를 construction_work_hours(허가 +
 construction_work_hours 전체 + road_closures 중 매칭 안 된 것만 합쳐서 하나의
 통합 테이블(road_control_events)을 만든다. control_type 컬럼으로 둘을 구분한다.
 
-매칭 기준: on_street + from_street + to_street(구간) 일치 + 기간 겹침.
+매칭 기준: on_street + from_street + to_street(구간) 일치 + 기간 겹침. 겹침
+판단 자체는 construction 자체 컬럼(work_start_ts/work_end_ts)만 쓰지만, 결과
+행에는 work_hours 스케줄 컬럼(work_start_hour 등) 전체가 그대로 복사되어
+나간다 — 그래서 construction Silver1이 아니라 이미 work_hours가 조인된
+Silver2 산출물을 읽는다(Silver2가 다른 Silver2 산출물을 읽는 것은 같은 레이어
+간 참조라 원칙에 어긋나지 않는다).
 
 처음엔 on_street(도로명)만 보고 기간 겹침만 확인했는데, 실측해보니 매칭된 쌍의
 94.7%가 같은 도로의 서로 다른 구간이었다(예: BROADWAY 위쪽 공사와 아래쪽 공사가
@@ -32,54 +38,20 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import SILVER_DIR
+from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
-from src.common.utils import clean_street, save_parquet
-from src.road_closures.bronze import latest_bronze_file
+from src.common.utils import save_parquet
+from src.road_closures.silver1 import load_road_closures
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="road_control_events")
 
 OUT_SOURCE = "road_control_events"
-CONSTRUCTION_WORK_HOURS_DIR = SILVER_DIR / "construction_work_hours"
-
-RC_READ_COLS = [
-    "onstreetname", "fromstreetname", "tostreetname",
-    "workstartdate", "workenddate", "purpose", "boroughname", "wkt",
-]
+CONSTRUCTION_WORK_HOURS_DIR = SILVER2_DIR / "construction_work_hours"
 
 
 def load_construction_work_hours(run_date: str) -> pd.DataFrame:
     path = CONSTRUCTION_WORK_HOURS_DIR / f"dt={run_date}" / "data.parquet"
     return pd.read_parquet(path)
-
-
-def load_road_closures() -> pd.DataFrame:
-    """
-    road_closures는 ingest_weekly에서 주 단위로 갱신되는 별도 DAG라, 여기서는
-    그 시점 기준 가장 최근에 받아둔 스냅샷을 그냥 읽는다(cross-DAG 의존 없이).
-    """
-    path = latest_bronze_file()
-    if path is None:
-        raise FileNotFoundError("road_closures bronze 파일이 없습니다 — ingest_weekly가 아직 안 돈 것 같습니다.")
-
-    df = pd.read_parquet(path, columns=RC_READ_COLS)
-    df = df.rename(columns={
-        "onstreetname": "on_street",
-        "fromstreetname": "from_street",
-        "tostreetname": "to_street",
-        "workstartdate": "work_start_ts",
-        "workenddate": "work_end_ts",
-        "wkt": "geom_wkt",
-    })
-
-    # construction Silver와 동일한 규칙으로 도로명 정규화 — 이게 유일한 JOIN 키다.
-    for col in ["on_street", "from_street", "to_street"]:
-        df[col] = df[col].map(clean_street)
-
-    df["work_start_ts"] = pd.to_datetime(df["work_start_ts"], errors="coerce")
-    df["work_end_ts"] = pd.to_datetime(df["work_end_ts"], errors="coerce")
-
-    return df
 
 
 def _combine(construction_work_hours: pd.DataFrame, road_closures: pd.DataFrame) -> pd.DataFrame:
@@ -118,7 +90,7 @@ def _combine(construction_work_hours: pd.DataFrame, road_closures: pd.DataFrame)
 
 def validate(df: pd.DataFrame, construction_rows: int, road_closures_rows: int) -> None:
     if df.empty:
-        raise ValueError("road_control_events Silver 결과가 비었습니다.")
+        raise ValueError("road_control_events Silver2 결과가 비었습니다.")
 
     # construction 쪽은 전부 살아남아야 하고(제외 로직이 없음), road_closures는
     # 매칭된 만큼만 줄어들 수 있다 — 그래서 최소 construction_rows개는 항상 있어야 한다.
@@ -131,7 +103,7 @@ def validate(df: pd.DataFrame, construction_rows: int, road_closures_rows: int) 
         raise ValueError("결과 행수가 두 원본의 합보다 많음 — 병합 오류 가능성")
 
     logger.info(
-        "road_control_events Silver 검증 완료: rows=%d (construction=%d, road_closures=%d)",
+        "road_control_events Silver2 검증 완료: rows=%d (construction=%d, road_closures=%d)",
         len(df), construction_rows, road_closures_rows,
     )
     logger.info("control_type 분포:\n%s", df["control_type"].value_counts(dropna=False).to_string())
@@ -142,17 +114,17 @@ def build(run_date: str | None = None) -> str:
     if run_date is None:
         run_date = os.getenv("RUN_DATE", date.today().isoformat())
 
-    logger.info("road_control_events Silver 변환 시작: run_date=%s", run_date)
+    logger.info("road_control_events Silver2 통합 시작: run_date=%s", run_date)
 
     construction_work_hours = load_construction_work_hours(run_date)
     road_closures = load_road_closures()
 
     df = _combine(construction_work_hours, road_closures)
 
-    path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
+    path = save_parquet(df, SILVER2_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
-        "road_control_events Silver 빌드 완료: rows=%d columns=%d path=%s",
+        "road_control_events Silver2 빌드 완료: rows=%d columns=%d path=%s",
         len(df), len(df.columns), path,
     )
     return str(path)

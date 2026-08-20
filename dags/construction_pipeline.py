@@ -157,13 +157,13 @@ def construction_pipeline():
 
     @task(task_id="build_road_control_events")
     def build_road_control_events():
-        from src.road_closures.silver import build
+        from src.silver2.road_closure_construction_conflation import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_road_control_events")
     def validate_road_control_events(path: str):
-        from src.road_closures.silver import validate_output
+        from src.silver2.road_closure_construction_conflation import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
