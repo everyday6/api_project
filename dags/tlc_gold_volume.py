@@ -6,8 +6,8 @@ dim_segment_tlc_volume Gold 테이블을 만든다. 맨해튼 세그먼트만 �
 실행할 때마다 그 시점에 존재하는 TLC silver 파일 전부를 다시 읽어 처음부터
 계산한다(증분 아님).
 
-실제 로직은 src/tlc/gold.py(집계 + 빌드 + 검증)에 있고, 이 파일은 그 함수들을
-언제/어떤 순서로 실행할지만 정의한다.
+실제 로직은 src/tlc/gold1.py(평일+zone_id notna 필터)와 src/tlc/gold2.py(집계 +
+빌드 + 검증)에 있고, 이 파일은 그 함수들을 언제/어떤 순서로 실행할지만 정의한다.
 
 collect_zone_hour_counts(3년치 Silver 전체를 스캔하는 무거운 부분)와
 build_dim_segment_tlc_volume(집계 결과를 세그먼트로 펼치고 정규화해 저장하는
@@ -31,12 +31,12 @@ from airflow.decorators import dag, task
 
 from src.common.alerts import notify_slack_failure
 from src.common.spark import get_spark
-from src.tlc.gold import (
+from src.tlc.gold2 import (
     build_dim_segment_tlc_volume,
     collect_zone_hour_counts,
     validate_dim_segment_tlc_volume,
 )
-from src.tlc.silver import TLC_SILVER
+from src.tlc.silver1 import TLC_SILVER
 
 default_args = {
     "retries": 3,

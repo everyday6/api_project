@@ -95,13 +95,13 @@ def construction_pipeline():
 
     @task(task_id="build_construction")
     def build_construction():
-        from src.construction.silver import build
+        from src.construction.silver1 import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_construction")
     def validate_construction(path: str):
-        from src.construction.silver import validate_output
+        from src.construction.silver1 import validate_output
         return validate_output(path)
 
     # ───────────────────────────
@@ -110,36 +110,60 @@ def construction_pipeline():
 
     @task(task_id="build_construction_gold")
     def build_construction_gold():
-        from src.construction.gold import build
+        from src.construction.gold1 import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_construction_gold")
     def validate_construction_gold(path: str):
-        from src.construction.gold import validate_output
+        from src.construction.gold1 import validate_output
         return validate_output(path)
+
+    @task(task_id="build_work_hours_rules")
+    def build_work_hours_rules():
+        from src.construction_stipulations.silver1 import build_work_hours_rules as _build_work_hours_rules
+        context = get_current_context()
+        return _build_work_hours_rules(context["ds"])
+
+    @task(task_id="validate_work_hours_rules")
+    def validate_work_hours_rules(path: str):
+        from src.construction_stipulations.silver1 import validate_work_hours_rules_output
+        context = get_current_context()
+        return validate_work_hours_rules_output(path, context["ds"])
 
     @task(task_id="build_work_hours")
     def build_work_hours():
-        from src.construction_stipulations.silver import build
+        from src.silver2.construction_work_hours_join import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_work_hours")
     def validate_work_hours(path: str):
-        from src.construction_stipulations.silver import validate_output
+        from src.silver2.construction_work_hours_join import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
+    @task(task_id="build_embargoes")
+    def build_embargoes():
+        from src.construction_stipulations.silver1 import build_embargoes as _build_embargoes
+        context = get_current_context()
+        return _build_embargoes(context["ds"])
+
+    @task(task_id="validate_embargoes")
+    def validate_embargoes(path: str):
+        from src.construction_stipulations.silver1 import validate_embargoes_output
+        context = get_current_context()
+        return validate_embargoes_output(path, context["ds"])
+
     @task(task_id="build_road_control_events")
     def build_road_control_events():
-        from src.road_closures.silver import build
+        from src.silver2.road_closure_construction_conflation import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_road_control_events")
     def validate_road_control_events(path: str):
-        from src.road_closures.silver import validate_output
+        from src.silver2.road_closure_construction_conflation import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
@@ -149,25 +173,25 @@ def construction_pipeline():
 
     @task(task_id="map_road_control_segment", outlets=[MAP_ROAD_CONTROL_SEGMENT])
     def map_road_control_segment():
-        from src.mapping.road_control_segment import build
+        from src.silver2.road_control_segment import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_map_road_control_segment")
     def validate_map_road_control_segment(path: str):
-        from src.mapping.road_control_segment import validate_output
+        from src.silver2.road_control_segment import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
     @task(task_id="map_road_closure_segment", outlets=[MAP_ROAD_CLOSURE_SEGMENT])
     def map_road_closure_segment():
-        from src.mapping.road_closure_segment import build
+        from src.silver2.road_closure_segment import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_map_road_closure_segment")
     def validate_map_road_closure_segment(path: str):
-        from src.mapping.road_closure_segment import validate_output
+        from src.silver2.road_closure_segment import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
@@ -189,9 +213,17 @@ def construction_pipeline():
     construction_silver_validated >> construction_gold_path
     construction_gold_validated = validate_construction_gold(construction_gold_path)
 
+    work_hours_rules_path = build_work_hours_rules()
+    stipulations_validated >> work_hours_rules_path
+    work_hours_rules_validated = validate_work_hours_rules(work_hours_rules_path)
+
     work_hours_path = build_work_hours()
-    [construction_gold_validated, stipulations_validated] >> work_hours_path
+    [construction_gold_validated, work_hours_rules_validated] >> work_hours_path
     work_hours_validated = validate_work_hours(work_hours_path)
+
+    embargoes_path = build_embargoes()
+    stipulations_validated >> embargoes_path
+    validate_embargoes(embargoes_path)
 
     road_control_events_path = build_road_control_events()
     work_hours_validated >> road_control_events_path

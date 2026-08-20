@@ -61,24 +61,35 @@ def event_pipeline():
 
     @task(task_id="build_event")
     def build_event():
-        from src.event.silver import build
+        from src.event.silver1 import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_event")
     def validate_event(path: str):
-        from src.event.silver import validate_output
+        from src.event.silver1 import validate_output
+        return validate_output(path)
+
+    @task(task_id="build_event_gold1")
+    def build_event_gold1():
+        from src.event.gold1 import build
+        context = get_current_context()
+        return build(context["ds"])
+
+    @task(task_id="validate_event_gold1")
+    def validate_event_gold1(path: str):
+        from src.event.gold1 import validate_output
         return validate_output(path)
 
     @task(task_id="map_event_lion", outlets=[MAP_EVENT_LION])
     def map_event_lion():
-        from src.mapping.event_lion import build_event_lion_mapping
+        from src.silver2.event_lion import build_event_lion_mapping
         context = get_current_context()
         return build_event_lion_mapping(context["ds"])
 
     @task(task_id="validate_map_event_lion")
     def validate_map_event_lion(path: str):
-        from src.mapping.event_lion import validate_output
+        from src.silver2.event_lion import validate_output
         return validate_output(path)
 
     bronze_path = fetch_event()
@@ -88,9 +99,16 @@ def event_pipeline():
     bronze_validated >> silver_path
     silver_validated = validate_event(silver_path)
 
+    # map_event_lion은 지역/활성기간 필터 이전의 전체 event Silver1을 그대로
+    # 매칭 대상으로 삼는다(Silver2는 전 지역을 유지한다는 원칙) — gold1은
+    # 별도 병렬 분기로 둔다.
     mapping_path = map_event_lion()
     silver_validated >> mapping_path
     validate_map_event_lion(mapping_path)
+
+    gold1_path = build_event_gold1()
+    silver_validated >> gold1_path
+    validate_event_gold1(gold1_path)
 
 
 event_pipeline()

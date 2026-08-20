@@ -63,24 +63,35 @@ def ticketmaster_pipeline():
 
     @task(task_id="build_ticketmaster")
     def build_ticketmaster():
-        from src.ticketmaster.silver import build
+        from src.ticketmaster.silver1 import build
         context = get_current_context()
         return build(context["ds"])
 
     @task(task_id="validate_ticketmaster")
     def validate_ticketmaster(path: str):
-        from src.ticketmaster.silver import validate_output
+        from src.ticketmaster.silver1 import validate_output
+        return validate_output(path)
+
+    @task(task_id="build_ticketmaster_gold1")
+    def build_ticketmaster_gold1():
+        from src.ticketmaster.gold1 import build
+        context = get_current_context()
+        return build(context["ds"])
+
+    @task(task_id="validate_ticketmaster_gold1")
+    def validate_ticketmaster_gold1(path: str):
+        from src.ticketmaster.gold1 import validate_output
         return validate_output(path)
 
     @task(task_id="map_ticketmaster_lion", outlets=[MAP_TICKETMASTER_LION])
     def map_ticketmaster_lion():
-        from src.mapping.ticketmaster_lion import build_ticketmaster_lion_mapping
+        from src.silver2.ticketmaster_lion import build_ticketmaster_lion_mapping
         context = get_current_context()
         return build_ticketmaster_lion_mapping(context["ds"])
 
     @task(task_id="validate_map_ticketmaster_lion")
     def validate_map_ticketmaster_lion(path: str):
-        from src.mapping.ticketmaster_lion import validate_output
+        from src.silver2.ticketmaster_lion import validate_output
         context = get_current_context()
         return validate_output(path, context["ds"])
 
@@ -91,9 +102,16 @@ def ticketmaster_pipeline():
     bronze_validated >> silver_path
     silver_validated = validate_ticketmaster(silver_path)
 
+    # map_ticketmaster_lion은 지역/활성기간 필터 이전의 전체 ticketmaster
+    # Silver1을 그대로 매칭 대상으로 삼는다(Silver2는 전 지역을 유지한다는
+    # 원칙) — gold1은 별도 병렬 분기로 둔다.
     mapping_path = map_ticketmaster_lion()
     silver_validated >> mapping_path
     validate_map_ticketmaster_lion(mapping_path)
+
+    gold1_path = build_ticketmaster_gold1()
+    silver_validated >> gold1_path
+    validate_ticketmaster_gold1(gold1_path)
 
 
 ticketmaster_pipeline()

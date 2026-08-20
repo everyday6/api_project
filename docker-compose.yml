@@ -313,7 +313,7 @@ services:
     # airflow CLI 인자로 해석해버려서, 이 서비스는 그걸 우회해야 uvicorn이 뜬다.
     entrypoint: []
     command: >
-      uvicorn src.scoring.api:app --host 0.0.0.0 --port 8000
+      uvicorn src.serving.api:app --host 0.0.0.0 --port 8000
 
     networks:
       - airflow-network
