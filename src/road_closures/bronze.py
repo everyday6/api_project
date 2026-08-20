@@ -9,21 +9,14 @@ Socrata dataset ID: ezy6-djsf
   OnStreetName, FromStreetName, ToStreetName, BoroughName,
   WorkStartDate, WorkEndDate, Purpose, OFTCode, WKT
 
-예전에는 주 단위 증분(week_start= 파티션)으로 받았는데, 두 가지 이유로
-"매번 BACKFILL_START~end_date 전체를 통째로 다시 받아서 파일 하나로 저장"
-방식으로 바꿨다:
-1. 이 데이터셋은 전체를 받아도 1.5년치 기준 수만 행 수준이라 굳이 증분/파티션이
-   필요 없다 (LION처럼 매번 전체 스냅샷 방식이 더 단순하고 견고함).
-2. 증분 방식은 Airflow DAG를 수동 트리거하면 data_interval_start/end가 둘 다
-   "트리거 시각"으로 찌그러져서 [오늘, 오늘) 같은 빈 구간이 되는 버그가 있었다
-   (실제로 84개 주간 파티션이 이 문제로 전부 0행이 됨). 고정된 BACKFILL_START ~
-   end_date 방식은 end_date가 뭐가 되든(수동/스케줄 무관) 항상 유효한 구간이라
-   이 문제 자체가 발생하지 않는다.
+Bronze에서는 업무 날짜로 행을 제외하지 않는다. Socrata 원본 전체를 매번 받아
+수집일 기준 스냅샷 파일 하나로 저장하고, 실제 분석일에 활성 상태인 도로 통제를
+고르는 작업은 Gold 단계에서 수행한다.
 """
 
 from __future__ import annotations
 
-from datetime import date, datetime, timezone
+from datetime import datetime, timezone
 from pathlib import Path
 
 import pandas as pd
@@ -44,11 +37,6 @@ HEADERS = {
 }
 
 BRONZE_ROOT = BRONZE_DIR / "road_closures"
-
-# 예전 backfill_road_closures.py가 쓰던 시작일과 동일 — 이 데이터셋 실제
-# 최초 기록일보다 한참 뒤지만(check_earliest_work_start_date로 확인 가능),
-# 프로젝트에서 필요한 범위가 2025년 이후라 이 값을 그대로 유지한다.
-BACKFILL_START = date(2025, 1, 1)
 
 
 def check_earliest_work_start_date() -> str | None:
@@ -84,33 +72,28 @@ def latest_bronze_file(bronze_root: Path = BRONZE_ROOT) -> Path | None:
     return files[-1] if files else None
 
 
-def ingest_road_closures(end_date: str | None = None, bronze_root: Path = BRONZE_ROOT) -> str:
+def ingest_road_closures(snapshot_date: str | None = None, bronze_root: Path = BRONZE_ROOT) -> str:
     """
-    BACKFILL_START(2025-01-01) ~ end_date(기본값: 오늘) 전체를 매번 통째로 받아
-    road_closures_<end_date>.parquet 하나로 저장한다. (더 이상 주 단위로 안 나눔)
+    Socrata 원본 전체를 받아 road_closures_<snapshot_date>.parquet 하나로 저장한다.
+    snapshot_date는 파일 버전 표시에만 사용하며 API 행 필터에는 사용하지 않는다.
     """
-    if end_date is None:
-        end_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
-
-    where_clause = (
-        f"WorkStartDate >= '{BACKFILL_START}T00:00:00' "
-        f"AND WorkStartDate < '{end_date}T00:00:00'"
-    )
+    if snapshot_date is None:
+        snapshot_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     # 정렬 기준 컬럼이 마땅치 않아(고유 permitnumber 같은 게 없음) Socrata
     # 내부 행 식별자인 :id 하나만으로 keyset 페이지네이션한다 — 유일성만
     # 보장되면 되고 순서 자체엔 의미가 없어서 이걸로 충분하다.
-    records = fetch_all(BASE_URL, where=where_clause, order=":id")
+    records = fetch_all(BASE_URL, where="1=1", order=":id")
     df = pd.DataFrame.from_records(records)
 
     df["_ingested_at"] = datetime.now(timezone.utc).isoformat()
     df["_source"] = "nyc_dot_street_closures_by_block_and_intersection"
 
     bronze_root.mkdir(parents=True, exist_ok=True)
-    dest_path = bronze_root / f"road_closures_{end_date}.parquet"
+    dest_path = bronze_root / f"road_closures_{snapshot_date}.parquet"
 
     df.to_parquet(dest_path, index=False)
-    logger.info(f"[road_closures] {BACKFILL_START}~{end_date} 구간 {len(df)}행 저장 -> {dest_path}")
+    logger.info(f"[road_closures] 원본 전체 {len(df)}행 저장 -> {dest_path}")
     return str(dest_path)
 
 
