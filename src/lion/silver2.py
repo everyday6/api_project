@@ -28,6 +28,7 @@ dim_segment를 읽는다(레이어 순서상 Silver2가 Gold2 산출물에 의�
 from __future__ import annotations
 
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pandas as pd
@@ -36,7 +37,12 @@ from src.common import db
 from src.common.config import SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
 from src.lion.gold2 import DIM_SEGMENT_PATH
-from src.lion.silver1 import LION_BRONZE_ROOT, _find_gdb, _latest_bronze_version
+from src.lion.silver1 import (
+    LION_BRONZE_ROOT,
+    _find_gdb,
+    _latest_bronze_version,
+    _stage_gdb_locally,
+)
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="graph_segment_adjacency")
 
@@ -75,13 +81,16 @@ def build_graph_segment_adjacency(
     gdb_path = _find_gdb(version_dir)
     logger.info(f"[graph_segment_adjacency] 입력 bronze: {gdb_path}")
 
-    # ogr2ogr(네이티브 GDAL 바이너리)은 S3 경로에 못 쓰므로, silver_root(S3)가
-    # 아니라 진짜 로컬 스크래치 공간(TMP_DIR)에 만든다.
+    # ogr2ogr는 s3:// 경로의 File Geodatabase를 직접 읽을 수 없으므로
+    # Silver1과 동일하게 .gdb를 로컬로 받은 뒤 노드 CSV를 추출한다.
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    tmp_csv = TMP_DIR / "lion_nodes_tmp.csv"
-    _gdb_to_node_csv(gdb_path, tmp_csv)
+    with tempfile.TemporaryDirectory(prefix="lion_silver2_", dir=TMP_DIR) as tmp:
+        work_dir = Path(tmp)
+        local_gdb_path = _stage_gdb_locally(gdb_path, work_dir)
+        tmp_csv = work_dir / "lion_nodes.csv"
+        _gdb_to_node_csv(local_gdb_path, tmp_csv)
 
-    nodes = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
+        nodes = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
     # dim_segment와 동일한 dedupe (중복 원인은 lion/silver1.py 문서 참고 — 순수 중복 행)
     nodes = nodes.drop_duplicates(subset="SegmentID", keep="first")
 
@@ -113,7 +122,6 @@ def build_graph_segment_adjacency(
 
     logger.info(f"[graph_segment_adjacency] {len(graph)}행 저장 -> {graph_path} (+ RDS)")
 
-    tmp_csv.unlink(missing_ok=True)
     return str(graph_path)
 
 
