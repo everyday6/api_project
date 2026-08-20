@@ -339,7 +339,6 @@ function cssVar(name) { return getComputedStyle(document.documentElement).getPro
 let SEGMENTS = [];      // [{segment_id, road_class, traffic_score, coords:[x1,y1,x2,y2,...]}, ...]
 let idToIndex = {};
 let buckets = [[],[],[],[],[]];
-let missing = [];
 let selectedSegmentId = null;
 let scored = []; // 유효한 traffic_score 오름차순 정렬본 — 0~100 정규화(percentile) 계산용
 
@@ -426,14 +425,12 @@ async function loadMapData() {
   SEGMENTS = await res.json();
   SEGMENTS.forEach((s, i) => { idToIndex[s.segment_id] = i; });
 
-  scored = SEGMENTS.filter(s => s.traffic_score !== null).map(s => s.traffic_score).sort((a,b)=>a-b);
+  scored = SEGMENTS.map(s => s.traffic_score).sort((a,b)=>a-b);
   const q = p => scored[Math.min(scored.length-1, Math.floor(p*scored.length))];
   const bounds = [q(0.2), q(0.4), q(0.6), q(0.8), Infinity];
 
   buckets = [[],[],[],[],[]];
-  missing = [];
   SEGMENTS.forEach((s, i) => {
-    if (s.traffic_score === null) { missing.push(i); return; }
     const b = bounds.findIndex(x => s.traffic_score <= x);
     buckets[b < 0 ? 4 : b].push(i);
   });
@@ -520,10 +517,6 @@ function draw() {
   // 강조하려고 나머지를 흐리게 죽였더니 도시 전체 그림이 안 보여서
   // 오히려 안 좋다는 피드백을 받았다. "주변 도로 강조"는 대신 아래
   // 배지(숫자)로만 표현한다.
-  ctx.beginPath(); ctx.strokeStyle = cssVar("--ink-muted"); ctx.lineWidth = 0.4;
-  for (const i of missing) drawSeg(ctx, SEGMENTS[i]);
-  ctx.stroke();
-
   for (let b=0;b<5;b++) {
     // 굵기 차이를 크게 두면 상위 구간(마지막에, 두껍게 그려짐)이 화면을 시각적으로
     // 압도해버려서(실측: 스크린샷 픽셀의 70%가 최상위 구간 색) 색상만으로 구분되게
@@ -654,10 +647,6 @@ function renderLegend() {
     const name = document.createElement("span"); name.textContent = `${labels[i]} (${buckets[i].length.toLocaleString()})`;
     row.append(sw, name); legend.appendChild(row);
   });
-  const row = document.createElement("div"); row.className="row";
-  const sw = document.createElement("span"); sw.className="swatch"; sw.style.background = cssVar("--ink-muted");
-  const name = document.createElement("span"); name.textContent = `결측(용량 없음) (${missing.length.toLocaleString()})`;
-  row.append(sw, name); legend.appendChild(row);
 }
 
 // ---------- 상세 패널 (config 컴포넌트 목록을 그대로 순회해서 렌더링) ----------
