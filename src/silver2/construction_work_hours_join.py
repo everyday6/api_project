@@ -32,7 +32,7 @@ CONSTRUCTION_SILVER1_DIR = SILVER1_DIR / "construction"
 def load_construction_silver1(run_date: str) -> pd.DataFrame:
     """run_date에 해당하는 construction Silver1 스냅샷을 읽는다."""
     path = CONSTRUCTION_SILVER1_DIR / f"dt={run_date}" / "data.parquet"
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def _merge_work_hours(construction: pd.DataFrame) -> pd.DataFrame:
@@ -89,7 +89,7 @@ def build(run_date: str | None = None) -> str:
 def validate_output(path: str, run_date: str) -> str:
     """build()가 저장한 결과를 다시 읽어, 그 run_date의 construction Silver1
     행수와 비교하며 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     construction_rows = len(load_construction_silver1(run_date))
     validate(df, construction_rows=construction_rows)
     return path

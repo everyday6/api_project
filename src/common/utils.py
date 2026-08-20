@@ -26,24 +26,16 @@ def make_session():
 
 
 def save_parquet(df, out_dir, filename="data.parquet"):
-    """임시 파일로 쓰고 성공하면 이름을 바꾼다.
+    """DataFrame을 parquet으로 저장한다.
 
-    쓰다가 실패하면(디스크 부족 등) tmp 파일을 지우고 예외를 그대로
-    다시 던진다 — 실패를 감추지 않으면서, 다음 실행 때 이전 실패의
-    잔여물이 안 남게 한다.
+    out_dir는 S3Path다 — S3는 업로드가 완료된 객체만 노출하므로(부분 쓰기가
+    안 보임) 로컬 파일시스템에서 하던 tmp-then-rename 흉내가 필요 없다.
+    pandas가 S3Path를 로컬 캐시 경로로 오해하지 않도록 str()로 넘긴다.
     """
     out_dir.mkdir(parents=True, exist_ok=True)
 
-    tmp = out_dir / f"_tmp_{filename}"
     final = out_dir / filename
-
-    try:
-        df.to_parquet(tmp, index=False)
-        tmp.replace(final)
-    except Exception:
-        if tmp.exists():
-            tmp.unlink()
-        raise
+    df.to_parquet(str(final), index=False)
 
     return final
 

@@ -53,6 +53,7 @@ import pandas as pd
 
 from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
+from src.common import db
 from src.common.utils import save_parquet
 from src.lion.silver2 import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.lion.gold2 import DIM_SEGMENT_PATH
@@ -100,7 +101,7 @@ def normalize_street_alias(value: str | None) -> str | None:
 
 
 def load_dim_segment() -> pd.DataFrame:
-    return pd.read_parquet(DIM_SEGMENT_PATH, columns=["segment_id", "street_name"])
+    return pd.read_parquet(str(DIM_SEGMENT_PATH), columns=["segment_id", "street_name"])
 
 
 def build_adjacency_index(dim_segment: pd.DataFrame) -> tuple[dict, dict]:
@@ -112,7 +113,7 @@ def build_adjacency_index(dim_segment: pd.DataFrame) -> tuple[dict, dict]:
     좁혀진다(모듈 docstring 참고).
     """
     graph = pd.read_parquet(
-        GRAPH_SEGMENT_ADJACENCY_PATH, columns=["segment_id", "neighbor_segment_id", "shared_node_id"]
+        str(GRAPH_SEGMENT_ADJACENCY_PATH), columns=["segment_id", "neighbor_segment_id", "shared_node_id"]
     )
     adjacency = graph.groupby("segment_id")["neighbor_segment_id"].apply(list).to_dict()
     street_by_segment = dim_segment.set_index("segment_id")["street_name"].to_dict()
@@ -179,7 +180,7 @@ def reachable_streets_by_end(
 def load_construction_events(run_date: str) -> pd.DataFrame:
     path = ROAD_CONTROL_EVENTS_DIR / f"dt={run_date}" / "data.parquet"
     df = pd.read_parquet(
-        path,
+        str(path),
         columns=[
             "permit_id", "on_street", "from_street", "to_street", "control_type",
             "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code",
@@ -289,9 +290,13 @@ def build(run_date: str | None = None) -> str:
 
     path = save_parquet(df, SILVER2_DIR / OUT_SOURCE / f"dt={run_date}")
 
+    # 서빙 API(closure_penalty.load_ground_zero_records)가 RDS에서
+    # mapping_dt 기준으로 읽으므로, S3 dt= 파티션과 동일한 dt로 RDS에도 쓴다.
+    db.write_partitioned_table(df, OUT_SOURCE, run_date)
+
     logger.info(
-        "map_road_control_segment 빌드 완료: rows=%d columns=%d path=%s",
-        len(df), len(df.columns), path,
+        "map_road_control_segment 빌드 완료: rows=%d columns=%d path=%s (+ RDS dt=%s)",
+        len(df), len(df.columns), path, run_date,
     )
     return str(path)
 
@@ -299,7 +304,7 @@ def build(run_date: str | None = None) -> str:
 def validate_output(path: str, run_date: str) -> str:
     """build()가 저장한 결과를 다시 읽어, 그 run_date의 원본 construction_events
     행수와 비교하며 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     construction_rows = len(load_construction_events(run_date))
     validate(df, construction_rows=construction_rows)
     return path

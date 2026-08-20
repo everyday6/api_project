@@ -110,7 +110,7 @@ def validate_road_closures(path: str, bronze_root: Path = BRONZE_ROOT) -> str:
     - boroughname이 NYC 5개 자치구 안에 있는지
     - 직전 스냅샷 대비 행 수가 급감하지 않았는지 (fetch 실패를 조용히 덮어쓰는 것 방지)
     """
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     required_cols = {"onstreetname", "workstartdate", "workenddate", "boroughname"}
     missing = required_cols - set(df.columns)
@@ -129,7 +129,7 @@ def validate_road_closures(path: str, bronze_root: Path = BRONZE_ROOT) -> str:
     previous_snapshots = [p for p in previous_snapshots if str(p) != str(Path(path))]
     if previous_snapshots:
         prev_path = previous_snapshots[-1]
-        prev_n = len(pd.read_parquet(prev_path, columns=["onstreetname"]))
+        prev_n = len(pd.read_parquet(str(prev_path), columns=["onstreetname"]))
         n = len(df)
         if prev_n > 0:
             ratio = n / prev_n

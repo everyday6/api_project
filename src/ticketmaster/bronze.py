@@ -345,7 +345,7 @@ def build() -> str:
 
 def validate_output(path: str) -> str:
     """저장된 Bronze 파일에 행이 실제로 있는지 확인한다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     if df.empty:
         raise ValueError("Ticketmaster 받은 데이터가 없습니다.")
     return path

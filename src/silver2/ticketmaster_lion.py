@@ -19,6 +19,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely import wkt
 
+from src.common import db
 from src.common.config import (
     SILVER1_DIR,
     SILVER2_DIR,
@@ -83,7 +84,7 @@ def load_ticketmaster(
         path,
     )
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     logger.info(
         "Ticketmaster Silver1 로드 완료: rows=%d columns=%d",
@@ -108,7 +109,7 @@ def load_lion() -> pd.DataFrame:
         path,
     )
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     logger.info(
         "LION 로드 완료: rows=%d columns=%d",
@@ -686,6 +687,10 @@ def save_mapping(
         out_dir,
     )
 
+    # 서빙 API(event_boost.load_ground_zero_records)가 RDS에서 읽으므로,
+    # S3 dt= 파티션과 동일한 dt로 RDS에도 쓴다.
+    db.write_partitioned_table(df, "map_ticketmaster_lion", run_date)
+
     logger.info(
         "매핑 결과 저장 완료: rows=%d path=%s",
         len(df),
@@ -756,7 +761,7 @@ def build_ticketmaster_lion_mapping(
 def validate_output(path: str, run_date: str) -> str:
     """build_ticketmaster_lion_mapping()이 저장한 결과를 다시 읽어, 그 run_date의
     원본 ticketmaster 입력과 비교하며 _validate_result()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     input_df = load_ticketmaster(run_date)
     _validate_result(df, input_df)
     return path

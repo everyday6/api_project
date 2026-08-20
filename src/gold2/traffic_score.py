@@ -35,11 +35,10 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yaml
 
+from src.common import db
 from src.common.config import CONFIG_DIR
 from src.common.logger import get_logger
 from src.gold2 import closure_penalty, event_boost
-from src.lion.gold2 import DIM_SEGMENT_PATH, DIM_SEGMENT_TRAFFIC_SCORE_PATH
-from src.tlc.gold2 import DIM_SEGMENT_TLC_VOLUME_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="scoring_traffic_score")
 
@@ -91,41 +90,33 @@ HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
 _cache: dict[str, Any] = {}
 
 
-def _latest_partition_path(base_dir: Path) -> Path | None:
-    """base_dir의 dt= 파티션 중 가장 최근 것을 찾는다.
+def _latest_run_date(table_name: str) -> str | None:
+    """table_name의 dt 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13").
 
     ingest_daily가 매일 새로 만드는 테이블들은 dim_segment_traffic_score_v0
-    (분기 1회)처럼 고정 경로가 아니라 그날그날 파티션을 스스로 찾아야 한다.
+    (분기 1회)처럼 고정 테이블이 아니라 그날그날 파티션(dt 컬럼)을 스스로
+    찾아야 한다.
     """
-    partitions = sorted(base_dir.glob("dt=*/data.parquet"))
-    return partitions[-1] if partitions else None
-
-
-def _latest_run_date(base_dir: Path) -> str | None:
-    """base_dir의 dt= 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13")."""
-    path = _latest_partition_path(base_dir)
-    if path is None:
-        return None
-    return path.parent.name.split("=", 1)[1]
+    return db.latest_partition_date(table_name)
 
 
 def _latest_mapping_dt() -> str:
     """map_road_control_segment(map_road_closure_segment도 같은 날 함께 갱신됨)의
-    최신 dt= 파티션 날짜 — closure_penalty 계산의 "진앙 후보" 데이터 스냅샷
+    최신 dt 파티션 날짜 — closure_penalty 계산의 "진앙 후보" 데이터 스냅샷
     기준이다. 대시보드에서 사용자가 고르는 조회 날짜(ts_date)와는 다른
     개념이다: 이건 "우리가 아는 공사/통제 허가 목록을 언제 기준으로
     수집했는지"이고, ts_date는 "그 허가들 중 어느 게 그 날짜에 실제로
     활성인지" 판단 기준이다.
 
     _closure_penalty_value()가 exclude_site 경로에서 시간(hour)마다 이 함수를
-    부르므로(하루 전체 조회 시 최대 24번) glob 스캔을 매번 반복하지 않도록
+    부르므로(하루 전체 조회 시 최대 24번) RDS 조회를 매번 반복하지 않도록
     캐싱한다 — 이 스냅샷은 프로세스 실행 중 바뀌지 않는다(매핑 파이프라인이
     새 파티션을 만들어도 서버를 재시작해야 반영되는 다른 캐시들과 동일).
     """
     if "latest_mapping_dt" in _cache:
         return _cache["latest_mapping_dt"]
 
-    mapping_dt = _latest_run_date(closure_penalty.MAP_ROAD_CONTROL_SEGMENT_DIR)
+    mapping_dt = _latest_run_date("map_road_control_segment")
     if mapping_dt is None:
         raise RuntimeError("map_road_control_segment 데이터가 없습니다 — 매핑 파이프라인을 먼저 실행하세요.")
     _cache["latest_mapping_dt"] = mapping_dt
@@ -176,13 +167,12 @@ def _load_tlc_volume_table() -> pd.DataFrame:
     if "tlc_volume_table" in _cache:
         return _cache["tlc_volume_table"]
 
-    if DIM_SEGMENT_TLC_VOLUME_PATH.exists():
-        df = pd.read_parquet(DIM_SEGMENT_TLC_VOLUME_PATH, columns=["segment_id", "hour", "tlc_volume"])
+    if db.table_exists("dim_segment_tlc_volume"):
+        df = db.read_table("dim_segment_tlc_volume", columns=["segment_id", "hour", "tlc_volume"])
     else:
         logger.warning(
-            "[scoring] dim_segment_tlc_volume이 없습니다(%s) — tlc_volume을 0으로 처리합니다. "
-            "dags/tlc_gold_volume.py를 실행하면 반영됩니다.",
-            DIM_SEGMENT_TLC_VOLUME_PATH,
+            "[scoring] dim_segment_tlc_volume이 없습니다 — tlc_volume을 0으로 처리합니다. "
+            "dags/tlc_gold_volume.py를 실행하면 반영됩니다."
         )
         df = pd.DataFrame(columns=["segment_id", "hour", "tlc_volume"])
 
@@ -227,11 +217,11 @@ def _load_base_data() -> pd.DataFrame:
     if "base_df" in _cache:
         return _cache["base_df"]
 
-    dim = pd.read_parquet(
-        DIM_SEGMENT_PATH,
+    dim = db.read_table(
+        "dim_segment",
         columns=["segment_id", "geometry", "road_class", "borough_code", "is_routable", "lanes_total"],
     )
-    score = pd.read_parquet(DIM_SEGMENT_TRAFFIC_SCORE_PATH)
+    score = db.read_table("dim_segment_traffic_score_v0")
 
     df = dim.merge(score, on="segment_id", how="inner").set_index("segment_id", drop=False)
     _cache["base_df"] = df

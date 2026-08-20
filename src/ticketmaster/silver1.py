@@ -93,7 +93,7 @@ def load_bronze(run_date):
             f"{SOURCE}: Bronze 파일 없음 - {path}"
         )
 
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def parse_venue(raw):
@@ -305,7 +305,7 @@ def build(run_date: str | None = None) -> str:
 
 def validate_output(path: str) -> str:
     """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     validate(df)
     return path
 

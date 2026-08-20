@@ -12,7 +12,7 @@ from airflow.decorators import task
 from src.common.alerts import notify_slack_message
 from src.common.gx import validate_spark_dataframe
 from src.common.logger import get_logger
-from src.common.spark import get_spark
+from src.common.spark import get_spark, to_spark_path
 
 from src.tlc.expectations import critical_expectations, log_only_expectations
 
@@ -32,7 +32,7 @@ def validate_bronze_file(spark, bronze_path: str, taxi_type: str) -> list[dict]:
     실패한 항목들의 결과 dict 리스트를 반환한다(전부 통과면 빈 리스트).
     """
 
-    df = spark.read.parquet(str(bronze_path))
+    df = spark.read.parquet(to_spark_path(bronze_path))
     asset_id = Path(bronze_path).stem
 
     critical_results = validate_spark_dataframe(

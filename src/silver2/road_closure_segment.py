@@ -31,6 +31,7 @@ from shapely.strtree import STRtree
 
 from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
+from src.common import db
 from src.common.utils import save_parquet
 from src.lion.gold2 import DIM_SEGMENT_PATH
 
@@ -44,7 +45,7 @@ MATCH_DISTANCE_THRESHOLD_FT = 100
 
 def load_dim_segment_geoms(dim_segment_path: Path = DIM_SEGMENT_PATH) -> tuple[pd.DataFrame, list]:
     """routable 세그먼트만(map_zone_segment와 동일 범위) geometry를 shapely 객체로 파싱."""
-    dim = pd.read_parquet(dim_segment_path, columns=["segment_id", "geometry", "is_routable"])
+    dim = pd.read_parquet(str(dim_segment_path), columns=["segment_id", "geometry", "is_routable"])
     dim = dim.loc[dim["is_routable"], ["segment_id", "geometry"]].reset_index(drop=True)
     geoms = dim["geometry"].map(wkt.loads).tolist()
     return dim, geoms
@@ -52,7 +53,7 @@ def load_dim_segment_geoms(dim_segment_path: Path = DIM_SEGMENT_PATH) -> tuple[p
 
 def load_other_road_control(run_date: str) -> pd.DataFrame:
     path = ROAD_CONTROL_EVENTS_DIR / f"dt={run_date}" / "data.parquet"
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     df = df[df["control_type"] == "other_road_control"].drop(columns=["control_type"])
     return df.reset_index(drop=True).reset_index(names="row_id")
 
@@ -116,9 +117,13 @@ def build(run_date: str | None = None) -> str:
 
     path = save_parquet(df, SILVER2_DIR / OUT_SOURCE / f"dt={run_date}")
 
+    # 서빙 API(closure_penalty.load_ground_zero_records)가 RDS에서
+    # mapping_dt 기준으로 읽으므로, S3 dt= 파티션과 동일한 dt로 RDS에도 쓴다.
+    db.write_partitioned_table(df, OUT_SOURCE, run_date)
+
     logger.info(
-        "map_road_closure_segment 빌드 완료: rows=%d columns=%d path=%s",
-        len(df), len(df.columns), path,
+        "map_road_closure_segment 빌드 완료: rows=%d columns=%d path=%s (+ RDS dt=%s)",
+        len(df), len(df.columns), path, run_date,
     )
     return str(path)
 
@@ -126,7 +131,7 @@ def build(run_date: str | None = None) -> str:
 def validate_output(path: str, run_date: str) -> str:
     """build()가 저장한 결과를 다시 읽어, 그 run_date의 원본 other_road_control
     행수와 비교하며 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     total_rows = len(load_other_road_control(run_date))
     validate(df, total_rows=total_rows)
     return path

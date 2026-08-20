@@ -141,7 +141,7 @@ def _load_raw_work_hours_rows(bronze_root: Path) -> pd.DataFrame:
 
     matched = []
     for f in files:
-        day_df = pd.read_parquet(f, columns=["permitnumber", "stipulationfulltext"])
+        day_df = pd.read_parquet(str(f), columns=["permitnumber", "stipulationfulltext"])
         mask = day_df["stipulationfulltext"].str.match(
             r"^WORK\s+\d{1,2}\s*[AP]M\s*-\s*\d{1,2}\s*[AP]M", case=False, na=False
         )
@@ -331,7 +331,7 @@ def _load_raw_embargo_rows(bronze_root: Path) -> pd.DataFrame:
 
     matched = []
     for f in files:
-        day_df = pd.read_parquet(f, columns=["permitnumber", "stipulationfulltext"])
+        day_df = pd.read_parquet(str(f), columns=["permitnumber", "stipulationfulltext"])
         mask = day_df["stipulationfulltext"].str.startswith("WORK EMBARGO", na=False)
         if mask.any():
             matched.append(day_df[mask])
@@ -532,7 +532,7 @@ def validate_embargoes_output(path: str, run_date: str) -> str:
     EMBARGO_NEW_FAILURE_ALERT_THRESHOLD를 넘으면 예외를 던진다 — 이 예외가
     Airflow task를 실패시켜 construction_pipeline.py의 on_failure_callback
     (notify_slack_failure)이 그대로 Slack 알림을 보낸다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     cache = load_llm_cache("embargo")
     if cache.empty:
@@ -575,7 +575,7 @@ def load_built_embargoes() -> pd.DataFrame:
     partitions = sorted(glob.glob(str(SILVER1_DIR / EMBARGO_OUT_SOURCE / "dt=*" / "data.parquet")))
     if not partitions:
         return extract_work_embargoes()
-    return pd.read_parquet(partitions[-1])
+    return pd.read_parquet(str(partitions[-1]))
 
 
 WORK_HOURS_OUT_SOURCE = "construction_work_hours_rules"
@@ -693,7 +693,7 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
 def validate_work_hours_rules_output(path: str, run_date: str) -> str:
     """build_work_hours_rules()가 저장한 결과를 검증한다 —
     validate_embargoes_output()과 동일한 구조."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     cache = load_llm_cache("work_hours")
     if cache.empty:
@@ -734,4 +734,4 @@ def load_built_work_hours_rules() -> pd.DataFrame:
     partitions = sorted(glob.glob(str(SILVER1_DIR / WORK_HOURS_OUT_SOURCE / "dt=*" / "data.parquet")))
     if not partitions:
         return extract_work_hours()
-    return pd.read_parquet(partitions[-1])
+    return pd.read_parquet(str(partitions[-1]))

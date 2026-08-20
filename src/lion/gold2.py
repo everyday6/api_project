@@ -52,6 +52,7 @@ import networkx as nx
 import numpy as np
 import pandas as pd
 
+from src.common import db
 from src.common.config import GOLD2_DIR, SILVER1_DIR
 from src.common.logger import get_logger
 
@@ -118,7 +119,7 @@ def build_dim_segment(dim_segment_base_path: Path = DIM_SEGMENT_BASE_PATH) -> st
     """dim_segment(Silver1)를 읽어 road_class/is_routable/is_two_way/capacity_per_hour/
     lane_miles를 계산해 붙인 완성본을 저장한다."""
 
-    df = pd.read_parquet(dim_segment_base_path)
+    df = pd.read_parquet(str(dim_segment_base_path))
 
     df["road_class"] = _classify_road_class(df)
     df["is_routable"] = (df["road_class"] != "non_routable") & (df["FeatureTyp"] == "0")
@@ -136,9 +137,13 @@ def build_dim_segment(dim_segment_base_path: Path = DIM_SEGMENT_BASE_PATH) -> st
     ]]
 
     GOLD2_DIR.mkdir(parents=True, exist_ok=True)
-    dim_segment.to_parquet(DIM_SEGMENT_PATH, index=False)
+    dim_segment.to_parquet(str(DIM_SEGMENT_PATH), index=False)
 
-    logger.info(f"[lion_gold2] dim_segment(Gold2) {len(dim_segment)}행 저장 -> {DIM_SEGMENT_PATH}")
+    # 서빙 API(gold2/traffic_score.py의 _load_base_data)가 RDS에서 읽으므로
+    # 서빙 테이블도 같이 갱신한다.
+    db.write_table(dim_segment, "dim_segment")
+
+    logger.info(f"[lion_gold2] dim_segment(Gold2) {len(dim_segment)}행 저장 -> {DIM_SEGMENT_PATH} (+ RDS)")
     return str(DIM_SEGMENT_PATH)
 
 
@@ -187,10 +192,10 @@ def build_dim_segment_traffic_score(
     GRAPH_SEGMENT_ADJACENCY_PATH) — gold2가 silver2를 모듈 최상단에서 import하면
     silver2가 gold2의 DIM_SEGMENT_PATH를 import하는 것과 순환참조가 되므로
     피한다."""
-    dim = pd.read_parquet(dim_segment_path, columns=["segment_id", "is_routable", "capacity_per_hour"])
+    dim = pd.read_parquet(str(dim_segment_path), columns=["segment_id", "is_routable", "capacity_per_hour"])
     routable = dim.loc[dim["is_routable"], ["segment_id", "capacity_per_hour"]].copy()
 
-    adj = pd.read_parquet(graph_path)
+    adj = pd.read_parquet(str(graph_path))
     G = nx.from_pandas_edgelist(adj, source="segment_id", target="neighbor_segment_id")
     G.add_nodes_from(routable["segment_id"])  # 인접 없는 고립 세그먼트도 노드로 포함
 
@@ -212,9 +217,11 @@ def build_dim_segment_traffic_score(
 
     silver_root.mkdir(parents=True, exist_ok=True)
     out_path = silver_root / "dim_segment_traffic_score_v0.parquet"
-    out.to_parquet(out_path, index=False)
+    out.to_parquet(str(out_path), index=False)
 
-    logger.info(f"[lion_gold2] traffic_score {len(out)}행 저장 -> {out_path}")
+    db.write_table(out, "dim_segment_traffic_score_v0")
+
+    logger.info(f"[lion_gold2] traffic_score {len(out)}행 저장 -> {out_path} (+ RDS)")
     return str(out_path)
 
 

@@ -74,7 +74,7 @@ def load_bronze(run_date):
 
     logger.info("공사 Bronze 로드: path=%s", path)
 
-    return pq.ParquetFile(path).read(columns=READ_COLS).to_pandas()
+    return pq.ParquetFile(str(path)).read(columns=READ_COLS).to_pandas()
 
 
 def resolve_time_chain(df):
@@ -299,7 +299,7 @@ def build(run_date: str | None = None) -> str:
 
 def validate_output(path: str) -> str:
     """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     validate(df)
     return path
 

@@ -56,7 +56,7 @@ def ingest_taxi_zone_lookup(bronze_root: Path = BRONZE_ROOT) -> Path:
     dest_dir.mkdir(parents=True, exist_ok=True)
     dest_path = dest_dir / "taxi_zone_lookup.parquet"
 
-    df.to_parquet(dest_path, index=False)
+    df.to_parquet(str(dest_path), index=False)
     logger.info(f"[taxi_zone_lookup] {len(df)}행 저장 완료 -> {dest_path}")
     return str(dest_path)
 
