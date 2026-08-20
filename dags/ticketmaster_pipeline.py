@@ -1,7 +1,7 @@
 """
 DAG: ticketmaster_pipeline
 
-Ticketmaster Bronze/Silver + LION segment 매핑까지 담당하는 도메인
+Ticketmaster Bronze/Silver1/Gold1 + LION segment 매핑까지 담당하는 도메인
 파이프라인. event_pipeline과 동일한 이유로, 예전엔 수동(schedule=None)이던
 join_lion의 ticketmaster_lion_mapping을 여기로 흡수해서 daily cron에
 자동으로 편입시켰다.
@@ -102,15 +102,14 @@ def ticketmaster_pipeline():
     bronze_validated >> silver_path
     silver_validated = validate_ticketmaster(silver_path)
 
-    # map_ticketmaster_lion은 지역/활성기간 필터 이전의 전체 ticketmaster
-    # Silver1을 그대로 매칭 대상으로 삼는다(Silver2는 전 지역을 유지한다는
-    # 원칙) — gold1은 별도 병렬 분기로 둔다.
+    # 공용 Silver2의 LION 매핑까지는 지역/기간 필터 없이 전체 Ticketmaster를 유지한다.
     mapping_path = map_ticketmaster_lion()
     silver_validated >> mapping_path
-    validate_map_ticketmaster_lion(mapping_path)
+    mapping_validated = validate_map_ticketmaster_lion(mapping_path)
 
+    # 서비스 대상 선정은 LION 매핑이 끝난 뒤 Gold1에서 수행한다.
     gold1_path = build_ticketmaster_gold1()
-    silver_validated >> gold1_path
+    mapping_validated >> gold1_path
     validate_ticketmaster_gold1(gold1_path)
 
 

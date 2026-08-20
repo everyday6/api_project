@@ -36,10 +36,9 @@ ticketmaster, tlc, taxi_zone)이 각자 Bronze/Silver/Gold 레이어를 쓰고 �
 - `scoring/api.py` → `serving/api.py` 이동
 
 **제외 (후속 작업)**
-- `ticketmaster/venue.py`의 capacity 가중치를 `event_boost.py`에 실제로 연결하는 것 —
-  이번 리팩토링은 파일을 올바른 레이어(Silver2)로 옮기기만 하고, 아직 아무도 호출하지 않는
-  상태 그대로 유지한다. 실제로 연결하면 스코어링 결과값이 바뀌는 **동작 변경**이라 별도
-  작업으로 분리한다.
+- Ticketmaster venue capacity 프록시 연결 — 현재 후보 데이터는 검증된 수집·갱신
+  파이프라인이 없으므로 서비스 점수에서 제외한다. 향후 출처가 검증된 capacity dimension을
+  Bronze/Silver1으로 구축한 뒤 Silver2에서 연결하는 별도 작업으로 분리한다.
 - `taxi_zone/get_manhattan_zone_ids()` 고아 헬퍼의 삭제 여부 — 구현 단계에서 실제 사용처
   재확인 후 결정한다.
 - Airflow DAG의 task 이름을 레이어 표기(`build_silver1_*` 등)에 맞게 전부 바꾸는 세부 작업 —
@@ -108,11 +107,11 @@ data/
 
 ### ticketmaster
 - Silver1 (`ticketmaster/silver1.py`): 중복컬럼제거, id dedup(조용히 drop, 현행 유지),
-  venue JSON파싱(좌표추출), 날짜파싱, 컬럼선택
-- Silver2 (`ticketmaster/silver2.py`, 신규): `venue.py`의 `attach_capacity()` 이관
-  (현재 고아 모듈을 올바른 위치로만 이동, `event_boost` 연결은 이번 범위 제외)
-- Gold1 (`ticketmaster/gold1.py`, 신규): Manhattan bbox필터, run_date 활성필터
-  (Silver에서 이관)
+  venue JSON파싱(좌표추출), venue 이름 정규화, 날짜파싱, 컬럼선택
+- Silver2: 도메인 내부 Silver2는 없음. 공용 `silver2/ticketmaster_lion.py`에서
+  Ticketmaster venue와 LION segment를 연결
+- Gold1 (`ticketmaster/gold1.py`, 신규): Manhattan bbox필터, run_date 활성필터,
+  서비스 제외 venue 필터
 - Gold2: 자체 없음
 
 ### lion
@@ -173,5 +172,6 @@ data/
 ## 남은 결정 사항
 
 - tlc의 결측치 정책은 그대로 유지하기로 확정(위 "제외" 참고)
-- `venue.py` capacity 연결, `get_manhattan_zone_ids()` 처리, DAG task 이름 세부 사항은
-  구현 계획 단계에서 다룬다
+- Ticketmaster capacity는 검증된 기준 데이터 파이프라인을 마련하기 전까지 점수에서
+  제외한다. `get_manhattan_zone_ids()` 처리와 DAG task 이름 세부 사항은 구현 계획
+  단계에서 다룬다

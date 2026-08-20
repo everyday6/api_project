@@ -3,18 +3,20 @@ Silver1 — TicketMaster
 
 - id 중복 제거
 - venue JSON 파싱 → 장소명, 좌표
+- venue 이름 표준화
 - 행사 날짜 보존
 - 시간이 있을 때만 start_ts 생성
 - 종료 시각은 원본에 있을 때만 사용
 - Traffic Score에 필요한 최소 컬럼만 저장
 
 맨해튼 범위 필터, run_date 기준 지난 행사 제외는 src/ticketmaster/gold1.py에서
-한다. 거리 계산 및 좌표계 변환은 Gold2에서 처리한다.
+한다. LION 거리 계산·좌표계 변환은 공용 Silver2에서 처리한다.
 """
 
 import sys
 import os
 import json
+import re
 from pathlib import Path
 from datetime import date
 
@@ -29,6 +31,52 @@ from common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="ticketmaster_silver")
 
 SOURCE = "ticketmaster"
+
+# TicketMaster가 같은 장소명 뒤에 붙이는 지역 접미어
+SUFFIX_PATTERNS = [
+    r"\s*-\s*NY$",
+    r"\s*-\s*NYC$",
+    r"\s*-\s*NEW YORK$",
+    r"\s+NEW YORK$",
+    r"\s+NYC$",
+]
+
+# 접미어 제거만으로 합쳐지지 않는 실제 중복 표기
+MANUAL_VENUE_ALIASES = {
+    "JACOBS THEATRE": "BERNARD B JACOBS THEATRE",
+    "STERN AUDITORIUM / PERELMAN STAGE AT CARNEGIE HALL": "CARNEGIE HALL",
+    "JACOB JAVITS CENTER": "JAVITS CONVENTION CENTER",
+    "IRVING PLAZA POWERED BY VERIZON 5G": "IRVING PLAZA",
+    "NIGHTCLUB 101": "NIGHT CLUB 101",
+    "DR2": "DR2 THEATRE",
+    "RACKET": "RACKET NYC",
+    "HILL COUNTRY LIVE": "HILL COUNTRY",
+    "HILL COUNTRY NYC": "HILL COUNTRY",
+    "HARD ROCK CAFE": "HARD ROCK CAFE NYC",
+    "LINCOLN CENTER - VIVIAN BEAUMONT": "LINCOLN CENTER - VIVIAN BEAUMONT THEATRE",
+    "LINCOLN CENTER - MITZI E NEWHOUSE": "LINCOLN CENTER - MITZI E NEWHOUSE THEATRE",
+    "CIRCLE LINE CRUISES, PIER 83": "CIRCLE LINE CRUISES",
+}
+
+
+def normalize_venue(value) -> str | None:
+    """venue 이름의 의미는 유지하면서 비교 가능한 표기로 정규화한다."""
+    if not isinstance(value, str):
+        return None
+
+    name = re.sub(r"\s+", " ", value).strip().upper()
+    if not name:
+        return None
+
+    name = name.replace(".", "").replace("'", "").replace("\u2019", "")
+    name = re.sub(r"\s*-\s*", " - ", name)
+    name = re.sub(r"\bTHEATER\b", "THEATRE", name)
+
+    for pattern in SUFFIX_PATTERNS:
+        name = re.sub(pattern, "", name)
+
+    name = re.sub(r"\s+", " ", name).strip()
+    return MANUAL_VENUE_ALIASES.get(name, name)
 
 
 def load_bronze(run_date):
@@ -124,7 +172,10 @@ def transform(df):
         df["event_date"].notna()
     ].copy()
 
-    # 5. 시작 시각
+    # 5. venue 이름 표준화 — 원본 값을 새로 판단하지 않고 표현만 통일한다.
+    df["venue_name_norm"] = df["venue_name"].map(normalize_venue)
+
+    # 6. 시작 시각
     # 시간이 있는 경우에만 timestamp 생성
     df["start_ts"] = pd.NaT
 
@@ -148,7 +199,7 @@ def transform(df):
         errors="coerce",
     )
 
-    # 6. 종료 시각
+    # 7. 종료 시각
     df["end_ts"] = pd.NaT
 
     has_end = (
@@ -178,7 +229,7 @@ def transform(df):
         errors="coerce",
     )
 
-    # 7. 필요한 컬럼만 — lat/lon/event_date는 gold1의 지역·활성기간
+    # 8. 필요한 컬럼만 — lat/lon/event_date는 gold1의 지역·활성기간
     # 필터가 써야 하므로 남겨둔다.
     return df[[
         "id",
@@ -186,6 +237,7 @@ def transform(df):
         "start_ts",
         "end_ts",
         "venue_name",
+        "venue_name_norm",
         "lat",
         "lon",
     ]].rename(

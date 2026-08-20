@@ -1,5 +1,5 @@
 """
-Ticketmaster Silver -> LION segment mapping
+Ticketmaster Silver1 -> LION segment mapping
 
 역할
 - Ticketmaster venue 좌표를 LION segment에 매핑
@@ -76,18 +76,18 @@ def load_ticketmaster(
 
     if not path.exists():
         raise FileNotFoundError(
-            f"Ticketmaster Silver 파일 없음: {path}"
+            f"Ticketmaster Silver1 파일 없음: {path}"
         )
 
     logger.info(
-        "Ticketmaster Silver 로드 시작: path=%s",
+        "Ticketmaster Silver1 로드 시작: path=%s",
         path,
     )
 
     df = pd.read_parquet(str(path))
 
     logger.info(
-        "Ticketmaster Silver 로드 완료: rows=%d columns=%d",
+        "Ticketmaster Silver1 로드 완료: rows=%d columns=%d",
         len(df),
         len(df.columns),
     )
@@ -134,6 +134,7 @@ def validate_ticketmaster_input(
         "start_ts",
         "end_ts",
         "venue_name",
+        "venue_name_norm",
         "lat",
         "lon",
     ]
@@ -151,7 +152,7 @@ def validate_ticketmaster_input(
 
     if df.empty:
         raise ValueError(
-            "Ticketmaster Silver가 비었습니다."
+            "Ticketmaster Silver1이 비었습니다."
         )
 
     if df["event_id"].isna().any():
@@ -470,6 +471,7 @@ def map_ticketmaster_to_lion(
         "start_ts",
         "end_ts",
         "venue_name",
+        "venue_name_norm",
         "lat",
         "lon",
         "segment_id",

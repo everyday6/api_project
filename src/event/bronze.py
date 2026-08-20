@@ -15,7 +15,7 @@ from common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="event_bronze")
 
 SOURCE = "event"
-ORDER = "event_id"
+ORDER = "event_id, :id"
 
 
 def build(run_date: str | None = None) -> str:
