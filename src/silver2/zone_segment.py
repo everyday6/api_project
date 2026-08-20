@@ -24,13 +24,14 @@ from __future__ import annotations
 
 import io
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pandas as pd
 from shapely import wkt
 from shapely.strtree import STRtree
 
-from src.common.config import SILVER1_DIR, SILVER2_DIR
+from src.common.config import SILVER1_DIR, SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
 from src.lion.gold2 import DIM_SEGMENT_PATH
 
@@ -44,12 +45,33 @@ MAP_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_zone_segment.parquet"
 ZONE_COLUMNS = ["LocationID", "borough"]
 
 
-def _load_zones(shapefile_path: Path) -> pd.DataFrame:
-    """
-    TLC Taxi Zone shapefile을 읽어 (zone_id, borough, geom) 테이블로 만든다.
-    LION과 마찬가지로 CONVERT_TO_LINEAR를 걸어 곡선 geometry가 섞여도 shapely가
-    읽을 수 있게 한다(폴리곤에서는 흔치 않지만 방어적으로 동일하게 처리).
-    """
+def _stage_shapefile_locally(shapefile_path, work_dir: Path) -> Path:
+    """ogr2ogr가 sidecar 파일과 함께 읽도록 S3 Shapefile 폴더를 로컬에 받는다."""
+
+    if isinstance(shapefile_path, Path):
+        return shapefile_path
+
+    local_dir = work_dir / shapefile_path.parent.name
+    downloaded_dir = Path(shapefile_path.parent.download_to(local_dir))
+    local_shapefile = downloaded_dir / shapefile_path.name
+
+    required_files = [
+        local_shapefile,
+        local_shapefile.with_suffix(".dbf"),
+        local_shapefile.with_suffix(".shx"),
+    ]
+    missing = [path.name for path in required_files if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Taxi Zone Shapefile 로컬 다운로드 누락: {missing}"
+        )
+
+    return local_shapefile
+
+
+def _load_zones_from_local(shapefile_path: Path) -> pd.DataFrame:
+    """로컬 Taxi Zone Shapefile을 읽어 DataFrame으로 변환한다."""
+
     cmd = [
         "ogr2ogr",
         "-f", "CSV",
@@ -68,6 +90,21 @@ def _load_zones(shapefile_path: Path) -> pd.DataFrame:
     zones = pd.read_csv(io.StringIO(result.stdout))
     zones["geom"] = zones["WKT"].apply(wkt.loads)
     return zones[["LocationID", "borough", "geom"]]
+
+
+def _load_zones(shapefile_path: Path) -> pd.DataFrame:
+    """
+    TLC Taxi Zone shapefile을 읽어 (zone_id, borough, geom) 테이블로 만든다.
+    LION과 마찬가지로 CONVERT_TO_LINEAR를 걸어 곡선 geometry가 섞여도 shapely가
+    읽을 수 있게 한다(폴리곤에서는 흔치 않지만 방어적으로 동일하게 처리).
+    """
+    if isinstance(shapefile_path, Path):
+        return _load_zones_from_local(shapefile_path)
+
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="taxi_zone_", dir=TMP_DIR) as tmp:
+        local_shapefile = _stage_shapefile_locally(shapefile_path, Path(tmp))
+        return _load_zones_from_local(local_shapefile)
 
 
 def build_map_zone_segment(
