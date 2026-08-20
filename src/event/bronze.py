@@ -58,7 +58,7 @@ def build(run_date: str | None = None) -> str:
 
 def validate_output(path: str) -> str:
     """저장된 Bronze 파일에 행이 실제로 있는지 확인한다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     if df.empty:
         raise ValueError(f"{SOURCE}: 받은 데이터가 없음")
     return path

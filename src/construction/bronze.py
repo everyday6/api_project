@@ -204,7 +204,7 @@ def validate_output(path: str) -> str:
     if not Path(path).exists():
         _handle_critical_failure([f"bronze_file_missing({path})"], path)
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     critical_results = validate_pandas_dataframe(
         df,

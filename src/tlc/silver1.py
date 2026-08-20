@@ -21,7 +21,7 @@ from airflow.sdk import Asset
 
 from src.common.config import SILVER1_DIR
 from src.common.logger import get_logger
-from src.common.spark import get_spark
+from src.common.spark import get_spark, to_spark_path
 from src.tlc.silver1_transform import transform
 
 
@@ -131,7 +131,7 @@ def build_silver(
             # -----------------------------------------
 
             df = spark.read.parquet(
-                str(bronze_path)
+                to_spark_path(bronze_path)
             )
 
             # -----------------------------------------
@@ -150,7 +150,7 @@ def build_silver(
             silver_df.write.mode(
                 "overwrite"
             ).parquet(
-                str(silver_path)
+                to_spark_path(silver_path)
             )
 
             logger.info(

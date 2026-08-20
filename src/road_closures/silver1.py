@@ -29,7 +29,7 @@ def load_road_closures() -> pd.DataFrame:
     if path is None:
         raise FileNotFoundError("road_closures bronze 파일이 없습니다 — ingest_weekly가 아직 안 돈 것 같습니다.")
 
-    df = pd.read_parquet(path, columns=RC_READ_COLS)
+    df = pd.read_parquet(str(path), columns=RC_READ_COLS)
     df = df.rename(columns={
         "onstreetname": "on_street",
         "fromstreetname": "from_street",

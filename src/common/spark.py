@@ -10,6 +10,15 @@ from pyspark.sql import SparkSession
 from src.common.config import AWS_REGION
 
 
+def to_spark_path(path) -> str:
+    """S3Path(또는 문자열)를 Spark/Hadoop이 이해하는 s3a:// 문자열로 바꾼다.
+
+    cloudpathlib은 "s3://"를 쓰지만 Hadoop S3A 커넥터는 "s3a://"만 인식한다.
+    """
+
+    return str(path).replace("s3://", "s3a://", 1)
+
+
 def get_spark() -> SparkSession:
     """Spark Session 반환"""
 

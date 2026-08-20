@@ -284,7 +284,7 @@ def load_llm_cache(category: str) -> pd.DataFrame:
     path = _CACHE_PATH_BY_CATEGORY[category]
     if not path.exists():
         return pd.DataFrame(columns=_cache_columns(category))
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     # 컬럼이 빠져 있을 수 있는 두 가지 경우 모두 기본값으로 채운다:
     # (1) 이 기능 이전에 쌓인 기존 embargo_llm_cache(마이그레이션 스크립트 없음),
     # (2) 이번 실행에서 새로 쓴 배치가 전부 검증 실패라서(성공한 행이 하나도
@@ -435,7 +435,7 @@ def _load_quarantine(category: str) -> pd.DataFrame:
     path = _quarantine_path(category)
     if not path.exists():
         return pd.DataFrame(columns=QUARANTINE_COLUMNS)
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def write_quarantine(category: str, candidates: pd.DataFrame, run_date: str) -> None:
@@ -550,7 +550,7 @@ def _load_quality_history(category: str) -> pd.DataFrame:
     path = _quality_history_path(category)
     if not path.exists():
         return pd.DataFrame(columns=QUALITY_HISTORY_COLUMNS)
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def compute_and_log_quality_report(

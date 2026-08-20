@@ -77,7 +77,7 @@ def build_map_zone_segment(
 ) -> str:
     """dim_segment(routable만)와 Taxi Zone을 중점 기준 1:1로 매핑한다."""
 
-    segments = pd.read_parquet(dim_segment_path)
+    segments = pd.read_parquet(str(dim_segment_path))
     segments = segments.loc[segments["is_routable"], ["segment_id", "geometry"]].copy()
     logger.info(f"[map_zone_segment] 매핑 대상(is_routable=True): {len(segments)}행")
 
@@ -120,7 +120,7 @@ def build_map_zone_segment(
 
     silver_root.mkdir(parents=True, exist_ok=True)
     map_zone_segment_path = silver_root / "map_zone_segment.parquet"
-    map_zone_segment.to_parquet(map_zone_segment_path, index=False)
+    map_zone_segment.to_parquet(str(map_zone_segment_path), index=False)
 
     logger.info(f"[map_zone_segment] {len(map_zone_segment)}행 저장 -> {map_zone_segment_path}")
     return str(map_zone_segment_path)
@@ -128,7 +128,7 @@ def build_map_zone_segment(
 
 def validate_map_zone_segment(path: str, dim_segment_path: Path = DIM_SEGMENT_PATH) -> str:
     """map_zone_segment.parquet의 최소 불변식을 확인한다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     assert df["segment_id"].is_unique, "segment_id 중복 발견 (1:1 매핑 깨짐)"
     assert df["zone_id"].between(1, 263).all(), "zone_id가 TLC 공식 범위(1~263) 밖입니다"
@@ -136,7 +136,7 @@ def validate_map_zone_segment(path: str, dim_segment_path: Path = DIM_SEGMENT_PA
 
     # 매칭률은 "지금 이 실행"의 routable 세그먼트 수 대비로 계산한다 — 분기마다
     # LION 행 수 자체가 바뀌므로 예전 실행의 숫자를 하드코딩하면 의미가 없어진다.
-    routable_total = int(pd.read_parquet(dim_segment_path, columns=["is_routable"])["is_routable"].sum())
+    routable_total = int(pd.read_parquet(str(dim_segment_path), columns=["is_routable"])["is_routable"].sum())
     match_rate = len(df) / routable_total
     assert match_rate >= 0.95, (
         f"매칭률이 비정상적으로 낮습니다: {match_rate:.1%} ({len(df)}/{routable_total}, 직접 확인한 기준 약 99.4%)"

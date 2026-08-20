@@ -32,7 +32,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import SILVER2_DIR
+from src.common import db
+from src.common.config import SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.lion.silver1 import LION_BRONZE_ROOT, _find_gdb, _latest_bronze_version
@@ -74,14 +75,17 @@ def build_graph_segment_adjacency(
     gdb_path = _find_gdb(version_dir)
     logger.info(f"[graph_segment_adjacency] 입력 bronze: {gdb_path}")
 
-    tmp_csv = silver_root / "lion_nodes_tmp.csv"
+    # ogr2ogr(네이티브 GDAL 바이너리)은 S3 경로에 못 쓰므로, silver_root(S3)가
+    # 아니라 진짜 로컬 스크래치 공간(TMP_DIR)에 만든다.
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_csv = TMP_DIR / "lion_nodes_tmp.csv"
     _gdb_to_node_csv(gdb_path, tmp_csv)
 
     nodes = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
     # dim_segment와 동일한 dedupe (중복 원인은 lion/silver1.py 문서 참고 — 순수 중복 행)
     nodes = nodes.drop_duplicates(subset="SegmentID", keep="first")
 
-    dim = pd.read_parquet(dim_segment_path, columns=["segment_id", "is_routable"])
+    dim = pd.read_parquet(str(dim_segment_path), columns=["segment_id", "is_routable"])
     routable_ids = set(dim.loc[dim["is_routable"], "segment_id"])
     nodes = nodes[nodes["SegmentID"].isin(routable_ids)]
     logger.info(f"[graph_segment_adjacency] 대상(is_routable=True) 세그먼트: {len(nodes)}건")
@@ -101,9 +105,13 @@ def build_graph_segment_adjacency(
 
     graph_path = silver_root / "graph_segment_adjacency.parquet"
     silver_root.mkdir(parents=True, exist_ok=True)
-    graph.to_parquet(graph_path, index=False)
+    graph.to_parquet(str(graph_path), index=False)
 
-    logger.info(f"[graph_segment_adjacency] {len(graph)}행 저장 -> {graph_path}")
+    # 서빙 API(gold2/closure_penalty.py의 load_adjacency)가 RDS에서 읽으므로
+    # 서빙 테이블도 같이 갱신한다.
+    db.write_table(graph, "graph_segment_adjacency")
+
+    logger.info(f"[graph_segment_adjacency] {len(graph)}행 저장 -> {graph_path} (+ RDS)")
 
     tmp_csv.unlink(missing_ok=True)
     return str(graph_path)
@@ -111,7 +119,7 @@ def build_graph_segment_adjacency(
 
 def validate_graph_segment_adjacency(path: str, dim_segment_path: Path = DIM_SEGMENT_PATH) -> str:
     """graph_segment_adjacency.parquet의 최소 불변식을 확인한다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     assert (df["segment_id"] != df["neighbor_segment_id"]).all(), "자기 자신과의 인접 쌍 발견"
 
@@ -123,7 +131,7 @@ def validate_graph_segment_adjacency(path: str, dim_segment_path: Path = DIM_SEG
     assert not reverse_missing, f"반대 방향 쌍이 없는 행 {len(reverse_missing)}개 (예: {reverse_missing[:3]})"
 
     # 모든 segment_id/neighbor_segment_id가 dim_segment의 routable 세그먼트 안에 있는지
-    dim = pd.read_parquet(dim_segment_path, columns=["segment_id", "is_routable"])
+    dim = pd.read_parquet(str(dim_segment_path), columns=["segment_id", "is_routable"])
     routable_ids = set(dim.loc[dim["is_routable"], "segment_id"])
     unknown = (set(df["segment_id"]) | set(df["neighbor_segment_id"])) - routable_ids
     assert not unknown, f"routable 대상 밖의 segment_id가 섞여 있음: {len(unknown)}건"

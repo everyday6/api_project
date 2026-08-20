@@ -19,6 +19,7 @@ from pathlib import Path
 import networkx as nx
 import pandas as pd
 
+from src.common import db
 from src.common.config import SILVER1_DIR, SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import clean_street, save_parquet
@@ -178,7 +179,7 @@ def load_event(run_date: str) -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"Event Silver 파일 없음: {path}")
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     logger.info("Event Silver 로드: rows=%d path=%s", len(df), path)
 
@@ -192,7 +193,7 @@ def load_lion() -> pd.DataFrame:
     if not path.exists():
         raise FileNotFoundError(f"LION dim_segment 없음: {path}")
 
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
 
     logger.info("LION 로드: rows=%d path=%s", len(df), path)
 
@@ -605,6 +606,10 @@ def build_event_lion_mapping(run_date: str) -> str:
 
     path = save_parquet(result, output_dir(run_date))
 
+    # 서빙 API(event_boost.load_ground_zero_records)가 RDS에서 읽으므로,
+    # S3 dt= 파티션과 동일한 dt로 RDS에도 쓴다.
+    db.write_partitioned_table(result, "map_event_lion", run_date)
+
     logger.info(
         "Event-LION 매핑 빌드 완료: rows=%d elapsed=%.2fs path=%s",
         len(result),
@@ -617,7 +622,7 @@ def build_event_lion_mapping(run_date: str) -> str:
 
 def validate_output(path: str) -> str:
     """build_event_lion_mapping()이 저장한 결과를 다시 읽어 validate_mapping()을 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     validate_mapping(df)
     return path
 

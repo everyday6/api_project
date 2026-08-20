@@ -29,7 +29,7 @@ def load_silver1(run_date: str) -> pd.DataFrame:
     path = SILVER1_DIR / SOURCE / f"dt={run_date}" / "data.parquet"
     if not path.exists():
         raise FileNotFoundError(f"{SOURCE}: Silver1 파일 없음 - {path}")
-    return pd.read_parquet(path)
+    return pd.read_parquet(str(path))
 
 
 def filter_for_traffic_score(df: pd.DataFrame, run_date: str) -> pd.DataFrame:
@@ -87,7 +87,7 @@ def build(run_date: str | None = None) -> str:
 
 def validate_output(path: str) -> str:
     """build()가 저장한 결과를 다시 읽어 validate()를 돌린다."""
-    df = pd.read_parquet(path)
+    df = pd.read_parquet(str(path))
     validate(df)
     return path
 

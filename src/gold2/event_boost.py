@@ -37,6 +37,7 @@ from __future__ import annotations
 
 import pandas as pd
 
+from src.common import db
 from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
 from src.gold2.closure_penalty import spread_with_decay
@@ -45,6 +46,11 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="event_boost")
 
 MAP_EVENT_LION_DIR = SILVER2_DIR / "event_lion"
 MAP_TICKETMASTER_LION_DIR = SILVER2_DIR / "ticketmaster_lion"
+
+# RDS 서빙 테이블 이름(dt 컬럼으로 파티션 흉내) — S3의 위 두 디렉터리와
+# 같은 데이터를 들고 있다. 서빙 API는 이쪽에서 읽는다.
+MAP_EVENT_LION_TABLE = "map_event_lion"
+MAP_TICKETMASTER_LION_TABLE = "map_ticketmaster_lion"
 
 # TODO(팀 검토 필요): 근거 없는 초안 — closure_type별 "차량 통행에 얼마나
 # 방해되는가"를 정성적으로 매긴 가중치.
@@ -75,9 +81,9 @@ def load_ground_zero_records(event_mapping_dt: str, ticketmaster_mapping_dt: str
     end_ts x weight 레코드로 만든다. weight는 그 행이 활성일 때 이 segment에
     기여하는 강도(진앙 intensity 집계의 기본 단위).
     """
-    event_path = MAP_EVENT_LION_DIR / f"dt={event_mapping_dt}" / "data.parquet"
-    events = pd.read_parquet(
-        event_path,
+    events = db.read_partition(
+        MAP_EVENT_LION_TABLE,
+        event_mapping_dt,
         columns=["segment_id", "start_ts", "end_ts", "closure_type", "mapping_status"],
     )
     events = events[(events["mapping_status"] == "matched") & events["segment_id"].notna()]
@@ -85,8 +91,11 @@ def load_ground_zero_records(event_mapping_dt: str, ticketmaster_mapping_dt: str
     events["weight"] = events["closure_type"].map(EVENT_CLOSURE_TYPE_WEIGHT).fillna(EVENT_CLOSURE_TYPE_DEFAULT_WEIGHT)
     events = events[["segment_id", "start_ts", "end_ts", "weight"]]
 
-    tm_path = MAP_TICKETMASTER_LION_DIR / f"dt={ticketmaster_mapping_dt}" / "data.parquet"
-    tm = pd.read_parquet(tm_path, columns=["segment_id", "start_ts", "end_ts"])
+    tm = db.read_partition(
+        MAP_TICKETMASTER_LION_TABLE,
+        ticketmaster_mapping_dt,
+        columns=["segment_id", "start_ts", "end_ts"],
+    )
     tm = tm[tm["segment_id"].notna() & tm["start_ts"].notna()].copy()
     # end_ts가 없으면(대부분) start_ts + 기본 지속시간으로 가정한다.
     fallback_end = tm["start_ts"] + pd.Timedelta(hours=TICKETMASTER_DEFAULT_DURATION_HOURS)

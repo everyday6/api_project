@@ -40,7 +40,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import BRONZE_DIR, SILVER1_DIR
+from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
 from src.common.utils import clean_street
 
@@ -127,9 +127,12 @@ def build_dim_segment_base(
     gdb_path = _find_gdb(version_dir)
     logger.info(f"[lion_silver] 입력 bronze: {gdb_path}")
 
+    # ogr2ogr(네이티브 GDAL 바이너리)은 S3 경로에 못 쓰므로, silver1_root(S3)가
+    # 아니라 진짜 로컬 스크래치 공간(TMP_DIR)에 만든다.
     # 주의: 파일명이 "_"로 시작하면 Hadoop/Spark 계열 도구가 숨김 파일(_SUCCESS 등과
     # 동일 취급)로 보고 무시하는 경우가 있어(직접 겪은 문제) 밑줄로 시작하지 않게 짓는다.
-    tmp_csv = silver1_root / "lion_flat_tmp.csv"
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    tmp_csv = TMP_DIR / "lion_flat_tmp.csv"
     _gdb_to_flat_csv(gdb_path, tmp_csv)
 
     df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
@@ -187,7 +190,7 @@ def build_dim_segment_base(
     dim_segment_path = silver1_root / "dim_segment.parquet"
 
     silver1_root.mkdir(parents=True, exist_ok=True)
-    dim_segment.to_parquet(dim_segment_path, index=False)
+    dim_segment.to_parquet(str(dim_segment_path), index=False)
 
     logger.info(f"[lion_silver] dim_segment(Silver1) {len(dim_segment)}행 저장 -> {dim_segment_path}")
 
