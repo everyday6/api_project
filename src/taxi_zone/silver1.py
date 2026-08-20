@@ -14,17 +14,42 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import tempfile
 from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import BRONZE_DIR, SILVER1_DIR
+from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="taxi_zone")
 
 BRONZE_ROOT = BRONZE_DIR / "taxi_zone"
 SILVER1_ROOT = SILVER1_DIR / "taxi_zone"
+
+
+def _stage_shapefile_locally(shapefile_path, work_dir: Path) -> Path:
+    """ogrinfo가 읽도록 S3 Shapefile과 필수 sidecar 파일을 로컬에 받는다."""
+
+    if isinstance(shapefile_path, Path):
+        return shapefile_path
+
+    local_dir = work_dir / shapefile_path.parent.name
+    downloaded_dir = Path(shapefile_path.parent.download_to(local_dir))
+    local_shapefile = downloaded_dir / shapefile_path.name
+
+    required_files = [
+        local_shapefile,
+        local_shapefile.with_suffix(".dbf"),
+        local_shapefile.with_suffix(".shx"),
+    ]
+    missing = [path.name for path in required_files if not path.exists()]
+    if missing:
+        raise FileNotFoundError(
+            f"Taxi Zone Shapefile 로컬 다운로드 누락: {missing}"
+        )
+
+    return local_shapefile
 
 
 def validate_taxi_zone_lookup(path: str) -> str:
@@ -51,16 +76,17 @@ def validate_taxi_zone_lookup(path: str) -> str:
     return path
 
 
-def validate_taxi_zone_shapefile(path: str) -> str:
+def validate_taxi_zone_shapefile(path) -> str:
     """taxi_zones shapefile이 실제로 열리고 zone 폴리곤 개수가 예상 범위인지 확인한다."""
-    shapefile_path = Path(path) / "taxi_zones" / "taxi_zones.shp"
-    if not shapefile_path.exists():
-        raise FileNotFoundError(f"taxi_zones.shp가 없습니다: {shapefile_path}")
+    shapefile_path = path / "taxi_zones" / "taxi_zones.shp"
 
-    result = subprocess.run(
-        ["ogrinfo", "-so", str(shapefile_path), "taxi_zones"],
-        capture_output=True, text=True,
-    )
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="taxi_zone_validate_", dir=TMP_DIR) as tmp:
+        local_shapefile = _stage_shapefile_locally(shapefile_path, Path(tmp))
+        result = subprocess.run(
+            ["ogrinfo", "-so", str(local_shapefile), "taxi_zones"],
+            capture_output=True, text=True,
+        )
     if result.returncode != 0:
         logger.error(f"[taxi_zone_shapefile] ogrinfo 실패: {result.stderr}")
         raise RuntimeError(f"shapefile을 열 수 없습니다: {result.stderr}")
@@ -83,12 +109,23 @@ def build(
     shapefile_dir = bronze_root / "shapefile"
 
     validate_taxi_zone_lookup(str(lookup_path))
-    validate_taxi_zone_shapefile(str(shapefile_dir))
+    validate_taxi_zone_shapefile(shapefile_dir)
 
     silver1_root.mkdir(parents=True, exist_ok=True)
 
-    shutil.copy(lookup_path, silver1_root / "taxi_zone_lookup.parquet")
-    shutil.copytree(shapefile_dir, silver1_root / "shapefile", dirs_exist_ok=True)
+    silver_lookup_path = silver1_root / "taxi_zone_lookup.parquet"
+    silver_shapefile_dir = silver1_root / "shapefile"
+
+    if isinstance(lookup_path, Path):
+        shutil.copy(lookup_path, silver_lookup_path)
+        shutil.copytree(shapefile_dir, silver_shapefile_dir, dirs_exist_ok=True)
+    else:
+        lookup_path.copy(silver_lookup_path)
+        shapefile_dir.copytree(silver_shapefile_dir)
+
+    silver_shapefile = silver_shapefile_dir / "taxi_zones" / "taxi_zones.shp"
+    if not silver_lookup_path.exists() or not silver_shapefile.exists():
+        raise RuntimeError(f"Taxi Zone Silver1 저장 검증 실패: {silver1_root}")
 
     logger.info(f"[taxi_zone] Silver1 저장 완료 -> {silver1_root}")
-    return silver1_root
+    return str(silver1_root)
