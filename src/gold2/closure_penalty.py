@@ -343,16 +343,23 @@ def get_nearby_closures(
     hour: int,
     adjacency: dict,
     max_hops: int = MAX_HOPS,
+    details: pd.DataFrame | None = None,
 ) -> list[dict]:
     """
     segment_id 기준 max_hops 이내에서, (query_date, hour) 시점에 실제로 활성인
     공사/통제를 홉 거리와 함께 반환한다 — 대시보드 "현재 영향받는 공사" 목록용.
     가까운 순(홉 오름차순, 그다음 시작일순)으로 정렬해서 반환한다.
+
+    details를 넘기면 load_ground_zero_details() 재로딩을 생략한다 — 이게
+    map_road_control_segment(전 지역, 백만 건대) 전체를 매번 다시 읽는
+    비용이라 호출부가 캐싱해서 넘기는 걸 전제로 한다(traffic_score.py 참고).
+    안 넘기면(None) 직접 로드한다.
     """
     weekday = date.fromisoformat(query_date).weekday()
     hops_by_segment = _segments_within_hops(segment_id, adjacency, max_hops)
 
-    details = load_ground_zero_details(mapping_dt)
+    if details is None:
+        details = load_ground_zero_details(mapping_dt)
     nearby = details[details["segment_id"].isin(hops_by_segment.keys())]
     if nearby.empty:
         return []
@@ -393,7 +400,9 @@ def get_nearby_closures(
     return rows
 
 
-def get_active_closures(mapping_dt: str, query_date: str, hour: int) -> list[dict]:
+def get_active_closures(
+    mapping_dt: str, query_date: str, hour: int, details: pd.DataFrame | None = None
+) -> list[dict]:
     """
     (query_date, hour) 시점에 실제로 활성인 공사/통제 전체 목록 — get_nearby_closures()
     와 달리 특정 segment 인접 여부와 무관하게 맨해튼 전체를 대상으로 한다.
@@ -401,9 +410,12 @@ def get_active_closures(mapping_dt: str, query_date: str, hour: int) -> list[dic
     permit이 여러 segment_id에 매핑된 경우 대표 segment_id 하나만 남긴다
     (지도 이동/선택 앵커로 아무 세그먼트나 하나면 충분하므로).
     시작일 오름차순으로 정렬해서 반환한다.
+
+    details는 get_nearby_closures() 참고 — 넘기면 재로딩을 생략한다.
     """
     weekday = date.fromisoformat(query_date).weekday()
-    details = load_ground_zero_details(mapping_dt)
+    if details is None:
+        details = load_ground_zero_details(mapping_dt)
 
     active = details[
         _date_mask(query_date, details["work_start_ts"], details["work_end_ts"])
@@ -482,6 +494,7 @@ def get_newly_issued_closures(
     query_date: str,
     permit_types: pd.DataFrame | None = None,
     embargoes_by_permit: dict[str, list[dict]] | None = None,
+    details: pd.DataFrame | None = None,
 ) -> list[dict]:
     """
     query_date에 새로 발급된(permit_issue_ts) 공사 permit 목록 —
@@ -502,15 +515,17 @@ def get_newly_issued_closures(
     같이 내려줘서 "왜 여러 건처럼 보였는지"(규제 항목이 다름)를 사용자가
     확인할 수 있게 한다.
 
-    permit_types/embargoes_by_permit을 넘기면 각각 permit_type(공사 종류),
-    embargoes(행사로 인한 임시 중단 기간 목록)를 결과에 붙인다 — 둘 다
-    load에 비용이 있어(embargoes는 특히 Bronze 전체 스캔) 호출부가 캐싱해서
-    넘기는 걸 전제로 한다(traffic_score.py 참고). 안 넘기면(None) 각각
-    permit_type=None, embargoes=[]로 채운다.
+    permit_types/embargoes_by_permit/details를 넘기면 각각 permit_type(공사
+    종류), embargoes(행사로 인한 임시 중단 기간 목록), get_ground_zero_details()
+    결과를 그대로 쓴다 — 셋 다 load에 비용이 있어(embargoes는 특히 Bronze
+    전체 스캔) 호출부가 캐싱해서 넘기는 걸 전제로 한다(traffic_score.py
+    참고). 안 넘기면(None) 각각 직접 로드/permit_type=None, embargoes=[]로
+    채운다.
 
     발급 시각 오름차순으로 정렬해서 반환한다.
     """
-    details = load_ground_zero_details(mapping_dt)
+    if details is None:
+        details = load_ground_zero_details(mapping_dt)
     target = pd.Timestamp(query_date)
 
     issued_today = details[
@@ -691,6 +706,23 @@ def compute_hourly_penalty(
     return pd.concat(frames, ignore_index=True)
 
 
+def find_exclude_site_row(records: pd.DataFrame, exclude_site: dict) -> pd.DataFrame:
+    """exclude_site(6개 필드)에 매칭되는 레코드 한 행 — records 전체(현재
+    76만 건대)에 대한 boolean mask라 시간대별로 24번 반복하면(실측 24회에
+    ~2.5초) 그만큼 낭비다. hour와 무관한 부분이라 compute_site_exclusion_delta()
+    에서 떼어내 호출부(get_traffic_score_hourly 루프)가 한 번만 계산해
+    캐싱해서 넘기게 한다(traffic_score.py 참고)."""
+    match = (
+        (records["on_street"] == exclude_site["on_street"])
+        & (records["from_street"] == exclude_site["from_street"])
+        & (records["to_street"] == exclude_site["to_street"])
+        & (records["work_start_ts"] == pd.Timestamp(exclude_site["work_start_ts"]))
+        & (records["work_end_ts"] == pd.Timestamp(exclude_site["work_end_ts"]))
+        & (records["segment_id"] == exclude_site["segment_id"])
+    )
+    return records[match].head(1)
+
+
 def compute_site_exclusion_delta(
     records: pd.DataFrame,
     exclude_site: dict,
@@ -700,6 +732,7 @@ def compute_site_exclusion_delta(
     target_segment_id: str,
     max_hops: int = MAX_HOPS,
     decay: dict[int, float] = HOP_DECAY,
+    site_row: pd.DataFrame | None = None,
 ) -> float:
     """exclude_site 진앙 레코드 하나가 (query_date, hour)에 활성이면서
     target_segment_id에 hop 감쇠로 기여하는 intensity량 — "도시 전체 결과에서
@@ -716,19 +749,15 @@ def compute_site_exclusion_delta(
     감쇠값 하나만 돌려준다 — 호출부(get_traffic_score)가 캐싱된 전체
     intensity에서 이 값을 빼기만 하면 된다.
 
+    site_row를 넘기면 find_exclude_site_row() 재계산을 생략한다(위 참고).
+    안 넘기면(None) 직접 찾는다.
+
     exclude_site와 매칭되는 레코드가 없거나(이미 지워졌거나 오타 등), 그
     시각에 비활성이거나, target_segment_id가 hop 범위 밖이면 0.0을 반환한다
     (= 뺄 게 없다 = 전체 결과 그대로).
     """
-    match = (
-        (records["on_street"] == exclude_site["on_street"])
-        & (records["from_street"] == exclude_site["from_street"])
-        & (records["to_street"] == exclude_site["to_street"])
-        & (records["work_start_ts"] == pd.Timestamp(exclude_site["work_start_ts"]))
-        & (records["work_end_ts"] == pd.Timestamp(exclude_site["work_end_ts"]))
-        & (records["segment_id"] == exclude_site["segment_id"])
-    )
-    site_row = records[match].head(1)
+    if site_row is None:
+        site_row = find_exclude_site_row(records, exclude_site)
     if site_row.empty:
         return 0.0
 
@@ -767,6 +796,19 @@ def validate(df: pd.DataFrame) -> None:
         df["closure_capacity_reduction"].mean(), df["closure_capacity_reduction"].min(),
     )
     logger.info("시간대별 영향받는 segment 수:\n%s", df.groupby("hour")["segment_id"].nunique().to_string())
+
+
+def load_precomputed(run_date: str) -> pd.DataFrame | None:
+    """gold_closure_penalty DAG가 그 run_date에 이미 build()를 돌려놨으면
+    그 결과를 읽어서 반환한다 — 없으면(과거/미래처럼 배치로 안 구워둔
+    날짜) None을 반환해서 호출부가 compute_hourly_penalty()로 온디맨드
+    계산하게 한다. traffic_score.py가 매 요청마다 이미 배치로 끝난 계산을
+    (records 200만 건대라 ~십수 초 걸리는) 그대로 다시 돌리고 있던 걸
+    막기 위함."""
+    path = GOLD2_DIR / OUT_SOURCE / f"dt={run_date}" / "data.parquet"
+    if not path.exists():
+        return None
+    return pd.read_parquet(path)
 
 
 def build(run_date: str | None = None) -> str:
