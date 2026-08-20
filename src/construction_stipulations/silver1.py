@@ -154,6 +154,23 @@ def _load_raw_work_hours_rows(bronze_root: Path) -> pd.DataFrame:
     return pd.concat(matched, ignore_index=True).drop_duplicates()
 
 
+def _today_work_hours_texts(bronze_root: Path, run_date: str) -> set[str]:
+    """오늘(run_date) 파티션에 실제로 새로 들어온 work_hours 문구 집합.
+
+    _load_raw_work_hours_rows()는 전체 히스토리를 날짜 구분 없이 합쳐서
+    반환하므로, LLM 폴백 우선순위(오늘 신규를 과거 백로그보다 먼저 시도)를
+    정하려면 이 정보가 따로 필요하다 — quota가 도중에 바닥나도 오늘 데이터가
+    뒤로 밀려 못 쓰이는 일을 막기 위함."""
+    path = bronze_root / f"dt={run_date}" / "data.parquet"
+    if not path.exists():
+        return set()
+    df = pd.read_parquet(path, columns=["stipulationfulltext"])
+    mask = df["stipulationfulltext"].str.match(
+        r"^WORK\s+\d{1,2}\s*[AP]M\s*-\s*\d{1,2}\s*[AP]M", case=False, na=False
+    )
+    return set(df.loc[mask, "stipulationfulltext"])
+
+
 def extract_work_hours(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> pd.DataFrame:
     """
     stipulations Bronze 전체 파티션에서 작업 시간대 제약만 정규식으로 뽑는다
@@ -342,6 +359,16 @@ def _load_raw_embargo_rows(bronze_root: Path) -> pd.DataFrame:
     return pd.concat(matched, ignore_index=True).drop_duplicates()
 
 
+def _today_embargo_texts(bronze_root: Path, run_date: str) -> set[str]:
+    """_today_work_hours_texts()와 동일한 목적, WORK EMBARGO 문구 기준."""
+    path = bronze_root / f"dt={run_date}" / "data.parquet"
+    if not path.exists():
+        return set()
+    df = pd.read_parquet(path, columns=["stipulationfulltext"])
+    mask = df["stipulationfulltext"].str.startswith("WORK EMBARGO", na=False)
+    return set(df.loc[mask, "stipulationfulltext"])
+
+
 def extract_work_embargoes(bronze_root: Path = BRONZE_DIR / STIPULATIONS_SOURCE) -> pd.DataFrame:
     """
     stipulations Bronze 전체 파티션에서 "WORK EMBARGO:" 문구만 골라 정규식으로
@@ -442,9 +469,17 @@ def build_embargoes(run_date: str | None = None) -> str:
     frozen_texts = quarantined_texts("embargo")
     new_texts = [t for t in failed_texts if t not in known_texts and t not in frozen_texts]
 
+    # 오늘 새로 들어온 문구를 과거 백로그보다 먼저 시도한다 — quota가 도중에
+    # 바닥나도(run_llm_fallback_batch의 냉각 로직 참고) 오늘 데이터가 뒤로
+    # 밀려 못 쓰이는 일이 없게 한다.
+    today_texts = _today_embargo_texts(BRONZE_DIR / STIPULATIONS_SOURCE, run_date)
+    new_texts.sort(key=lambda t: t not in today_texts)
+    today_new_count = sum(1 for t in new_texts if t in today_texts)
+
     logger.info(
-        "정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개",
-        len(failed_texts), len(new_texts),
+        "정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개"
+        "(오늘 신규 %d개 우선, 과거 백로그 %d개)",
+        len(failed_texts), len(new_texts), today_new_count, len(new_texts) - today_new_count,
     )
 
     unavailable_count, last_unavailable_error = run_llm_fallback_batch(
@@ -620,9 +655,15 @@ def build_work_hours_rules(run_date: str | None = None) -> str:
     frozen_texts = quarantined_texts("work_hours")
     new_texts = [t for t in failed_texts if t not in known_texts and t not in frozen_texts]
 
+    # build_embargoes()와 동일한 이유 — 오늘 신규를 과거 백로그보다 먼저 시도.
+    today_texts = _today_work_hours_texts(BRONZE_DIR / STIPULATIONS_SOURCE, run_date)
+    new_texts.sort(key=lambda t: t not in today_texts)
+    today_new_count = sum(1 for t in new_texts if t in today_texts)
+
     logger.info(
-        "[work_hours] 정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개",
-        len(failed_texts), len(new_texts),
+        "[work_hours] 정규식 실패 고유 문구=%d개, 이 중 LLM 캐시/quarantine에 없는 신규 문구=%d개"
+        "(오늘 신규 %d개 우선, 과거 백로그 %d개)",
+        len(failed_texts), len(new_texts), today_new_count, len(new_texts) - today_new_count,
     )
 
     unavailable_count, last_unavailable_error = run_llm_fallback_batch(
