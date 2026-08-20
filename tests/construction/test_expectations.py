@@ -55,12 +55,14 @@ def test_log_only_expectations_checks_date_columns_parseable():
 def test_log_only_expectations_checks_permitlinearfeet_not_null():
     expectations = log_only_expectations()
 
-    not_null_columns = {
-        e.column for e in expectations
+    not_null_checks = [
+        e for e in expectations
         if isinstance(e, gx.expectations.ExpectColumnValuesToNotBeNull)
-    }
+        and e.column == "permitlinearfeet"
+    ]
 
-    assert "permitlinearfeet" in not_null_columns
+    assert len(not_null_checks) == 1
+    assert not_null_checks[0].mostly == 0.3
 
 
 def test_log_only_expectations_has_no_existence_or_uniqueness_checks():

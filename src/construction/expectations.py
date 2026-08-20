@@ -48,5 +48,12 @@ def log_only_expectations() -> list:
         gx.expectations.ExpectColumnValuesToBeDateutilParseable(
             column="issuedworkenddate"
         ),
-        gx.expectations.ExpectColumnValuesToNotBeNull(column="permitlinearfeet"),
+        # 실측 기준(2026-08-18 스냅샷) permitlinearfeet의 non-null 비율은
+        # 약 41%다 — 이 필드가 원래도 자주 비어 있는 정부 데이터라, null
+        # 자체를 100% 기준으로 걸면 매 실행마다 걸려 로그가 무의미해진다.
+        # 그 비율이 30% 밑으로 떨어지는 경우만(=이례적으로 더 나빠졌을 때만)
+        # 잡아낸다.
+        gx.expectations.ExpectColumnValuesToNotBeNull(
+            column="permitlinearfeet", mostly=0.3
+        ),
     ]
