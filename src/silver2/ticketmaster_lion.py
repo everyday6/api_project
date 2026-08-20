@@ -20,7 +20,8 @@ import pandas as pd
 from shapely import wkt
 
 from src.common.config import (
-    SILVER_DIR,
+    SILVER1_DIR,
+    SILVER2_DIR,
     TICKETMASTER_CRS,
     LION_CRS,
     TICKETMASTER_LION_BUFFER_FT,
@@ -29,6 +30,7 @@ from src.common.config import (
 )
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
+from src.lion.gold2 import DIM_SEGMENT_PATH
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_ticketmaster_lion")
@@ -42,7 +44,7 @@ SOURCE = "ticketmaster"
 
 def ticketmaster_path(run_date: str) -> Path:
     return (
-        SILVER_DIR
+        SILVER1_DIR
         / SOURCE
         / f"dt={run_date}"
         / "data.parquet"
@@ -50,16 +52,12 @@ def ticketmaster_path(run_date: str) -> Path:
 
 
 def lion_path() -> Path:
-    return (
-        SILVER_DIR
-        / "dim_segment.parquet"
-    )
+    return DIM_SEGMENT_PATH
 
 
 def output_dir(run_date: str) -> Path:
     return (
-        SILVER_DIR
-        / "mapping"
+        SILVER2_DIR
         / "ticketmaster_lion"
         / f"dt={run_date}"
     )

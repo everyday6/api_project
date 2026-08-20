@@ -60,8 +60,6 @@ LOG_DIR = PROJECT_ROOT / "logs"
 TMP_DIR = DATA_DIR / "tmp"
 
 BRONZE_DIR = DATA_DIR / "bronze"
-SILVER_DIR = DATA_DIR / "silver"
-GOLD_DIR = DATA_DIR / "gold"
 
 SILVER1_DIR = DATA_DIR / "silver1"
 SILVER2_DIR = DATA_DIR / "silver2"

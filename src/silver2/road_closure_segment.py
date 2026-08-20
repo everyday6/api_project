@@ -29,7 +29,7 @@ import pandas as pd
 from shapely import wkt
 from shapely.strtree import STRtree
 
-from src.common.config import SILVER_DIR
+from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.lion.gold2 import DIM_SEGMENT_PATH
@@ -37,7 +37,7 @@ from src.lion.gold2 import DIM_SEGMENT_PATH
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_road_closure_segment")
 
 OUT_SOURCE = "map_road_closure_segment"
-ROAD_CONTROL_EVENTS_DIR = SILVER_DIR / "road_control_events"
+ROAD_CONTROL_EVENTS_DIR = SILVER2_DIR / "road_control_events"
 
 MATCH_DISTANCE_THRESHOLD_FT = 100
 
@@ -114,7 +114,7 @@ def build(run_date: str | None = None) -> str:
 
     df = match(other_road_control, dim_segment, tree)
 
-    path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
+    path = save_parquet(df, SILVER2_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
         "map_road_closure_segment 빌드 완료: rows=%d columns=%d path=%s",

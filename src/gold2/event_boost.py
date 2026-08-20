@@ -37,14 +37,14 @@ from __future__ import annotations
 
 import pandas as pd
 
-from src.common.config import SILVER_DIR
+from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
 from src.gold2.closure_penalty import spread_with_decay
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="event_boost")
 
-MAP_EVENT_LION_DIR = SILVER_DIR / "mapping" / "event_lion"
-MAP_TICKETMASTER_LION_DIR = SILVER_DIR / "mapping" / "ticketmaster_lion"
+MAP_EVENT_LION_DIR = SILVER2_DIR / "event_lion"
+MAP_TICKETMASTER_LION_DIR = SILVER2_DIR / "ticketmaster_lion"
 
 # TODO(팀 검토 필요): 근거 없는 초안 — closure_type별 "차량 통행에 얼마나
 # 방해되는가"를 정성적으로 매긴 가중치.

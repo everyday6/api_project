@@ -19,9 +19,10 @@ from pathlib import Path
 import networkx as nx
 import pandas as pd
 
-from src.common.config import SILVER_DIR
+from src.common.config import SILVER1_DIR, SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import clean_street, save_parquet
+from src.lion.gold2 import DIM_SEGMENT_PATH
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_event_lion")
@@ -155,15 +156,15 @@ def resolve_street(street):
 # =========================================================
 
 def event_path(run_date: str) -> Path:
-    return SILVER_DIR / SOURCE / f"dt={run_date}" / "data.parquet"
+    return SILVER1_DIR / SOURCE / f"dt={run_date}" / "data.parquet"
 
 
 def lion_path() -> Path:
-    return SILVER_DIR / "dim_segment.parquet"
+    return DIM_SEGMENT_PATH
 
 
 def output_dir(run_date: str) -> Path:
-    return SILVER_DIR / "mapping" / "event_lion" / f"dt={run_date}"
+    return SILVER2_DIR / "event_lion" / f"dt={run_date}"
 
 
 # =========================================================

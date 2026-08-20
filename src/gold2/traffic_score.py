@@ -35,7 +35,7 @@ from zoneinfo import ZoneInfo
 import pandas as pd
 import yaml
 
-from src.common.config import CONFIG_DIR, SILVER_DIR
+from src.common.config import CONFIG_DIR
 from src.common.logger import get_logger
 from src.gold2 import closure_penalty, event_boost
 from src.lion.gold2 import DIM_SEGMENT_PATH, DIM_SEGMENT_TRAFFIC_SCORE_PATH
@@ -91,19 +91,19 @@ HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
 _cache: dict[str, Any] = {}
 
 
-def _latest_partition_path(source_dir_name: str) -> Path | None:
-    """<source_dir_name>의 dt= 파티션 중 가장 최근 것을 찾는다.
+def _latest_partition_path(base_dir: Path) -> Path | None:
+    """base_dir의 dt= 파티션 중 가장 최근 것을 찾는다.
 
     ingest_daily가 매일 새로 만드는 테이블들은 dim_segment_traffic_score_v0
     (분기 1회)처럼 고정 경로가 아니라 그날그날 파티션을 스스로 찾아야 한다.
     """
-    partitions = sorted((SILVER_DIR / source_dir_name).glob("dt=*/data.parquet"))
+    partitions = sorted(base_dir.glob("dt=*/data.parquet"))
     return partitions[-1] if partitions else None
 
 
-def _latest_run_date(source_dir_name: str) -> str | None:
-    """<source_dir_name>의 dt= 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13")."""
-    path = _latest_partition_path(source_dir_name)
+def _latest_run_date(base_dir: Path) -> str | None:
+    """base_dir의 dt= 파티션 중 가장 최근 날짜 문자열(예: "2026-08-13")."""
+    path = _latest_partition_path(base_dir)
     if path is None:
         return None
     return path.parent.name.split("=", 1)[1]
@@ -125,7 +125,7 @@ def _latest_mapping_dt() -> str:
     if "latest_mapping_dt" in _cache:
         return _cache["latest_mapping_dt"]
 
-    mapping_dt = _latest_run_date(closure_penalty.MAP_ROAD_CONTROL_SEGMENT_DIR.name)
+    mapping_dt = _latest_run_date(closure_penalty.MAP_ROAD_CONTROL_SEGMENT_DIR)
     if mapping_dt is None:
         raise RuntimeError("map_road_control_segment 데이터가 없습니다 — 매핑 파이프라인을 먼저 실행하세요.")
     _cache["latest_mapping_dt"] = mapping_dt
@@ -151,8 +151,8 @@ def _event_boost_table_for_date(ts_date: str) -> pd.DataFrame:
     """event_lion/ticketmaster_lion 매핑이 아직 한 번도 안 돌았으면(둘 다
     수동 트리거 DAG라 그럴 수 있음) 빈 테이블 — 이 경우 event_boost는 0(영향
     없음)으로 처리된다."""
-    event_dt = _latest_run_date(str(event_boost.MAP_EVENT_LION_DIR.relative_to(SILVER_DIR)))
-    ticketmaster_dt = _latest_run_date(str(event_boost.MAP_TICKETMASTER_LION_DIR.relative_to(SILVER_DIR)))
+    event_dt = _latest_run_date(event_boost.MAP_EVENT_LION_DIR)
+    ticketmaster_dt = _latest_run_date(event_boost.MAP_TICKETMASTER_LION_DIR)
     if event_dt is None or ticketmaster_dt is None:
         logger.warning(
             "[scoring] event_lion/ticketmaster_lion 매핑이 없습니다 — event_boost를 0으로 처리합니다. "

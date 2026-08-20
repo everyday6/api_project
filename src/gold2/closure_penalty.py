@@ -72,7 +72,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import GOLD1_DIR, SILVER_DIR
+from src.common.config import GOLD1_DIR, GOLD2_DIR, SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.construction_stipulations.silver1 import load_built_embargoes
@@ -82,8 +82,8 @@ from src.lion.gold2 import DIM_SEGMENT_PATH
 logger = get_logger(__name__, log_to_file=True, log_file_stem="closure_penalty")
 
 OUT_SOURCE = "dim_segment_closure_penalty"
-MAP_ROAD_CONTROL_SEGMENT_DIR = SILVER_DIR / "map_road_control_segment"
-MAP_ROAD_CLOSURE_SEGMENT_DIR = SILVER_DIR / "map_road_closure_segment"
+MAP_ROAD_CONTROL_SEGMENT_DIR = SILVER2_DIR / "map_road_control_segment"
+MAP_ROAD_CLOSURE_SEGMENT_DIR = SILVER2_DIR / "map_road_closure_segment"
 # construction Gold1(Manhattan/상태/시리즈로 걸러진 permit)을 읽는다.
 CONSTRUCTION_GOLD_DIR = GOLD1_DIR / "construction"
 
@@ -786,7 +786,7 @@ def build(run_date: str | None = None) -> str:
 
     df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment, lanes_by_segment)
 
-    path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
+    path = save_parquet(df, GOLD2_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
         "closure_penalty 빌드 완료: rows=%d path=%s",

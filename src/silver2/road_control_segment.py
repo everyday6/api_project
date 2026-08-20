@@ -51,7 +51,7 @@ from datetime import date
 
 import pandas as pd
 
-from src.common.config import SILVER_DIR
+from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.lion.silver2 import GRAPH_SEGMENT_ADJACENCY_PATH
@@ -60,7 +60,7 @@ from src.lion.gold2 import DIM_SEGMENT_PATH
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_road_control_segment")
 
 OUT_SOURCE = "map_road_control_segment"
-ROAD_CONTROL_EVENTS_DIR = SILVER_DIR / "road_control_events"
+ROAD_CONTROL_EVENTS_DIR = SILVER2_DIR / "road_control_events"
 
 MAX_HOPS = 3
 
@@ -287,7 +287,7 @@ def build(run_date: str | None = None) -> str:
 
     df = match(construction_events, dim_segment, adjacency, street_by_segment, endpoint_index)
 
-    path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
+    path = save_parquet(df, SILVER2_DIR / OUT_SOURCE / f"dt={run_date}")
 
     logger.info(
         "map_road_control_segment 빌드 완료: rows=%d columns=%d path=%s",
