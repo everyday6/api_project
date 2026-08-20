@@ -54,8 +54,8 @@ import pandas as pd
 from src.common.config import SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
-from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
-from src.lion.silver import DIM_SEGMENT_PATH
+from src.lion.silver2 import GRAPH_SEGMENT_ADJACENCY_PATH
+from src.lion.gold2 import DIM_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_road_control_segment")
 

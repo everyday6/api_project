@@ -1,21 +1,24 @@
 """
-Silver 변환: LION bronze -> dim_segment
+Silver1 변환: LION bronze -> dim_segment(기본 컬럼)
 
 원본 코드 값(RW_TYPE, FeatureTyp, TrafDir 등)의 의미는 NYC DCP LION 공식
 Data Dictionary를 직접 받아서 확인했다.
 (https://www.nyc.gov/assets/planning/download/pdf/data-maps/open-data/lion_metadata.pdf)
 
+이 모듈은 구조적 정제(컬럼명 통일, 타입 캐스팅, 도로명 정규화, SegmentID
+dedupe)만 한다. road_class/capacity/is_routable 등 파생 지표 계산은
+src/lion/gold2.py가 이 산출물을 읽어서 한다 — 그 계산에 필요한 원본 코드
+컬럼(RW_TYPE, TRUCK_ROUTE_TYPE, TrafDir, FeatureTyp)은 이름 그대로 통과시켜
+둔다.
+
 스펙 대비 정정된 부분 (실제로 검증해서 뒤집힘):
 - TrafDir: "W=양방향"으로 알려져 있었으나 공식 문서는 정반대다.
     W = With (일방향, 세그먼트 방향과 동일) / A = Against (일방향, 반대) / T = Two-Way (양방향)
-  따라서 is_two_way = (TrafDir == 'T') 가 맞다.
+  따라서 is_two_way = (TrafDir == 'T') 가 맞다(gold2에서 계산).
 - SegmentID 중복(전체의 약 10%)은 이중도로(SegCount>1, 상판/하판처럼 고도가 다른 도로)
   때문이 아니라, 실제로 뽑아서 확인해보니 geometry/속성/NodeLevel까지 완전히 동일한
   순수 중복 행이었다. 그래서 geometry를 합치지 않고 SegmentID 기준 첫 행만 남기는
   단순 dedupe를 적용한다.
-
-road_class / capacity 관련 숫자는 팀에서 확정한 기준이 없어 HCM(Highway Capacity
-Manual) 개념을 참고한 초안이다 — 반드시 검토/조정이 필요하다 (BASE_CAPACITY_PER_LANE 참고).
 
 pandas를 쓰는 이유: LION은 분기 1회 갱신되는 24만 행짜리 참조 테이블이라 이 컴퓨터
 한 대의 메모리로 몇 초면 끝난다. 처음엔 팀 컨벤션(tlc/silver.py)에 맞춰 PySpark로
@@ -35,17 +38,16 @@ from __future__ import annotations
 import subprocess
 from pathlib import Path
 
-import numpy as np
 import pandas as pd
 
-from src.common.config import BRONZE_DIR, SILVER_DIR
+from src.common.config import BRONZE_DIR, SILVER1_DIR
 from src.common.logger import get_logger
 from src.common.utils import clean_street
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
 LION_BRONZE_ROOT = BRONZE_DIR / "lion"
-DIM_SEGMENT_PATH = SILVER_DIR / "dim_segment.parquet"
+DIM_SEGMENT_BASE_PATH = SILVER1_DIR / "dim_segment.parquet"
 
 # ogr2ogr로 뽑아올 컬럼. LION 원본 필드 그대로의 이름을 쓴다.
 LION_COLUMNS = [
@@ -54,29 +56,14 @@ LION_COLUMNS = [
     "StreetWidth_Min", "StreetWidth_Max", "SHAPE_Length", "LBoro","NodeIDFrom", "NodeIDTo",
 ]
 
-# RW_TYPE(도로유형 코드, 공식 정의) -> road_class 1차 분류
-HIGHWAY_RW_TYPES = ["2", "9"]                              # Highway, Ramp
-NON_ROUTABLE_RW_TYPES = ["5", "6", "7", "8", "10", "11", "12", "13", "14"]
-# Boardwalk, Path/Trail, Step Street, Driveway, Alley, Unknown, Non-Physical Segment, U-Turn, Ferry Route
-# RW_TYPE 1(Street)/3(Bridge)/4(Tunnel)은 등급 구분이 없어서 TRUCK_ROUTE_TYPE(1=Limited
-# Local, 2=Local, 3=Through)과 차로수로 arterial/local을 보조 판정한다.
-ARTERIAL_TRUCK_ROUTE_TYPES = ["2", "3"]
-ARTERIAL_MIN_LANES = 3
+VALID_BOROUGH_CODES = ["1", "2", "3", "4", "5"]
+# 빈 값도 허용한다 — 경계선/비물리적 구간처럼 자치구가 없는 세그먼트가 실제로 존재한다
+# (직접 확인: 전체의 0.56%, 그중 대부분은 non_routable이지만 routable인데 빈 경우도 있음).
 
-# TODO(팀 검토 필요): 확정된 사내 기준이 없어 HCM(도로용량편람) 개념 기반 초안.
-# 단위: 차로당 시간당 승용차환산대수(pcphpl)
-BASE_CAPACITY_PER_LANE = {
-    "highway": 1900,   # HCM 자유류(freeway) 이상적 포화교통류율 근사치
-    "arterial": 900,   # HCM 신호교차로 도시간선도로 차로당 용량 근사치
-    "local": 600,       # 저속/주차회전 마찰이 있는 국지도로 근사치
-    "non_routable": 0,
-}
-
-# TODO(팀 검토 필요): 방향계수 확정 기준 없어 1.0(보정 없음)으로 둠.
-DIRECTION_FACTOR = {
-    "one_way": 1.0,
-    "two_way": 1.0,
-}
+# 지금까지 실제로 확인된 행 수(218,373)를 기준으로 여유 있게 잡은 범위.
+# 분기 갱신마다 이 범위를 크게 벗어나면 ogr2ogr/파싱 단계가 조용히 깨졌을 가능성이 크다.
+MIN_EXPECTED_ROWS = 100_000
+MAX_EXPECTED_ROWS = 300_000
 
 
 def _latest_bronze_version(bronze_root: Path = LION_BRONZE_ROOT) -> Path:
@@ -130,30 +117,11 @@ def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
     return out_path
 
 
-def _classify_road_class(df: pd.DataFrame) -> pd.Series:
-    """RW_TYPE(+TRUCK_ROUTE_TYPE, 차로수 보조)로 road_class를 매긴다."""
-    is_highway = df["RW_TYPE"].isin(HIGHWAY_RW_TYPES)
-    is_non_routable = df["RW_TYPE"].isin(NON_ROUTABLE_RW_TYPES) | df["RW_TYPE"].isna() | (df["RW_TYPE"] == "")
-    is_arterial = (
-        df["TRUCK_ROUTE_TYPE"].isin(ARTERIAL_TRUCK_ROUTE_TYPES)
-        | (df["Number_Travel_Lanes"] >= ARTERIAL_MIN_LANES)
-    )
-
-    return pd.Series(
-        np.select(
-            [is_highway, is_non_routable, is_arterial],
-            ["highway", "non_routable", "arterial"],
-            default="local",
-        ),
-        index=df.index,
-    )
-
-
-def build_dim_segment(
+def build_dim_segment_base(
     bronze_root: Path = LION_BRONZE_ROOT,
-    silver_root: Path = SILVER_DIR,
+    silver1_root: Path = SILVER1_DIR,
 ) -> str:
-    """LION 최신 bronze 스냅샷을 읽어 dim_segment Silver 테이블을 만든다."""
+    """LION 최신 bronze 스냅샷을 읽어 dim_segment Silver1(기본 컬럼) 테이블을 만든다."""
 
     version_dir = _latest_bronze_version(bronze_root)
     gdb_path = _find_gdb(version_dir)
@@ -161,7 +129,7 @@ def build_dim_segment(
 
     # 주의: 파일명이 "_"로 시작하면 Hadoop/Spark 계열 도구가 숨김 파일(_SUCCESS 등과
     # 동일 취급)로 보고 무시하는 경우가 있어(직접 겪은 문제) 밑줄로 시작하지 않게 짓는다.
-    tmp_csv = silver_root / "lion_flat_tmp.csv"
+    tmp_csv = silver1_root / "lion_flat_tmp.csv"
     _gdb_to_flat_csv(gdb_path, tmp_csv)
 
     df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
@@ -192,15 +160,6 @@ def build_dim_segment(
     df = df.drop_duplicates(subset="SegmentID", keep="first")
     logger.info(f"[lion_silver] dedupe: {before}행 -> {len(df)}행")
 
-    df["road_class"] = _classify_road_class(df)
-    df["is_routable"] = (df["road_class"] != "non_routable") & (df["FeatureTyp"] == "0")
-    df["is_two_way"] = df["TrafDir"] == "T"
-
-    df["base_capacity_per_lane"] = df["road_class"].map(BASE_CAPACITY_PER_LANE)
-    direction_factor = np.where(df["is_two_way"], DIRECTION_FACTOR["two_way"], DIRECTION_FACTOR["one_way"])
-    df["capacity_per_hour"] = df["Number_Travel_Lanes"] * df["base_capacity_per_lane"] * direction_factor
-    df["lane_miles"] = (df["SHAPE_Length"] * df["Number_Travel_Lanes"]) / 5280.0
-
     # construction/road_closures 등 다른 소스와 동일한 규칙으로 정규화 — 도로명은
     # 공유하지만 교차로(from/to street)는 LION 세그먼트 자체엔 없어서, 이 값만으로는
     # "어느 도로인지"까지만 좁혀지고 "어느 블록인지"는 아직 못 좁힌다.
@@ -217,51 +176,34 @@ def build_dim_segment(
             "NodeIDTo": "node_to",
         }
     )[[
-        "segment_id", "street_name", "borough_code", "geometry", "length_ft", "road_class",
-        "is_two_way", "lanes_total", "lane_miles", "base_capacity_per_lane",
-        "capacity_per_hour", "is_routable", "node_from", "node_to",
+        # Silver1 기본 컬럼
+        "segment_id", "street_name", "borough_code", "geometry", "length_ft",
+        "lanes_total", "node_from", "node_to",
+        # gold2가 road_class/is_routable/is_two_way/capacity 계산에 쓰는 원본 코드
+        # 컬럼 — 이름 그대로 통과시킨다(Silver1은 해석하지 않는다).
+        "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir", "FeatureTyp",
     ]]
 
-    dim_segment_path = silver_root / "dim_segment.parquet"
+    dim_segment_path = silver1_root / "dim_segment.parquet"
 
-    silver_root.mkdir(parents=True, exist_ok=True)
+    silver1_root.mkdir(parents=True, exist_ok=True)
     dim_segment.to_parquet(dim_segment_path, index=False)
 
-    logger.info(f"[lion_silver] dim_segment {len(dim_segment)}행 저장 -> {dim_segment_path}")
+    logger.info(f"[lion_silver] dim_segment(Silver1) {len(dim_segment)}행 저장 -> {dim_segment_path}")
 
     tmp_csv.unlink(missing_ok=True)
     return str(dim_segment_path)
 
 
-VALID_ROAD_CLASSES = ["highway", "arterial", "local", "non_routable"]
-VALID_BOROUGH_CODES = ["1", "2", "3", "4", "5"]
-# 빈 값도 허용한다 — 경계선/비물리적 구간처럼 자치구가 없는 세그먼트가 실제로 존재한다
-# (직접 확인: 전체의 0.56%, 그중 대부분은 non_routable이지만 routable인데 빈 경우도 있음).
-
-# 지금까지 실제로 확인된 행 수(218,373)를 기준으로 여유 있게 잡은 범위.
-# 분기 갱신마다 이 범위를 크게 벗어나면 ogr2ogr/파싱 단계가 조용히 깨졌을 가능성이 크다.
-MIN_EXPECTED_ROWS = 100_000
-MAX_EXPECTED_ROWS = 300_000
-
-
-def validate_dim_segment(path: str) -> str:
+def validate_dim_segment_base(path: str) -> str:
     """
-    dim_segment.parquet가 지켜야 할 최소한의 불변식을 확인한다.
-    하나라도 깨지면 AssertionError를 던져서 태스크를 실패시킨다 — 조용히 잘못된
-    데이터가 다음 단계로 넘어가는 걸 막는 게 목적이다.
+    dim_segment(Silver1)가 지켜야 할 최소한의 불변식을 확인한다. road_class/
+    is_routable 등은 아직 없으므로(gold2가 계산) 여기서는 구조적 정합성만
+    확인한다.
     """
     df = pd.read_parquet(path)
 
     assert df["segment_id"].is_unique, "segment_id 중복 발견 (dedupe 로직 확인 필요)"
-
-    routable_missing_geom = df.loc[df["is_routable"], "geometry"].isna()
-    assert not routable_missing_geom.any(), (
-        f"is_routable=True인데 geometry가 없는 행 {routable_missing_geom.sum()}개 발견"
-    )
-
-    assert df["road_class"].isin(VALID_ROAD_CLASSES).all(), (
-        f"알 수 없는 road_class 값: {sorted(set(df['road_class']) - set(VALID_ROAD_CLASSES))}"
-    )
 
     assert df["borough_code"].isin(VALID_BOROUGH_CODES + [""]).all(), (
         f"알 수 없는 borough_code 값: {sorted(set(df['borough_code']) - set(VALID_BOROUGH_CODES) - {''})}"
@@ -272,10 +214,10 @@ def validate_dim_segment(path: str) -> str:
         f"행 수가 예상 범위({MIN_EXPECTED_ROWS}~{MAX_EXPECTED_ROWS}) 밖입니다: {n}"
     )
 
-    logger.info(f"[lion_silver] dim_segment 검증 통과 ({n}행) -> {path}")
+    logger.info(f"[lion_silver] dim_segment(Silver1) 검증 통과 ({n}행) -> {path}")
     return path
 
 
 if __name__ == "__main__":
-    out = build_dim_segment()
-    validate_dim_segment(out)
+    out = build_dim_segment_base()
+    validate_dim_segment_base(out)

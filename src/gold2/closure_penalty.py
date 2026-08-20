@@ -76,8 +76,8 @@ from src.common.config import GOLD1_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
 from src.construction_stipulations.silver1 import load_built_embargoes
-from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
-from src.lion.silver import DIM_SEGMENT_PATH
+from src.lion.silver2 import GRAPH_SEGMENT_ADJACENCY_PATH
+from src.lion.gold2 import DIM_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="closure_penalty")
 

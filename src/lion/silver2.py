@@ -1,13 +1,19 @@
 """
-Silver 변환: LION bronze -> graph_segment_adjacency
+Silver2 변환: LION bronze -> graph_segment_adjacency
 
 두 세그먼트가 교차로 노드(LION의 NodeIDFrom/NodeIDTo)를 공유하면 "인접"으로
 본다. 무방향 관계지만 (segment_id, neighbor_segment_id)와 그 반대 방향을
 둘 다 저장해서 양방향 조회가 바로 되게 한다.
 
-대상은 is_routable=True인 세그먼트만 (dim_segment/map_zone_segment와 범위를
-맞춤) — 157,153건. 실제로 계산해본 규모는 약 68만 행, 노드 111,565개, 세그먼트당
-평균 이웃 2.8개 수준이라 pandas로 충분하고 Spark는 필요 없다.
+lion 도메인 자기 자신의 데이터끼리 맺는 구조적 조인이라 교차도메인이 아니므로
+공용 silver2/ 폴더가 아니라 이 도메인 폴더 안에 둔다.
+
+대상은 is_routable=True인 세그먼트만(dim_segment/map_zone_segment와 범위를
+맞춤) — 157,153건. is_routable은 gold2가 계산하므로, 이 모듈은 gold2가 완성한
+dim_segment를 읽는다(레이어 순서상 Silver2가 Gold2 산출물에 의존하는 역전이
+있지만, "인접관계 자체는 구조적 조인"이라는 성격은 그대로다). 실제로 계산해본
+규모는 약 68만 행, 노드 111,565개, 세그먼트당 평균 이웃 2.8개 수준이라 pandas로
+충분하고 Spark는 필요 없다.
 
 지오메트리 연산이 전혀 필요 없다 — "같은 노드 ID를 공유하는가"라는 순수 속성
 조인이라 dim_segment/map_zone_segment보다 오히려 훨씬 단순하다.
@@ -26,13 +32,14 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import SILVER_DIR
+from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
-from src.lion.silver import DIM_SEGMENT_PATH, LION_BRONZE_ROOT, _find_gdb, _latest_bronze_version
+from src.lion.gold2 import DIM_SEGMENT_PATH
+from src.lion.silver1 import LION_BRONZE_ROOT, _find_gdb, _latest_bronze_version
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="graph_segment_adjacency")
 
-GRAPH_SEGMENT_ADJACENCY_PATH = SILVER_DIR / "graph_segment_adjacency.parquet"
+GRAPH_SEGMENT_ADJACENCY_PATH = SILVER2_DIR / "graph_segment_adjacency.parquet"
 
 NODE_COLUMNS = ["SegmentID", "NodeIDFrom", "NodeIDTo"]
 
@@ -59,7 +66,7 @@ def _gdb_to_node_csv(gdb_path: Path, out_path: Path) -> Path:
 def build_graph_segment_adjacency(
     bronze_root: Path = LION_BRONZE_ROOT,
     dim_segment_path: Path = DIM_SEGMENT_PATH,
-    silver_root: Path = SILVER_DIR,
+    silver_root: Path = SILVER2_DIR,
 ) -> str:
     """dim_segment(routable만) 기준으로 세그먼트 인접 관계 그래프를 만든다."""
 
@@ -71,7 +78,7 @@ def build_graph_segment_adjacency(
     _gdb_to_node_csv(gdb_path, tmp_csv)
 
     nodes = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
-    # dim_segment와 동일한 dedupe (중복 원인은 lion/silver.py 문서 참고 — 순수 중복 행)
+    # dim_segment와 동일한 dedupe (중복 원인은 lion/silver1.py 문서 참고 — 순수 중복 행)
     nodes = nodes.drop_duplicates(subset="SegmentID", keep="first")
 
     dim = pd.read_parquet(dim_segment_path, columns=["segment_id", "is_routable"])

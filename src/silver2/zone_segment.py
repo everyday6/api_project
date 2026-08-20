@@ -32,7 +32,7 @@ from shapely.strtree import STRtree
 
 from src.common.config import BRONZE_DIR, SILVER_DIR
 from src.common.logger import get_logger
-from src.lion.silver import DIM_SEGMENT_PATH
+from src.lion.gold2 import DIM_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
 
