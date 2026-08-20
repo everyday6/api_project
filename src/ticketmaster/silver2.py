@@ -12,14 +12,16 @@ TicketMaster API는 수용 인원을 주지 않으므로 직접 관리한다.
 venue별 집계가 어긋나고 가중치도 조용히 누락된다.
 
 수용 인원은 공개된 좌석 수 기준의 추정값이며 팀 검증 대상이다.
-가중치 계산은 Gold에서 한다. 여기서는 사실(수용 인원)만 관리한다.
+가중치 계산은 Gold2(src/gold2/event_boost.py)에서 한다. 여기서는 사실(수용 인원)만
+관리한다. (참고: 2026-08-20 기준 event_boost.py는 아직 이 모듈을 호출하지
+않는다 — 연결은 별도 작업 범위.)
 """
 
 from __future__ import annotations
 
 import re
 
-from common.logger import get_logger
+from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="ticketmaster_venue")
 

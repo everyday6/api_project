@@ -1,15 +1,15 @@
 """
-Silver — TicketMaster
+Silver1 — TicketMaster
 
 - id 중복 제거
 - venue JSON 파싱 → 장소명, 좌표
-- 맨해튼 범위 필터
 - 행사 날짜 보존
 - 시간이 있을 때만 start_ts 생성
 - 종료 시각은 원본에 있을 때만 사용
 - Traffic Score에 필요한 최소 컬럼만 저장
 
-거리 계산 및 좌표계 변환은 Gold에서 처리한다.
+맨해튼 범위 필터, run_date 기준 지난 행사 제외는 src/ticketmaster/gold1.py에서
+한다. 거리 계산 및 좌표계 변환은 Gold2에서 처리한다.
 """
 
 import sys
@@ -22,17 +22,13 @@ import pandas as pd
 
 sys.path.append(str(Path(__file__).resolve().parent.parent))
 
-from common.config import BRONZE_DIR, SILVER_DIR
+from common.config import BRONZE_DIR, SILVER1_DIR
 from common.utils import save_parquet
 from common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="ticketmaster_silver")
 
 SOURCE = "ticketmaster"
-
-# 맨해튼 대략 범위
-MH_LAT = (40.68, 40.88)
-MH_LON = (-74.03, -73.90)
 
 
 def load_bronze(run_date):
@@ -82,7 +78,7 @@ def parse_venue(raw):
     }
 
 
-def transform(df, run_date):
+def transform(df):
 
     # 1. 중복 컬럼 제거
     df = df.loc[
@@ -117,14 +113,7 @@ def transform(df, run_date):
         & df["lon"].notna()
     ].copy()
 
-    # 4. 맨해튼 대략 범위 필터
-    df = df[
-        df["lat"].between(*MH_LAT)
-        & df["lon"].between(*MH_LON)
-    ].copy()
-
-
-    # 5. 행사 날짜
+    # 4. 행사 날짜
     df["event_date"] = pd.to_datetime(
         df["dates_start_localDate"],
         errors="coerce",
@@ -135,17 +124,7 @@ def transform(df, run_date):
         df["event_date"].notna()
     ].copy()
 
-    # 5-1. run_date 기준으로 이미 지난 행사 제외
-    cutoff = date.fromisoformat(run_date)
-    before = len(df)
-    df = df[df["event_date"] >= cutoff].copy()
-    logger.info(
-        "지난 행사 제외: %d → %d (기준 %s)",
-        before, len(df), run_date,
-    )
-
-
-    # 6. 시작 시각
+    # 5. 시작 시각
     # 시간이 있는 경우에만 timestamp 생성
     df["start_ts"] = pd.NaT
 
@@ -169,7 +148,7 @@ def transform(df, run_date):
         errors="coerce",
     )
 
-    # 7. 종료 시각
+    # 6. 종료 시각
     df["end_ts"] = pd.NaT
 
     has_end = (
@@ -199,7 +178,8 @@ def transform(df, run_date):
         errors="coerce",
     )
 
-    # 8. 필요한 컬럼만
+    # 7. 필요한 컬럼만 — lat/lon/event_date는 gold1의 지역·활성기간
+    # 필터가 써야 하므로 남겨둔다.
     return df[[
         "id",
         "event_date",
@@ -219,7 +199,7 @@ def validate(df):
 
     if df.empty:
         raise ValueError(
-            "Ticketmaster Silver 결과가 비었습니다."
+            "Ticketmaster Silver1 결과가 비었습니다."
         )
 
     if not df["event_id"].is_unique:
@@ -233,7 +213,7 @@ def validate(df):
         )
 
     logger.info(
-        "Ticketmaster Silver 검증 완료: rows=%d",
+        "Ticketmaster Silver1 검증 완료: rows=%d",
         len(df),
     )
 
@@ -247,22 +227,22 @@ def build(run_date: str | None = None) -> str:
         )
 
     logger.info(
-        "Ticketmaster Silver 변환 시작: run_date=%s",
+        "Ticketmaster Silver1 변환 시작: run_date=%s",
         run_date,
     )
 
     df = load_bronze(run_date)
-    df = transform(df, run_date)
+    df = transform(df)
 
     path = save_parquet(
         df,
-        SILVER_DIR
+        SILVER1_DIR
         / SOURCE
         / f"dt={run_date}",
     )
 
     logger.info(
-        "Ticketmaster Silver 빌드 완료: "
+        "Ticketmaster Silver1 빌드 완료: "
         "rows=%d columns=%d path=%s",
         len(df),
         len(df.columns),
