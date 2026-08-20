@@ -20,6 +20,7 @@ from pyspark.sql.functions import col, dayofweek, hour as hour_of_day
 from src.common.config import BOROUGH_EVENT, GOLD_DIR, SILVER_DIR, TAXI_TYPES
 from src.common.logger import get_logger
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
+from src.mapping.segment_spatial_weight import MAP_SEGMENT_SPATIAL_WEIGHT_PATH
 from src.mapping.zone_segment import MAP_ZONE_SEGMENT_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_gold")
@@ -28,6 +29,15 @@ DIM_SEGMENT_TLC_VOLUME_PATH = GOLD_DIR / "dim_segment_tlc_volume.parquet"
 
 HOURS = list(range(24))
 DEFAULT_HOPS = 3
+
+# map_zone_segment.parquet은 LION 분기별 갱신(dags/lion_pipeline.py)마다 자동으로
+# 다시 만들어지지만, map_segment_spatial_weight.parquet은 정적 스냅샷이라(2016년
+# 한 해 데이터 기반, DAG 없음) 함께 갱신되지 않는다. 그래서 LION이 새 세그먼트를
+# 추가하면 spatial_weight 테이블에는 아직 없는 상태가 생길 수 있다. 소수는
+# _expand_zone_to_segment_hour의 1.0 폴백으로 안전하게 넘어가지만, spatial_weight
+# 테이블이 여러 분기 방치돼 결측 비율이 커지면 그 폴백이 zone 총합을 크게 부풀린다
+# — 이를 하드 실패로 막는 기준선. 정성적 초안이다(TODO, 팀 검토 필요).
+MAX_MISSING_SPATIAL_WEIGHT_FRACTION = 0.05
 
 
 def collect_zone_hour_counts(
@@ -93,27 +103,46 @@ def collect_zone_hour_counts(
 def _expand_zone_to_segment_hour(
     zone_hour_counts: pd.DataFrame,
     map_zone_segment: pd.DataFrame,
+    map_segment_spatial_weight: pd.DataFrame,
 ) -> pd.DataFrame:
     """zone x hour 하차수를 segment x hour로 펼친다.
 
-    같은 zone에 속한 세그먼트는 zone 총합을 그대로 나눠 갖지 않고 동일하게
-    받는다(세그먼트 수로 나누지 않음). 매치 안 된 시간대는 0으로 채워서
-    세그먼트마다 정확히 24행을 보장한다.
+    같은 zone에 속한 세그먼트라도 동일하게 나눠 갖지 않고,
+    map_segment_spatial_weight의 spatial_weight(zone 내부 상대 밀집도, zone별
+    합=1, docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md
+    참고)만큼 비례해서 나눠 갖는다. spatial_weight가 없는 세그먼트는 1.0으로
+    폴백한다 — 조용히 0이 되어 사라지는 것보다 예전 균등분배와 같은 결과를
+    내는 쪽이 안전하다. 매치 안 된 시간대는 0으로 채워서 세그먼트마다 정확히
+    24행을 보장한다.
     """
 
     segment_zone = map_zone_segment[["segment_id", "zone_id"]].copy()
-    segment_zone["zone_id"] = segment_zone["zone_id"].astype("int64")
+    segment_zone = segment_zone.assign(zone_id=segment_zone["zone_id"].astype("int64"))
+
+    weights = map_segment_spatial_weight[["segment_id", "spatial_weight"]]
+    segment_zone = segment_zone.merge(weights, on="segment_id", how="left")
+
+    missing_weight = segment_zone["spatial_weight"].isna()
+    if missing_weight.any():
+        logger.warning(
+            f"[tlc_gold] map_segment_spatial_weight에 없는 세그먼트 {int(missing_weight.sum())}개, "
+            "spatial_weight=1.0으로 폴백"
+        )
+        segment_zone = segment_zone.assign(spatial_weight=segment_zone["spatial_weight"].fillna(1.0))
 
     hours = pd.DataFrame({"hour": HOURS})
 
     grid = segment_zone.merge(hours, how="cross")
 
     counts = zone_hour_counts.copy()
-    counts["zone_id"] = counts["zone_id"].astype("int64")
-    counts["hour"] = counts["hour"].astype("int64")
+    counts = counts.assign(
+        zone_id=counts["zone_id"].astype("int64"),
+        hour=counts["hour"].astype("int64"),
+    )
 
     merged = grid.merge(counts, on=["zone_id", "hour"], how="left")
-    merged["dropoff_count_raw"] = merged["dropoff_count"].fillna(0).astype("int64")
+    merged = merged.assign(dropoff_count=merged["dropoff_count"].fillna(0))
+    merged = merged.assign(dropoff_count_raw=merged["dropoff_count"] * merged["spatial_weight"])
 
     return merged[["segment_id", "hour", "dropoff_count_raw"]]
 
@@ -133,6 +162,7 @@ def _normalize_tlc_volume(df: pd.DataFrame) -> pd.DataFrame:
 def build_dim_segment_tlc_volume(
     zone_hour_counts: pd.DataFrame,
     map_zone_segment_path: Path = MAP_ZONE_SEGMENT_PATH,
+    map_segment_spatial_weight_path: Path = MAP_SEGMENT_SPATIAL_WEIGHT_PATH,
     gold_dir: Path = GOLD_DIR,
     borough: str = BOROUGH_EVENT,
 ) -> str:
@@ -145,10 +175,42 @@ def build_dim_segment_tlc_volume(
     공사 허가 신청이 맨해튼 한정이라, map_zone_segment의 borough 컬럼으로
     맨해튼 세그먼트만 걸러서 쓴다. TLC silver 자체(팀 공용 코드)는 도시 전체를
     유지하고, 이 Gold 단계에서만 필터링한다.
+
+    zone -> segment 분배는 균등 복사가 아니라 map_segment_spatial_weight의
+    spatial_weight 비례 분배다 (2026-08-19 개정,
+    docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md).
+
+    map_zone_segment는 LION 분기 갱신마다 자동으로 다시 만들어지지만
+    map_segment_spatial_weight는 정적 스냅샷이라 그렇지 않다 — 그래서 여기서
+    두 테이블 사이의 결측 세그먼트 비율을 확인해, 소수(폴백으로 안전하게
+    처리 가능)를 넘어 spatial_weight 테이블이 방치돼 낡아진 상황을 하드 실패로
+    잡아낸다(MAX_MISSING_SPATIAL_WEIGHT_FRACTION). _expand_zone_to_segment_hour
+    자체의 세그먼트별 1.0 폴백은 그대로 유지된다 — 이 체크는 그 폴백이 감당할
+    수 없는 규모로 커지는 것만 막는다.
     """
 
     map_zone_segment = pd.read_parquet(map_zone_segment_path, columns=["segment_id", "zone_id", "borough"])
     map_zone_segment = map_zone_segment.loc[map_zone_segment["borough"] == borough, ["segment_id", "zone_id"]]
+
+    map_segment_spatial_weight = pd.read_parquet(
+        map_segment_spatial_weight_path, columns=["segment_id", "spatial_weight"]
+    )
+
+    zone_segment_ids = set(map_zone_segment["segment_id"])
+    if zone_segment_ids:
+        missing_segment_ids = zone_segment_ids - set(map_segment_spatial_weight["segment_id"])
+        missing_fraction = len(missing_segment_ids) / len(zone_segment_ids)
+        if missing_fraction > MAX_MISSING_SPATIAL_WEIGHT_FRACTION:
+            raise RuntimeError(
+                f"[tlc_gold] map_segment_spatial_weight에 없는 map_zone_segment 세그먼트가 "
+                f"{missing_fraction:.1%}({len(missing_segment_ids)}/{len(zone_segment_ids)}개)로 "
+                f"허용 기준({MAX_MISSING_SPATIAL_WEIGHT_FRACTION:.0%})을 초과합니다. "
+                "map_zone_segment는 LION 분기 갱신마다 자동으로 갱신되지만 "
+                "map_segment_spatial_weight는 정적 테이블이라 그렇지 않아 낡았을 수 있습니다 — "
+                "src/mapping/segment_spatial_weight.py의 빌드 파이프라인(ingest_hotspot_grid -> "
+                "build_map_segment_spatial_weight -> validate_map_segment_spatial_weight)을 다시 "
+                "실행해 map_segment_spatial_weight.parquet을 갱신하세요."
+            )
 
     # zone_id가 '{borough}' 세그먼트 중 어디에도 안 붙는 트립: TLC 특수 zone
     # 코드(264/265 등 zone_id 1~263 밖)나 다른 자치구 zone이 여기 해당한다.
@@ -163,7 +225,7 @@ def build_dim_segment_tlc_volume(
             "(TLC 특수 zone 코드 또는 다른 자치구 zone)"
         )
 
-    expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment)
+    expanded = _expand_zone_to_segment_hour(zone_hour_counts, map_zone_segment, map_segment_spatial_weight)
     result = _normalize_tlc_volume(expanded)
 
     out_path = gold_dir / "dim_segment_tlc_volume.parquet"

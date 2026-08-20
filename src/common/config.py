@@ -129,6 +129,11 @@ DATASETS = {
 # build())에서만 검증한다.
 TICKETMASTER_API_KEY = os.getenv("TICKETMASTER_API_KEY")
 
+# Gemini API Key (.env에서 불러옴) — construction_stipulations의 WORK EMBARGO
+# 정규식 파싱 실패건을 LLM으로 한 번 더 시도할 때 씀(src/common/gemini.py).
+# 위와 동일한 이유로 여기서 없다고 바로 에러내지 않는다.
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+
 # Ticketmaster Discovery API URL
 TICKETMASTER_URL = (
     "https://app.ticketmaster.com/discovery/v2/events.json"
@@ -169,3 +174,28 @@ TICKETMASTER_LION_BUFFER_FT = 200
 # fallback nearest 매핑 품질 기준
 TICKETMASTER_LION_WARN_DISTANCE_FT = 500
 TICKETMASTER_LION_FAIL_DISTANCE_FT = 3000
+
+# ==========================
+# 2016 하차 위경도 Hotspot 설정
+# ==========================
+
+# BigQuery로 받은 2016년 하차 위경도 grid(bq-results.csv)의 좌표계.
+# TLC가 2017년부터 정확한 위경도 대신 zone_id만 제공하므로, 위경도 기준으로
+# zone 내부 분포를 볼 수 있는 마지막 해 데이터다.
+BQ_HOTSPOT_CRS = "EPSG:4326"
+
+# zone 내부 세그먼트별 spatial_weight 계산 시, grid point가 0건 매칭된
+# 세그먼트도 완전히 0이 되지 않게 하는 라플라스 스무딩 상수. 정성적 초안이다
+# (TODO, 팀 검토 필요) — docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md 참고.
+LAPLACE_SMOOTHING_ALPHA = 1.0
+
+# grid point 하나(8~11m 셀)가 세그먼트에 매칭될 때, 이 반경(feet) 이내 세그먼트
+# 전부를 후보로 삼아 거리 역가중으로 나눠 배분한다. venue-도로 매핑에 쓴
+# TICKETMASTER_LION_BUFFER_FT(200ft)보다 좁게 잡은 이유는 grid 셀 자체가 훨씬
+# 작기 때문이다. 정성적 초안이다(TODO, 팀 검토 필요).
+HOTSPOT_SEGMENT_BUFFER_FT = 100
+
+# 반경 안 세그먼트에 거리 역가중(1/(distance+epsilon))을 매길 때, point가 세그먼트
+# 위에 정확히 있어 distance=0이 되는 경우의 0-division만 막는 최소 상수. 정성적
+# 초안이다(TODO, 팀 검토 필요).
+HOTSPOT_INVERSE_DISTANCE_EPSILON_FT = 1.0

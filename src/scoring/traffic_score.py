@@ -26,6 +26,7 @@ Traffic Score 조회 계층 — segment_id x ts_hour 기준 단일 조회 인터
 
 from __future__ import annotations
 
+import math
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable
@@ -69,12 +70,20 @@ COMPONENT_SOURCES: dict[str, str | None] = {
 # ① COMPONENT_SOURCES에 컬럼명 추가, ② 여기에 "그 컴포넌트 이름: ts_date를
 # 받아 segment_id x hour x <값 컬럼> DataFrame을 반환하는 함수" 한 줄 추가.
 # get_traffic_score()/get_map_data() 코드는 안 건드려도 된다.
+#
+# "이 현장 하나만 빼고 계산"(exclude_site)은 여기 없다 — closure_penalty가
+# 도시 전체 hop 전파라 무거워서(실측 ~5초), ts_date별로 한 번만 계산해서
+# 캐싱해 두고 exclude_site는 _closure_penalty_value()에서 그 캐싱된 결과 위에
+# 훨씬 싼 delta 계산으로 따로 처리한다(closure_penalty.compute_site_exclusion_delta
+# 참고) — 이 딕셔너리에 넣으면 exclude_site별로 캐시 키가 갈라져서 카드를
+# 클릭할 때마다 도시 전체를 다시 계산하게 된다.
 HOURLY_COMPONENT_LOADERS: dict[str, "Callable[[str], pd.DataFrame]"] = {
     "closure_penalty": lambda ts_date: closure_penalty.compute_hourly_penalty(
         closure_penalty.load_ground_zero_records(_latest_mapping_dt()),
         ts_date,
         _load_adjacency(),
         _load_capacity_by_segment(),
+        _load_lanes_by_segment(),
     ),
     "tlc_volume": lambda ts_date: _load_tlc_volume_table(),
     "event_boost": lambda ts_date: _event_boost_table_for_date(ts_date),
@@ -108,10 +117,19 @@ def _latest_mapping_dt() -> str:
     개념이다: 이건 "우리가 아는 공사/통제 허가 목록을 언제 기준으로
     수집했는지"이고, ts_date는 "그 허가들 중 어느 게 그 날짜에 실제로
     활성인지" 판단 기준이다.
+
+    _closure_penalty_value()가 exclude_site 경로에서 시간(hour)마다 이 함수를
+    부르므로(하루 전체 조회 시 최대 24번) glob 스캔을 매번 반복하지 않도록
+    캐싱한다 — 이 스냅샷은 프로세스 실행 중 바뀌지 않는다(매핑 파이프라인이
+    새 파티션을 만들어도 서버를 재시작해야 반영되는 다른 캐시들과 동일).
     """
+    if "latest_mapping_dt" in _cache:
+        return _cache["latest_mapping_dt"]
+
     mapping_dt = _latest_run_date(closure_penalty.MAP_ROAD_CONTROL_SEGMENT_DIR.name)
     if mapping_dt is None:
         raise RuntimeError("map_road_control_segment 데이터가 없습니다 — 매핑 파이프라인을 먼저 실행하세요.")
+    _cache["latest_mapping_dt"] = mapping_dt
     return mapping_dt
 
 
@@ -120,6 +138,14 @@ def _load_capacity_by_segment() -> dict:
     if "capacity_by_segment" not in _cache:
         _cache["capacity_by_segment"] = closure_penalty.load_capacity_by_segment()
     return _cache["capacity_by_segment"]
+
+
+def _load_lanes_by_segment() -> dict:
+    """segment_id -> lanes_total. closure_penalty의 NCHRP 차로 기반 보정에
+    쓰인다(_lane_aware_half_saturation) — 요청마다 다시 읽지 않도록 캐싱한다."""
+    if "lanes_by_segment" not in _cache:
+        _cache["lanes_by_segment"] = closure_penalty.load_lanes_by_segment()
+    return _cache["lanes_by_segment"]
 
 
 def _event_boost_table_for_date(ts_date: str) -> pd.DataFrame:
@@ -245,6 +271,92 @@ def _hourly_lookup(component_name: str, ts_date: str) -> dict[tuple[str, int], f
     return lookup
 
 
+def _load_ground_zero_records_cached(mapping_dt: str) -> pd.DataFrame:
+    """closure_penalty.load_ground_zero_records()는 parquet 두 개를 읽는
+    비용이 있어서(실측 ~0.4초) 요청마다 다시 읽지 않도록 캐싱한다."""
+    cache_key = f"ground_zero_records::{mapping_dt}"
+    if cache_key in _cache:
+        return _cache[cache_key]
+    records = closure_penalty.load_ground_zero_records(mapping_dt)
+    _cache[cache_key] = records
+    return records
+
+
+def _closure_intensity_lookup(ts_date: str) -> dict[tuple[str, int], float]:
+    """(segment_id, hour) -> 도시 전체 기준 closure_intensity(가공 전 원값).
+    _hourly_lookup("closure_penalty", ts_date)이 이미 계산해서 캐싱해 둔
+    데이터프레임에서 컬럼만 다르게 뽑는 거라 추가 계산이 없다 —
+    _closure_penalty_value()가 exclude_site를 뺄 때 이 원값이 필요하다
+    (가공된 closure_capacity_reduction에서는 역산이 안 됨)."""
+    cache_key = f"closure_intensity_lookup::{ts_date}"
+    if cache_key in _cache:
+        return _cache[cache_key]
+    df = _load_hourly_table("closure_penalty", ts_date)
+    lookup = {
+        (seg, int(hour)): value
+        for seg, hour, value in zip(df["segment_id"], df["hour"], df["closure_intensity"])
+    }
+    _cache[cache_key] = lookup
+    return lookup
+
+
+def _closure_penalty_value(segment_id: str, hour: int, ts_date: str, exclude_site: dict | None) -> float:
+    """closure_penalty(closure_capacity_reduction) 값을 segment_id x hour
+    기준 하나만 뽑는다.
+
+    exclude_site가 없으면 도시 전체 계산 결과(ts_date별로 캐싱됨)에서 그냥
+    조회한다 — 기존과 동일.
+
+    exclude_site가 있으면("이 현장 하나만 없었다면") 도시 전체를 그 사이트
+    하나 뺀 채로 다시 계산하지 않는다 — compute_hourly_penalty()가 records
+    17만 건 이상을 홉 전파하는 무거운 연산이라(실측 ~5초), 카드를 클릭할
+    때마다 그러면 대시보드가 그때마다 몇 초씩 멈춘다. 대신:
+      1. 도시 전체 결과(이미 캐싱됨)에서 이 (segment_id, hour)의 raw
+         closure_intensity를 가져오고,
+      2. exclude_site 하나가 그 시각에 기여하는 양만 훨씬 싸게 계산해서
+         (closure_penalty.compute_site_exclusion_delta) 빼고,
+      3. 남은 intensity로 capacity_reduction만 다시 계산한다(segment 하나짜리
+         계산이라 사실상 공짜) — intensity 누적이 진앙별 선형 합이라 이 결과는
+         "그 사이트를 빼고 처음부터 다시 계산"한 것과 수학적으로 동일하다.
+    """
+    if not exclude_site:
+        return _hourly_lookup("closure_penalty", ts_date).get((segment_id, hour), 0.0)
+
+    full_intensity = _closure_intensity_lookup(ts_date).get((segment_id, hour), 0.0)
+    records = _load_ground_zero_records_cached(_latest_mapping_dt())
+    contribution = closure_penalty.compute_site_exclusion_delta(
+        records, exclude_site, ts_date, hour, _load_adjacency(), segment_id,
+    )
+    remaining_intensity = max(0.0, full_intensity - contribution)
+    if remaining_intensity <= 0:
+        return 0.0
+
+    capacity = _load_capacity_by_segment().get(segment_id)
+    if not capacity:
+        return 0.0
+    half_saturation = closure_penalty._lane_aware_half_saturation(_load_lanes_by_segment().get(segment_id))
+    reduction_ratio = (
+        closure_penalty.URBAN_WORK_ZONE_MAX_REDUCTION * remaining_intensity / (remaining_intensity + half_saturation)
+    )
+    return -(capacity * reduction_ratio)
+
+
+def _sanitize_nan(obj):
+    """JSON(RFC 8259)은 NaN을 허용하지 않는데, Starlette의 JSONResponse가
+    NaN을 만나면 그대로 ValueError로 죽어서 500이 난다(실측: 맨해튼
+    세그먼트의 약 15%가 LION 원본에 lanes_total이 없어서 capacity_per_hour가
+    NaN이고, 그 세그먼트를 조회하면 traffic_score 계산 전체가 NaN으로
+    번져서 API가 죽었음). 응답에 들어갈 NaN float은 전부 None으로 바꿔서
+    "값이 없다"는 의미는 그대로 유지하면서 직렬화 가능하게 만든다."""
+    if isinstance(obj, float) and math.isnan(obj):
+        return None
+    if isinstance(obj, dict):
+        return {k: _sanitize_nan(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_sanitize_nan(v) for v in obj]
+    return obj
+
+
 def _enabled_items(components: dict, row: pd.Series) -> list[dict]:
     """설정에서 enabled인 항목만, {name, value, weight, contribution} 형태로 뽑는다."""
     items = []
@@ -258,7 +370,13 @@ def _enabled_items(components: dict, row: pd.Series) -> list[dict]:
     return items
 
 
-def get_traffic_score(segment_id: str, ts_hour: int | None = None, ts_date: str | None = None) -> dict:
+def get_traffic_score(
+    segment_id: str,
+    ts_hour: int | None = None,
+    ts_date: str | None = None,
+    include_closure_penalty: bool = True,
+    exclude_site: dict | None = None,
+) -> dict:
     """
     segment_id x ts_hour x ts_date 하나의 traffic_score와 구성 요소별 세부값을
     돌려주는 단일 조회 인터페이스.
@@ -267,6 +385,21 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None, ts_date: str 
     closure_penalty가 segment_id x hour이고 그 활성 여부가 실제 permit 날짜
     범위/요일에 달려 있어서 둘 다 결과에 영향을 준다(centrality/base_capacity는
     여전히 분기 1회 정적값).
+
+    include_closure_penalty=False: "공사/통제 영향이 아예 하나도 없었다면"이라는
+    가상의 기준선(공사 전) 점수를 계산한다 — 대시보드에서 실제 값(공사 후)과
+    나란히 비교해서 "이 시간대는 공사 때문에 점수가 얼마나 깎였는지" 보여주기
+    위함이다. yaml 설정 자체를 바꾸는 게 아니라 이 호출 한 번에만 capacity
+    쪽 closure_penalty를 로컬로 꺼서 계산하므로, load_weights()가 매 호출
+    새로 파싱해 돌려주는 dict를 그대로 건드려도 다른 호출에 영향이 없다.
+
+    exclude_site: include_closure_penalty=True인 상태에서, "이 현장 하나만
+    없었다면"을 보고 싶을 때 쓴다 — 그 세그먼트에 다른 공사/통제가 같이
+    겹쳐 있어도 그건 그대로 반영하고, 지정한 현장 하나의 기여분만 뺀다.
+    closure_penalty.compute_site_exclusion_delta()/_closure_penalty_value() 참고. 카드
+    클릭으로 특정 공사를 보고 있을 때(대시보드 "이 현장 없을 때")와,
+    include_closure_penalty=False(지도/검색으로 세그먼트 전체를 보고 있을
+    때 "모든 공사 없을 때")는 서로 다른 계산이라 라벨을 구분해야 한다.
 
     Raises:
         KeyError: segment_id가 dim_segment(+score)에 없을 때.
@@ -285,12 +418,24 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None, ts_date: str 
 
     # 시간대별 컴포넌트는 전부 여기서 일괄 채운다 — HOURLY_COMPONENT_LOADERS에
     # 등록된 것만큼 자동으로 반영되고, 값이 없으면(그 시간엔 영향 없음) 0.0.
+    # closure_penalty만 예외 — exclude_site가 있으면 도시 전체를 다시 계산하는
+    # 대신 _closure_penalty_value()의 저비용 delta 경로를 쓴다(위 함수 참고).
     for name in HOURLY_COMPONENT_LOADERS:
         column = COMPONENT_SOURCES[name]
-        row[column] = _hourly_lookup(name, ts_date).get((segment_id, ts_hour), 0.0)
+        if name == "closure_penalty":
+            row[column] = _closure_penalty_value(segment_id, ts_hour, ts_date, exclude_site)
+        else:
+            row[column] = _hourly_lookup(name, ts_date).get((segment_id, ts_hour), 0.0)
 
     demand_items = _enabled_items(weights["components"]["demand"], row)
-    capacity_items = _enabled_items(weights["components"]["capacity"], row)
+
+    capacity_components = weights["components"]["capacity"]
+    if not include_closure_penalty and "closure_penalty" in capacity_components:
+        capacity_components = {
+            name: (cfg if name != "closure_penalty" else {**cfg, "enabled": False})
+            for name, cfg in capacity_components.items()
+        }
+    capacity_items = _enabled_items(capacity_components, row)
 
     demand_value = sum(i["contribution"] for i in demand_items)
     capacity_value = sum(i["contribution"] for i in capacity_items)
@@ -299,20 +444,34 @@ def get_traffic_score(segment_id: str, ts_hour: int | None = None, ts_date: str 
     lanes_total = row.get("lanes_total")
     lanes_total = None if lanes_total is None or pd.isna(lanes_total) else int(lanes_total)
 
-    return {
+    # capacity_per_hour(따라서 base_capacity)가 결측인 세그먼트가 있어서
+    # (LION 원본에 lanes_total이 없는 경우, 맨해튼 기준 약 15%) demand_value/
+    # capacity_value/traffic_score, components 안의 개별 값까지 NaN으로
+    # 번질 수 있다 — capacity_value가 0이 아니라 NaN이면 위 `if capacity_value`
+    # 체크를 통과해버려서(NaN은 falsy가 아님) None이 아니라 NaN이 된다.
+    # _sanitize_nan()이 이 전체 응답에서 NaN을 전부 None으로 바꿔서 API가
+    # 죽지 않게 한다(_sanitize_nan 참고).
+    return _sanitize_nan({
         "segment_id": segment_id,
         "ts_hour": ts_hour,
         "ts_date": ts_date,
+        "include_closure_penalty": include_closure_penalty,
+        "exclude_site": exclude_site,
         "traffic_score": traffic_score,
         "lanes_total": lanes_total,
         "components": {
             "demand": {"value": demand_value, "items": demand_items},
             "capacity": {"value": capacity_value, "items": capacity_items},
         },
-    }
+    })
 
 
-def get_traffic_score_hourly(segment_id: str, ts_date: str | None = None) -> list[dict]:
+def get_traffic_score_hourly(
+    segment_id: str,
+    ts_date: str | None = None,
+    include_closure_penalty: bool = True,
+    exclude_site: dict | None = None,
+) -> list[dict]:
     """segment_id 하나의 (ts_date 기준) 0~23시 전체 프로파일 — get_traffic_score()를
     24번 재사용한다.
 
@@ -320,10 +479,22 @@ def get_traffic_score_hourly(segment_id: str, ts_date: str | None = None) -> lis
     이미 캐싱돼 있어서 24번 호출해도 실제로는 가벼운 딕셔너리 조회 24번일 뿐이다
     (매번 다시 계산하지 않음).
 
+    include_closure_penalty/exclude_site: get_traffic_score() 참고 — "공사
+    전/후 비교" 토글용으로 그대로 전달만 한다.
+
     Raises:
         KeyError: segment_id가 dim_segment(+score)에 없을 때.
     """
-    return [get_traffic_score(segment_id, ts_hour=h, ts_date=ts_date) for h in range(24)]
+    return [
+        get_traffic_score(
+            segment_id,
+            ts_hour=h,
+            ts_date=ts_date,
+            include_closure_penalty=include_closure_penalty,
+            exclude_site=exclude_site,
+        )
+        for h in range(24)
+    ]
 
 
 def _load_adjacency() -> dict:
@@ -331,6 +502,72 @@ def _load_adjacency() -> dict:
     if "adjacency" not in _cache:
         _cache["adjacency"] = closure_penalty.load_adjacency()
     return _cache["adjacency"]
+
+
+def get_nearby_segment_scores(
+    segment_id: str,
+    ts_hour: int | None = None,
+    ts_date: str | None = None,
+    max_hops: int = 3,
+    max_branches: int = 2,
+) -> dict:
+    """
+    segment_id를 중심으로 인접 도로를 최대 max_hops홉까지 BFS로 묶은 트리 —
+    대시보드에서 세그먼트를 선택했을 때 "주변 도로만 지도에서 강조"하는
+    기능(어떤 segment_id들이 근처인지) + 그 근처 도로들의 호버 툴팁(공사
+    전/후 비교)용 데이터를 겸한다.
+
+    각 노드는 traffic_score(공사 후, 실제 반영값)와 traffic_score_before
+    (공사/통제 영향이 전혀 없었다면의 가상값, include_closure_penalty=False)
+    를 같이 담는다 — "이 근처 도로가 공사 때문에 얼마나 나빠졌는지" 호버로
+    바로 비교할 수 있게 하기 위함이다.
+
+    max_branches: 실제 교차로는 막다른 골목이 아닌 이상 인접 도로가 3개
+    이상인 경우가 대부분이라, 다 담으면 근처 집합이 감당 안 될 만큼
+    커진다(실측: 3홉이면 수십 개까지도 감). 노드당 자식 수를 이 값으로
+    제한한다(우선순위 없이 adjacency 그래프에 담긴 순서대로 앞에서부터
+    max_branches개).
+
+    Raises:
+        KeyError: segment_id가 dim_segment(+score)에 없을 때.
+    """
+    adjacency = _load_adjacency()
+
+    # 먼저 루트 조회로 KeyError를 앞에서 터뜨린다 — 존재하지 않는 segment_id면
+    # 트리를 만들 필요도 없이 바로 404로 응답해야 한다.
+    get_traffic_score(segment_id, ts_hour=ts_hour, ts_date=ts_date)
+
+    def scores_of(seg_id: str) -> tuple[float | None, float | None]:
+        try:
+            after = get_traffic_score(seg_id, ts_hour=ts_hour, ts_date=ts_date)["traffic_score"]
+        except KeyError:
+            # 인접 그래프엔 있는데 dim_segment(+score)엔 없는 경우(비정상
+            # 데이터) — 트리에서 빼지 않고 점수만 결측으로 표시한다.
+            return None, None
+        before = get_traffic_score(
+            seg_id, ts_hour=ts_hour, ts_date=ts_date, include_closure_penalty=False
+        )["traffic_score"]
+        return after, before
+
+    def build(seg_id: str, hop: int, visited: set) -> dict:
+        after, before = scores_of(seg_id)
+        node = {
+            "segment_id": seg_id,
+            "hop": hop,
+            "traffic_score": after,
+            "traffic_score_before": before,
+            "is_construction": hop == 0,
+            "children": [],
+        }
+        if hop >= max_hops:
+            return node
+
+        neighbors = [n for n in adjacency.get(seg_id, []) if n not in visited][:max_branches]
+        visited.update(neighbors)
+        node["children"] = [build(n, hop + 1, visited) for n in neighbors]
+        return node
+
+    return build(segment_id, 0, {segment_id})
 
 
 def get_nearby_closures(segment_id: str, ts_hour: int | None = None, ts_date: str | None = None) -> list[dict]:

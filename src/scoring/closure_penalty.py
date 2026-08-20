@@ -48,8 +48,12 @@ closure_penalty(용량 감소량)를 계산한다 -> dim_segment_closure_penalty
    변환한다: reduction_ratio = intensity / (intensity + K) (점근선/포화 곡선 —
    intensity가 아무리 커도 100%에 도달하지 않는다. 처음엔 선형 캡을 썼다가
    영향받는 세그먼트의 48.8%가 용량 0이 되는 문제를 발견해서 이 방식으로
-   교체했다). K(HALF_SATURATION_INTENSITY)도 근거 있는 값이 아닌 초안이다 —
-   TODO(팀 검토 필요).
+   교체했다). K는 이제 고정 상수가 아니라 NCHRP Report 03-107(HCM 작업구간
+   용량 방법론) 실측 범위를 세그먼트의 실제 차로 수(lanes_total)에 맞게
+   보정한 값이다 — "차로 1개만 남았을 때 용량이 68%(감소 32%)로 떨어진다"는
+   실측 앵커를 지나가도록 세그먼트별로 K를 역산한다(_lane_aware_half_saturation
+   참고). lanes_total을 모르는 세그먼트만 예전 고정값(HALF_SATURATION_INTENSITY,
+   PENALTY_RATIO=0.3 기준)으로 폴백한다.
 
 결과 스키마: segment_id, hour(0~23), closure_intensity, closure_capacity_reduction.
 같은 segment도 시간대별로 다른 행을 가질 수 있다(예: 야간 공사면 낮 시간대엔
@@ -71,7 +75,7 @@ import pandas as pd
 from src.common.config import GOLD_DIR, SILVER_DIR
 from src.common.logger import get_logger
 from src.common.utils import save_parquet
-from src.construction_stipulations.silver import extract_work_embargoes
+from src.construction_stipulations.silver import load_built_embargoes
 from src.lion.segment_adjacency import GRAPH_SEGMENT_ADJACENCY_PATH
 from src.lion.silver import DIM_SEGMENT_PATH
 
@@ -84,15 +88,65 @@ CONSTRUCTION_GOLD_DIR = GOLD_DIR / "construction"
 
 MAX_HOPS = 3
 # TODO(팀 검토 필요): 근거 없는 초안 — "홉이 멀수록 영향이 줄어든다"는 정성적
-# 요구만 반영한 선형 감쇠.
-HOP_DECAY = {0: 1.0, 1: 0.75, 2: 0.5, 3: 0.25}
+# 요구만 반영한 감쇠. 진앙 segment 자체의 최대 감소율을 100%가 아니라
+# URBAN_WORK_ZONE_MAX_REDUCTION(58%)로 캡을 씌운 대신(아래 참고), 그 도로가
+# 막혀서 못 가는 차량이 실제로는 주변 도로로 우회하는 효과를 반영하기 위해
+# 홉 감쇠값을 기존(0.75/0.5/0.25)보다 올렸다 — 실측 검증된 값은 아니고
+# "진앙 하나에 캡을 씌운 만큼 주변으로 더 퍼지게 한다"는 정성적 보정이다.
+HOP_DECAY = {0: 1.0, 1: 0.85, 2: 0.65, 3: 0.4}
 
-# TODO(팀 검토 필요): PENALTY_RATIO=0.3은 "활성 공사/통제 1건(intensity=1)당
-# capacity_per_hour의 30%를 깎는다"는 의도를 반영한 값이고, 이걸 점근선 곡선
-# intensity/(intensity+K)가 intensity=1에서 지나가도록 역산해서 K를 구했다.
-# 자세한 경위(선형 캡의 문제)는 모듈 docstring 5번 참고.
+# PENALTY_RATIO=0.3(고정값) 대신 NCHRP Report 03-107(HCM 작업구간 용량
+# 방법론) 실측 범위로 half-saturation을 세그먼트의 실제 차로 수(lanes_total)
+# 기반으로 계산한다 — _lane_aware_half_saturation() 참고. lanes_total을 모르는
+# 세그먼트(LION 원본에 없는 경우, 맨해튼 기준 약 15%)를 위한 폴백값으로만
+# 이 고정 상수를 남겨둔다.
 PENALTY_RATIO = 0.3
 HALF_SATURATION_INTENSITY = (1 - PENALTY_RATIO) / PENALTY_RATIO  # ≈ 2.33
+
+# NCHRP Report 03-107(FREEVAL-WZ/HCM 7판이 쓰는 작업구간 용량 조정계수,
+# CAF) 실측 범위: 다차선 도로에서 "차로 1개만 남았을 때" 용량이 원래의
+# 약 68%(감소 32%)로 떨어진다고 보고한다. 이 프로젝트는 정확히 몇 차로가
+# 막혔는지는 모르지만(허가 데이터에 없음) LION에 세그먼트별 전체 차로 수
+# (lanes_total)는 있어서, "intensity가 늘어나 차로 1개만 남은 것과 같아지는
+# 지점"에서 이 실측 감소율이 나오도록 half-saturation을 세그먼트별로 역산한다.
+NCHRP_ONE_LANE_OPEN_CAF = 0.68
+
+# reduction_ratio = intensity/(intensity+K)는 K가 아무리 작아도(예: 1차로
+# 도로) intensity가 커지면 결국 100%(완전폐쇄)에 수렴한다 — 근데 100% 완전
+# 폐쇄는 어떤 레퍼런스로도 검증 안 된 극단값이다(1차로 도로 자체를 측정한
+# 연구가 아니라 "다차선 도로가 1차로까지 좁아진" 경우만 측정됨). 대신 HCM
+# 도심 도로(urban street) 실측 연구 중 "미드블록 작업구간 존재 시 관측된
+# 심각한 사례"(58% 감소, 1,040 vphpl 감소)를 절대 상한으로 쓴다 — 아무리
+# intensity가 커져도(=lanes_total 기준 완전폐쇄 시점을 넘어서도) 이 상한
+# 이상은 안 깎는다. 대신 그만큼 못 지나가는 차량이 주변 도로로 우회하는
+# 효과를 HOP_DECAY를 올려서 반영한다(위 참고).
+URBAN_WORK_ZONE_MAX_REDUCTION = 0.58
+
+
+def _lane_aware_half_saturation(lanes_total: float | None) -> float:
+    """reduction_ratio = URBAN_WORK_ZONE_MAX_REDUCTION * intensity/(intensity+K)
+    (to_capacity_reduction 참고)에 쓰이는 K를, "차로 (lanes_total-1)개가
+    막혀서 1개만 남으면 NCHRP 실측대로 32% 감소" 지점을 지나가도록
+    lanes_total 기준으로 계산한다 — K가 작을수록(=차로가 적을수록) 같은
+    intensity에도 URBAN_WORK_ZONE_MAX_REDUCTION 상한에 더 빨리 도달한다.
+
+    lanes_total이 1이면(편도 1차로) 그 유일한 차로가 곧 "남은 차로 0개"
+    상태와 같아서, 활성 공사가 하나라도 있으면 즉시(또는 거의 즉시) 상한에
+    도달한다 — 실제로 1차선 도로는 공사 하나만 걸려도 체감상 거의 막힌 것과
+    같다는 상식과 맞지만, 상한 자체가 100%가 아니라 58%로 캡이 걸려 있어
+    "완전폐쇄"까지 주장하진 않는다.
+
+    lanes_total을 모르면(결측) 기존 고정값(HALF_SATURATION_INTENSITY,
+    PENALTY_RATIO=0.3 기준)으로 폴백한다 — 데이터가 없을 때의 안전한 기본값.
+    """
+    if lanes_total is None or pd.isna(lanes_total) or lanes_total < 1:
+        return HALF_SATURATION_INTENSITY
+    if lanes_total <= 1:
+        return 1e-6  # 사실상 즉시 포화 — 위 docstring 참고
+    lanes_closed_for_one_open = lanes_total - 1
+    # reduction_ratio(intensity=lanes_closed_for_one_open) = 1 - CAF가 되도록 역산:
+    # (L-1)/((L-1)+K) = 1-CAF  =>  K = (L-1) * CAF / (1-CAF)
+    return lanes_closed_for_one_open * NCHRP_ONE_LANE_OPEN_CAF / (1 - NCHRP_ONE_LANE_OPEN_CAF)
 
 # work_days_code -> 그 요일 코드가 활성인 요일(weekday(), 0=월~6=일) 조건.
 # 여기 없는 코드(None, "OTHER" 등)는 활성 여부를 모른다는 뜻이라 "항상 활성"으로
@@ -114,6 +168,13 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     query_date에 실제로 활성인지는 여기서 거르지 않는다(compute_hourly_penalty
     에서 처리) — 후보 목록 자체는 날짜와 무관하게 한 번만 로드해서 여러
     query_date에 재사용할 수 있게 하기 위함.
+
+    on_street/from_street/to_street도 (집계 자체엔 안 쓰이지만) 남겨둔다 —
+    permit_id는 물리적 현장 중복 제거 과정에서 이미 버려져서, "이 현장 하나만
+    빼고 계산" 같은 요청은 permit_id로는 할 수가 없다. 대신 이 세 필드 +
+    work_start_ts/work_end_ts/segment_id 조합이 get_newly_issued_closures()가
+    쓰는 것과 동일한 "물리적 현장" 식별 기준이라, compute_site_exclusion_delta()가
+    이 조합으로 매칭한다.
     """
     construction_path = MAP_ROAD_CONTROL_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
     construction = pd.read_parquet(
@@ -138,7 +199,8 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
         subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
     )
     construction = construction[
-        ["segment_id", "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
+        ["segment_id", "on_street", "from_street", "to_street",
+         "work_start_ts", "work_end_ts", "work_start_hour", "work_end_hour", "work_days_code"]
     ]
 
     closure_path = MAP_ROAD_CLOSURE_SEGMENT_DIR / f"dt={mapping_dt}" / "data.parquet"
@@ -150,7 +212,7 @@ def load_ground_zero_records(mapping_dt: str) -> pd.DataFrame:
     closures = closures.drop_duplicates(
         subset=["on_street", "from_street", "to_street", "work_start_ts", "work_end_ts", "segment_id"]
     )
-    closures = closures[["segment_id", "work_start_ts", "work_end_ts"]].copy()
+    closures = closures[["segment_id", "on_street", "from_street", "to_street", "work_start_ts", "work_end_ts"]].copy()
     # road_closures 원본엔 시간대 제약 자체가 없다 — NaN으로 두면 아래
     # _hour_mask/_day_mask에서 "항상 활성"으로 처리된다. construction 쪽과
     # 동일한 dtype으로 명시해서 concat 시 전부-NA 컬럼 dtype 추론 경고를 피한다.
@@ -392,8 +454,13 @@ def load_embargoes_by_permit() -> dict[str, list[dict]]:
     목록. "이 날짜에 새로 올라온 공사" 상세 표시(참고 정보)용이다 — embargo는
     연중 특정 날짜에만 있는 예외적인 사건이라 closure_penalty/traffic_score
     계산에는 반영하지 않는다(compute_hourly_penalty() docstring 참고). 하나의
-    permit이 여러 embargo 기간을 가질 수 있어 permit 기준으로 그룹핑한다."""
-    embargoes = extract_work_embargoes()
+    permit이 여러 embargo 기간을 가질 수 있어 permit 기준으로 그룹핑한다.
+
+    load_built_embargoes()를 쓴다 — construction_pipeline.py의
+    extract_embargoes 태스크(build_embargoes())가 정규식+LLM 폴백까지 미리
+    다 처리해서 저장해 둔 결과라, 이 온디맨드 API 경로에서는 동기 LLM 호출이
+    전혀 일어나지 않는다."""
+    embargoes = load_built_embargoes()
     if embargoes.empty:
         return {}
 
@@ -508,6 +575,12 @@ def load_capacity_by_segment() -> dict:
     return dim.set_index("segment_id")["capacity_per_hour"].to_dict()
 
 
+def load_lanes_by_segment() -> dict:
+    """_lane_aware_half_saturation()에 넘길 세그먼트별 전체 차로 수."""
+    dim = pd.read_parquet(DIM_SEGMENT_PATH, columns=["segment_id", "lanes_total"])
+    return dim.set_index("segment_id")["lanes_total"].to_dict()
+
+
 def spread_with_decay(
     ground_zero: pd.Series,
     adjacency: dict,
@@ -544,14 +617,21 @@ def spread_with_decay(
 def to_capacity_reduction(
     accum: dict[str, float],
     capacity_by_segment: dict,
-    half_saturation: float = HALF_SATURATION_INTENSITY,
+    lanes_by_segment: dict | None = None,
 ) -> pd.DataFrame:
+    """lanes_by_segment가 있으면 세그먼트별 차로 수 기준 NCHRP 보정 half
+    saturation을 쓰고(_lane_aware_half_saturation), 없으면(예: 기존 호출부
+    호환) 고정값(HALF_SATURATION_INTENSITY)을 그대로 쓴다."""
     rows = []
     for seg_id, intensity in accum.items():
         cap = capacity_by_segment.get(seg_id)
         if cap is None or cap <= 0:
             continue
-        reduction_ratio = intensity / (intensity + half_saturation)
+        if lanes_by_segment is not None:
+            half_saturation = _lane_aware_half_saturation(lanes_by_segment.get(seg_id))
+        else:
+            half_saturation = HALF_SATURATION_INTENSITY
+        reduction_ratio = URBAN_WORK_ZONE_MAX_REDUCTION * intensity / (intensity + half_saturation)
         reduction = -(cap * reduction_ratio)
         rows.append({"segment_id": seg_id, "closure_intensity": intensity, "closure_capacity_reduction": reduction})
 
@@ -563,6 +643,7 @@ def compute_hourly_penalty(
     query_date: str,
     adjacency: dict,
     capacity_by_segment: dict,
+    lanes_by_segment: dict | None = None,
 ) -> pd.DataFrame:
     """query_date 기준 날짜 범위로 먼저 걸러낸 뒤, 0~23시 각각에 대해 그 시각
     기준 활성인 레코드만으로 감쇠/합산/용량감소를 계산한다.
@@ -574,6 +655,13 @@ def compute_hourly_penalty(
     보인다(실측: Summer Streets embargo가 걸린 날 하루 전체 공사 영향이
     0으로 보였음). embargo 정보는 대신 get_newly_issued_closures()에서
     "이 permit에 이런 embargo 기간이 있다"는 참고 정보로만 보여준다.
+
+    "이 현장 하나만 빼고 계산" 같은 요청은 이 함수를 다시 통째로 돌리지 않고
+    compute_site_exclusion_delta()로 처리한다 — records가 17만 건이 넘어
+    도시 전체 hop 전파 자체가 무겁다(실측 ~5초). 대시보드에서 카드를 클릭할
+    때마다 이 함수를 다시 부르면 그때마다 5초씩 걸린다 — 대신 이미 계산된
+    전체 결과에서 그 사이트 하나의 기여분만 빼는 쪽이 훨씬 싸다(아래 함수
+    참고).
     """
     weekday = date.fromisoformat(query_date).weekday()
     in_range = records[_date_mask(query_date, records["work_start_ts"], records["work_end_ts"])]
@@ -590,7 +678,7 @@ def compute_hourly_penalty(
 
         intensity = active.groupby("segment_id").size()
         accum = spread_with_decay(intensity, adjacency)
-        hour_df = to_capacity_reduction(accum, capacity_by_segment)
+        hour_df = to_capacity_reduction(accum, capacity_by_segment, lanes_by_segment)
         if hour_df.empty:
             continue
         hour_df["hour"] = hour
@@ -600,6 +688,65 @@ def compute_hourly_penalty(
         return pd.DataFrame(columns=["segment_id", "closure_intensity", "closure_capacity_reduction", "hour"])
 
     return pd.concat(frames, ignore_index=True)
+
+
+def compute_site_exclusion_delta(
+    records: pd.DataFrame,
+    exclude_site: dict,
+    query_date: str,
+    hour: int,
+    adjacency: dict,
+    target_segment_id: str,
+    max_hops: int = MAX_HOPS,
+    decay: dict[int, float] = HOP_DECAY,
+) -> float:
+    """exclude_site 진앙 레코드 하나가 (query_date, hour)에 활성이면서
+    target_segment_id에 hop 감쇠로 기여하는 intensity량 — "도시 전체 결과에서
+    이 사이트 하나만 뺀 값"을 얻기 위한 저비용 헬퍼다.
+
+    compute_hourly_penalty()에 exclude_site를 넘겨서 records에서 그 한 행만
+    뺀 뒤 처음부터 다시 계산해도 결과는 동일하지만, records가 17만 건이 넘어
+    도시 전체 hop 전파 자체가 무겁다(실측 ~5초). intensity 누적
+    (spread_with_decay)이 진앙별로 독립적으로 더해지는 선형 합이라는 점을
+    이용하면, "전체 결과 - 이 사이트 하나의 기여분"이 "이 사이트를 뺀 전체
+    재계산"과 수학적으로 완전히 동일하다. 그래서 이 함수는 그 사이트 하나가
+    실제로 활성인지만 확인하고(boolean mask, 벡터 연산이라 빠름) hop 거리를
+    구해서(BFS가 max_hops로 깊이 제한돼 있어 그래프 크기와 무관하게 빠름)
+    감쇠값 하나만 돌려준다 — 호출부(get_traffic_score)가 캐싱된 전체
+    intensity에서 이 값을 빼기만 하면 된다.
+
+    exclude_site와 매칭되는 레코드가 없거나(이미 지워졌거나 오타 등), 그
+    시각에 비활성이거나, target_segment_id가 hop 범위 밖이면 0.0을 반환한다
+    (= 뺄 게 없다 = 전체 결과 그대로).
+    """
+    match = (
+        (records["on_street"] == exclude_site["on_street"])
+        & (records["from_street"] == exclude_site["from_street"])
+        & (records["to_street"] == exclude_site["to_street"])
+        & (records["work_start_ts"] == pd.Timestamp(exclude_site["work_start_ts"]))
+        & (records["work_end_ts"] == pd.Timestamp(exclude_site["work_end_ts"]))
+        & (records["segment_id"] == exclude_site["segment_id"])
+    )
+    site_row = records[match].head(1)
+    if site_row.empty:
+        return 0.0
+
+    weekday = date.fromisoformat(query_date).weekday()
+    in_range = site_row[_date_mask(query_date, site_row["work_start_ts"], site_row["work_end_ts"])]
+    if in_range.empty:
+        return 0.0
+    active = in_range[
+        _hour_mask(hour, in_range["work_start_hour"], in_range["work_end_hour"])
+        & _day_mask(weekday, in_range["work_days_code"])
+    ]
+    if active.empty:
+        return 0.0
+
+    hops = _segments_within_hops(exclude_site["segment_id"], adjacency, max_hops)
+    hop = hops.get(target_segment_id)
+    if hop is None:
+        return 0.0
+    return decay[hop]
 
 
 def validate(df: pd.DataFrame) -> None:
@@ -634,8 +781,9 @@ def build(run_date: str | None = None) -> str:
     records = load_ground_zero_records(run_date)
     adjacency = load_adjacency()
     capacity_by_segment = load_capacity_by_segment()
+    lanes_by_segment = load_lanes_by_segment()
 
-    df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment)
+    df = compute_hourly_penalty(records, run_date, adjacency, capacity_by_segment, lanes_by_segment)
 
     path = save_parquet(df, SILVER_DIR / OUT_SOURCE / f"dt={run_date}")
 

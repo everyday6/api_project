@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Optional
 
 import pandas as pd
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
 from shapely import wkt
 
@@ -26,6 +26,7 @@ from src.scoring.traffic_score import (
     get_closure_data_date_range,
     get_map_data,
     get_nearby_closures,
+    get_nearby_segment_scores,
     get_newly_issued_closures,
     get_segment_geometries,
     get_traffic_score,
@@ -65,27 +66,108 @@ def dashboard():
     return FileResponse(DASHBOARD_DIR / "index.html")
 
 
+class ExcludeSiteQuery:
+    """단건/시간대별 두 엔드포인트가 똑같이 받는 exclude_* 6개 쿼리 파라미터를
+    한 곳에서만 선언하기 위한 묶음. FastAPI가 이 클래스의 __init__ 시그니처를
+    그대로 쿼리 파라미터로 풀어서 받아준다(Depends()). 필드를 추가/변경할
+    일이 생기면 여기 한 곳만 고치면 된다 — 예전엔 두 엔드포인트 함수 시그니처에
+    6개씩 그대로 복붙돼 있어서 하나만 고치고 하나를 빠뜨릴 위험이 있었다."""
+
+    def __init__(
+        self,
+        exclude_on_street: Optional[str] = None,
+        exclude_from_street: Optional[str] = None,
+        exclude_to_street: Optional[str] = None,
+        exclude_work_start_ts: Optional[str] = None,
+        exclude_work_end_ts: Optional[str] = None,
+        exclude_segment_id: Optional[str] = None,
+    ):
+        self.on_street = exclude_on_street
+        self.from_street = exclude_from_street
+        self.to_street = exclude_to_street
+        self.work_start_ts = exclude_work_start_ts
+        self.work_end_ts = exclude_work_end_ts
+        self.segment_id = exclude_segment_id
+
+
+def _build_exclude_site(q: ExcludeSiteQuery) -> Optional[dict]:
+    """6개 필드가 전부 와야만 exclude_site를 만든다 — 일부만 오면(프론트
+    버그 등) 조용히 무시하지 않고 그냥 None으로 둔다("모든 공사 없을 때"도
+    아니고 "이 현장 없을 때"도 아닌 어중간한 필터가 조용히 걸리는 걸 막기
+    위함). get_traffic_score()의 exclude_site 참고."""
+    fields = [q.on_street, q.from_street, q.to_street, q.work_start_ts, q.work_end_ts, q.segment_id]
+    if all(f is None for f in fields):
+        return None
+    if any(f is None for f in fields):
+        raise HTTPException(
+            status_code=400,
+            detail="exclude_* 파라미터는 6개(on_street, from_street, to_street, "
+                   "work_start_ts, work_end_ts, segment_id)를 전부 같이 보내야 합니다.",
+        )
+    return {
+        "on_street": q.on_street,
+        "from_street": q.from_street,
+        "to_street": q.to_street,
+        "work_start_ts": q.work_start_ts,
+        "work_end_ts": q.work_end_ts,
+        "segment_id": q.segment_id,
+    }
+
+
 @app.get("/api/traffic_score/{segment_id}")
-def api_get_traffic_score(segment_id: str, ts_hour: Optional[int] = None, ts_date: Optional[str] = None):
+def api_get_traffic_score(
+    segment_id: str,
+    ts_hour: Optional[int] = None,
+    ts_date: Optional[str] = None,
+    include_closure_penalty: bool = True,
+    exclude: ExcludeSiteQuery = Depends(),
+):
     """
     단건 조회. ts_hour/ts_date 생략 시 get_traffic_score()가 현재 시각/날짜
     (America/New_York)로 자동 대체한다.
+
+    공사 전/후 비교 토글용으로 계산 기준이 다른 두 가지를 지원한다 — 화면에
+    같이 노출되는 값이라 라벨을 서로 다르게 붙여야 한다(get_traffic_score()
+    exclude_site 참고):
+    - include_closure_penalty=false: "모든 공사 없을 때" (지도/검색으로 세그먼트를
+      직접 볼 때 — 그 세그먼트에 영향 주는 공사/통제를 전부 제거)
+    - exclude_* 6개(ExcludeSiteQuery): "이 현장 없을 때" (특정 공사 카드에서
+      들어왔을 때 — 그 현장 하나의 기여분만 제거, 다른 공사 영향은 그대로 유지)
     """
+    exclude_site = _build_exclude_site(exclude)
     try:
-        return get_traffic_score(segment_id, ts_hour=ts_hour, ts_date=ts_date)
+        return get_traffic_score(
+            segment_id,
+            ts_hour=ts_hour,
+            ts_date=ts_date,
+            include_closure_penalty=include_closure_penalty,
+            exclude_site=exclude_site,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
 
 
 @app.get("/api/traffic_score/{segment_id}/hourly")
-def api_get_traffic_score_hourly(segment_id: str, ts_date: Optional[str] = None):
+def api_get_traffic_score_hourly(
+    segment_id: str,
+    ts_date: Optional[str] = None,
+    include_closure_penalty: bool = True,
+    exclude: ExcludeSiteQuery = Depends(),
+):
     """
     segment_id 하나의 (ts_date 기준) 0~23시 전체 프로파일 — "하루 전체를 한눈에"
     보여주는 대시보드 막대 그래프용. get_traffic_score()를 24번 재사용할 뿐이라
-    별도 계산 로직은 없다.
+    별도 계산 로직은 없다. include_closure_penalty/exclude_* 파라미터는
+    api_get_traffic_score() 참고.
     """
+    exclude_site = _build_exclude_site(exclude)
     try:
-        return get_traffic_score_hourly(segment_id, ts_date=ts_date)
+        return get_traffic_score_hourly(
+            segment_id,
+            ts_date=ts_date,
+            include_closure_penalty=include_closure_penalty,
+            exclude_site=exclude_site,
+        )
     except KeyError:
         raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
 
@@ -98,6 +180,27 @@ def api_get_nearby_closures(segment_id: str, ts_hour: Optional[int] = None, ts_d
     """
     try:
         return get_nearby_closures(segment_id, ts_hour=ts_hour, ts_date=ts_date)
+    except KeyError:
+        raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
+
+
+@app.get("/api/traffic_score/{segment_id}/nearby_segments")
+def api_get_nearby_segment_scores(
+    segment_id: str,
+    ts_hour: Optional[int] = None,
+    ts_date: Optional[str] = None,
+    max_hops: int = 3,
+):
+    """
+    대시보드에서 segment를 선택했을 때 "주변 도로만 지도에서 강조" 표시하는
+    기능용 데이터. segment_id를 중심으로 인접 도로를 hop 트리로 묶어 각각의
+    traffic_score(공사 후)/traffic_score_before(공사 영향 없다고 가정한
+    가상값)와 함께 돌려준다 — 프론트는 이 트리에서 segment_id 집합만 뽑아
+    지도 하이라이트에 쓰고, 호버 시 두 점수를 비교해서 보여준다
+    (get_nearby_segment_scores() 참고).
+    """
+    try:
+        return get_nearby_segment_scores(segment_id, ts_hour=ts_hour, ts_date=ts_date, max_hops=max_hops)
     except KeyError:
         raise HTTPException(status_code=404, detail=f"segment_id를 찾을 수 없습니다: {segment_id}")
 

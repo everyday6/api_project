@@ -63,7 +63,8 @@ data/silver/{yellow,green,fhv,fhvhv}_tripdata_*/  (약 140개 파일, 3년치)
         ▼  (dropoff_location_id, hour) 기준 group by count
 zone_id x hour 하차수 집계  (최대 263 zone x 24시간 = 6,312행)
         │
-        ▼  map_zone_segment.parquet과 join (zone 총합을 그 zone의 모든 세그먼트에 동일 복사)
+        ▼  map_zone_segment.parquet과 join (zone 총합을 spatial_weight 비례로 분배 —
+        ▼  2026-08-19 개정, docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md 참고)
         ▼  routable 세그먼트 x 0~23시 풀 그리드에 left join, 미매치는 0으로 채움
 segment_id x hour 하차수  (맨해튼 세그먼트 수 x 24행)
         │
@@ -83,7 +84,7 @@ zone 단위로 먼저 집계한 뒤 세그먼트로 펼친다. 반대 순서(트
 |---|---|---|
 | `segment_id` | string | LION 세그먼트 ID (routable만) |
 | `hour` | int (0~23) | 시간대 (평일 기준) |
-| `dropoff_count_raw` | long | 세그먼트가 속한 zone의 평일 해당 시간대 총 하차수 (같은 zone의 모든 세그먼트가 동일값) |
+| `dropoff_count_raw` | double | 세그먼트가 속한 zone의 평일 해당 시간대 총 하차수 x spatial_weight (2026-08-19 개정 전엔 zone의 모든 세그먼트가 동일값을 받는 long 타입이었음) |
 | `tlc_volume` | double (0~1) | `dropoff_count_raw`를 전체 (segment_id, hour) 조합 기준 global percentile rank로 정규화한 값 |
 
 세그먼트 하나당 정확히 24행(트립이 0건인 시간대도 0으로 채워 행을 유지). 전체 행 수 =
@@ -109,8 +110,10 @@ zone 단위로 먼저 집계한 뒤 세그먼트로 펼친다. 반대 순서(트
 5. **zone 단위 집계**: `(dropoff_location_id, hour)` 기준 group by count → 작은 중간 결과.
 6. **zone → segment 펼치기**: `map_zone_segment.parquet`(`segment_id`, `zone_id`, `borough`)에서
    먼저 `borough == "Manhattan"`인 세그먼트만 남긴 뒤, `dropoff_location_id == zone_id`로
-   join한다. 하나의 zone에 여러 세그먼트가 속하면, zone의 하차수 총합을 그 세그먼트
-   전부에 동일하게 복사한다(세그먼트 수로 나누지 않음).
+   join한다. 하나의 zone에 여러 세그먼트가 속하면, `map_segment_spatial_weight.parquet`의
+   `spatial_weight`(zone 내부 상대 밀집도, zone별 합=1) 비례로 나눠 갖는다 (2026-08-19
+   개정 — 이전엔 zone 총합을 세그먼트 전부에 동일하게 복사했다. 설계 근거는
+   docs/superpowers/specs/2026-08-19-segment-spatial-weight-design.md 참고).
 7. **빈 시간대 채우기**: routable 세그먼트 전체 x 0~23시 풀 그리드를 만들고 6번 결과를
    left join, 매치 안 된 칸은 `dropoff_count_raw = 0`으로 채운다.
 8. **정규화**: `dropoff_count_raw`를 전체 (segment_id, hour) 조합(약 377만 행) 기준으로
