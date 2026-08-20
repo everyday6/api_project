@@ -320,6 +320,54 @@ LLM_CACHE_FLUSH_EVERY = 10
 LLM_SAMPLE_REVIEW_COUNT = 5
 
 
+# ─────────────────────────────────────────────────────────────
+# 시도 냉각(cooldown) — quota 초과 등으로 API 호출 자체가 안 된 문구를 "오늘
+# (run_date)은 이미 시도했다"고만 기억해 둔다. Airflow 자동 재시도(retries=3)나
+# 사람의 수동 재실행이 짧은 시간 안에 겹치면, quota가 이미 바닥난 상태에서
+# 같은 문구 수백 개를 계속 재요청해 quota 회복을 오히려 늦추는 문제가 있었다
+# (실제 사고: 2026-08-19 하루에 같은 280개 문구를 12번 재시도). quarantine
+# (영구 제외)과 달리 "오늘 하루만" 제외라서, 다음 날엔 자동으로 다시 시도
+# 대상이 된다 — quota처럼 "오늘만" 문제인 실패를 위한 것.
+# ─────────────────────────────────────────────────────────────
+_ATTEMPT_COOLDOWN_DIR = SILVER1_DIR / "llm_unavailable_attempts"
+_ATTEMPT_COOLDOWN_COLUMNS = ["stipulationfulltext", "last_attempt_date"]
+
+
+def _attempt_cooldown_path(category: str) -> Path:
+    return _ATTEMPT_COOLDOWN_DIR / f"category={category}" / "data.parquet"
+
+
+def _load_attempt_cooldown(category: str) -> pd.DataFrame:
+    path = _attempt_cooldown_path(category)
+    if not path.exists():
+        return pd.DataFrame(columns=_ATTEMPT_COOLDOWN_COLUMNS)
+    return pd.read_parquet(path)
+
+
+def attempted_today(category: str, run_date: str) -> set[str]:
+    """오늘(run_date) 이미 시도했다가 호출 자체가 안 됐던(quota 초과 등)
+    문구 집합. run_llm_fallback_batch가 API를 부르기 전에 이 집합을 걸러서
+    같은 날 안에서의 재시도 폭풍을 막는다."""
+    df = _load_attempt_cooldown(category)
+    if df.empty:
+        return set()
+    return set(df.loc[df["last_attempt_date"] == run_date, "stipulationfulltext"])
+
+
+def _record_unavailable_attempts(category: str, texts: list[str], run_date: str) -> None:
+    """texts를 "오늘 시도했으나 호출 자체가 안 됐다"로 기록한다. 문구당 최신
+    시도 날짜만 남긴다(과거 냉각 기록은 이후엔 의미가 없어서 무한 누적을
+    막는다)."""
+    if not texts:
+        return
+    existing = _load_attempt_cooldown(category)
+    new_rows = pd.DataFrame({"stipulationfulltext": texts, "last_attempt_date": run_date})
+    combined = pd.concat([existing, new_rows], ignore_index=True) if not existing.empty else new_rows
+    combined = combined.drop_duplicates(subset=["stipulationfulltext"], keep="last")
+    path = _attempt_cooldown_path(category)
+    save_parquet(combined, path.parent, filename=path.name)
+
+
 def run_llm_fallback_batch(
     category: str,
     new_texts: list[str],
@@ -332,6 +380,12 @@ def run_llm_fallback_batch(
     GeminiUnavailable 예외 또는 None) — 호출부가 이 비율로 "이번 실행은
     LLM이 사실상 안 돌았다"를 판단한다.
 
+    API를 부르기 전에 attempted_today()로 오늘 이미 시도해서 냉각 중인
+    문구를 걸러낸다 — Airflow 재시도/수동 재실행이 겹쳐도 같은 문구를 같은
+    날 두 번 호출하지 않는다(호출부가 new_texts를 "오늘 신규 우선" 순서로
+    넘겨주므로, quota가 도중에 바닥나도 냉각 대상이 되는 건 뒤쪽의 과거
+    백로그 위주가 된다).
+
     캐시는 EMBARGO_LLM_CACHE_FLUSH_EVERY마다, 그리고 끝나고 한 번 더
     저장한다 — 신규 문구가 몇백 개 규모라 중간에 죽어도 유실을 최소화하기
     위해서다.
@@ -339,15 +393,28 @@ def run_llm_fallback_batch(
     if not new_texts:
         return 0, None
 
+    cooling_down = attempted_today(category, run_date)
+    texts_to_call = [t for t in new_texts if t not in cooling_down]
+    skipped_cooldown = len(new_texts) - len(texts_to_call)
+    if skipped_cooldown:
+        logger.info(
+            "[%s] 오늘(%s) 이미 시도해 냉각 중인 문구 %d개 스킵(quota 재시도 폭풍 방지) — 내일 자동 재시도됨",
+            category, run_date, skipped_cooldown,
+        )
+
+    if not texts_to_call:
+        return skipped_cooldown, None
+
     validate_fn = VALIDATORS[category]
     cache = load_llm_cache(category)
     new_rows: list[dict] = []
     unavailable_count = 0
+    newly_unavailable_texts: list[str] = []
     last_unavailable_error: Exception | None = None
 
     if not GEMINI_API_KEY:
-        logger.warning("[%s] GEMINI_API_KEY가 설정되지 않아 신규 문구 %d개를 이번 실행에서 건너뜁니다.", category, len(new_texts))
-        return len(new_texts), GeminiUnavailable("GEMINI_API_KEY가 설정되지 않음")
+        logger.warning("[%s] GEMINI_API_KEY가 설정되지 않아 신규 문구 %d개를 이번 실행에서 건너뜁니다.", category, len(texts_to_call))
+        return skipped_cooldown + len(texts_to_call), GeminiUnavailable("GEMINI_API_KEY가 설정되지 않음")
 
     def _process(text: str):
         llm_raw = llm_call_fn(text)  # GeminiUnavailable이면 그대로 전파됨
@@ -355,12 +422,14 @@ def run_llm_fallback_batch(
         return text, llm_raw, parsed, failure_reason
 
     with ThreadPoolExecutor(max_workers=LLM_MAX_WORKERS) as executor:
-        future_to_text = {executor.submit(_process, text): text for text in new_texts}
+        future_to_text = {executor.submit(_process, text): text for text in texts_to_call}
         for future in as_completed(future_to_text):
+            text = future_to_text[future]
             try:
-                text, llm_raw, parsed, failure_reason = future.result()
+                _, llm_raw, parsed, failure_reason = future.result()
             except GeminiUnavailable as e:
                 unavailable_count += 1
+                newly_unavailable_texts.append(text)
                 last_unavailable_error = e
                 continue
 
@@ -387,10 +456,15 @@ def run_llm_fallback_batch(
         cache = pd.concat([cache, pd.DataFrame(new_rows)], ignore_index=True) if not cache.empty else pd.DataFrame(new_rows)
         save_llm_cache(category, cache)
 
+    if newly_unavailable_texts:
+        _record_unavailable_attempts(category, newly_unavailable_texts, run_date)
+
+    total_unavailable_count = unavailable_count + skipped_cooldown
     if unavailable_count:
         logger.warning(
-            "[%s] Gemini 호출 불가/타임아웃 %d건(신규 문구 %d개 중) — 그 문구들은 캐시 안 하고 다음 실행에 재시도",
-            category, unavailable_count, len(new_texts),
+            "[%s] Gemini 호출 불가/타임아웃 %d건(이번에 실제로 시도한 %d개 중, 냉각 스킵 %d개는 별도) — "
+            "실패분은 오늘 냉각 처리, 내일 다시 시도됨",
+            category, unavailable_count, len(texts_to_call), skipped_cooldown,
         )
 
     # 이번 실행에서 새로 성공 처리된 것 중 최대 LLM_SAMPLE_REVIEW_COUNT개를
@@ -405,7 +479,7 @@ def run_llm_fallback_batch(
         save_llm_cache(category, cache)
         logger.info("[%s] 사람 검수용 샘플 %d건 표시(resolved_date=%s)", category, len(sample_idx), run_date)
 
-    return unavailable_count, last_unavailable_error
+    return total_unavailable_count, last_unavailable_error
 
 
 # ─────────────────────────────────────────────────────────────
