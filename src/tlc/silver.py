@@ -13,6 +13,7 @@ Bronze 파일들을 taxi_type별로 묶어서(청크 4개: yellow/green/fhv/fhvh
 from pathlib import Path
 
 from airflow.decorators import task
+from airflow.sdk import Asset
 
 from src.common.config import SILVER_DIR
 from src.common.logger import get_logger
@@ -22,6 +23,11 @@ from src.tlc.transform import transform
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver")
+
+# tlc_pipeline / tlc_daily 둘 다 이 태스크를 통해 Silver를 만들므로,
+# outlet을 여기 하나에만 걸면 두 DAG 모두에서 자동으로 발행된다.
+# tlc_gold_volume이 이 Asset을 구독해서 새 Silver가 생길 때만 재계산한다.
+TLC_SILVER = Asset("tlc_silver")
 
 
 # 청크 실행 순서. 동시에 돌 수 있는 청크 수보다 taxi_type이 많으면 누군가는
@@ -61,6 +67,7 @@ def chunk_bronze_files(
 
 @task(
     pool="silver_pool",
+    outlets=[TLC_SILVER],
 )
 def build_silver(
     bronze_chunk: list[dict],
