@@ -4,6 +4,7 @@ import boto3
 import pytest
 from moto import mock_aws
 
+from src.common.config import AWS_REGION
 from src.serving import nav_lookup
 
 
@@ -18,7 +19,7 @@ def test_table_for_type():
     assert nav_lookup.table_for_type(2) == nav_lookup.DYNAMODB_TABLE_TYPE2
 
 
-def _create_table(table_name, region="us-east-1"):
+def _create_table(table_name, region=AWS_REGION):
     client = boto3.client("dynamodb", region_name=region)
     client.create_table(
         TableName=table_name,
