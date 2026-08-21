@@ -10,6 +10,7 @@
 #   4. EC2 인스턴스 롤에 ecr:GetAuthorizationToken / BatchGetImage /
 #      GetDownloadUrlForLayer 권한 추가
 
+# 리포 owner transfer 후 트러스트 정책 sub 조건 수정 검증용 트리거 커밋.
 name: Build and Push to ECR
 
 on:
