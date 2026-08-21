@@ -19,6 +19,36 @@ from src.tlc.expectations import critical_expectations, log_only_expectations
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_bronze_validation")
 
+# 청크 실행 순서. 동시에 돌 수 있는 청크 수보다 taxi_type이 많으면 누군가는
+# 대기하게 되므로, 제일 오래 걸리는 FHVHV를 맨 앞에 둬서 대기 없이 먼저
+# 시작하게 한다.
+TAXI_TYPE_PRIORITY = ["fhvhv", "yellow", "green", "fhv"]
+
+
+@task
+def chunk_bronze_files(bronze_files: list[dict]) -> list[list[dict]]:
+    """taxi_type별로 묶는다 (yellow/green/fhv/fhvhv 청크 4개).
+
+    validate_bronze_quality가 청크 하나당 Spark 세션 하나만 열게 하기 위한
+    준비 단계. 같은 taxi_type끼리만 묶는 이유: 검증 대상 컬럼 구성이
+    taxi_type마다 달라, 청크 안에 taxi_type이 섞이면 파일마다 다시
+    분기해야 해서 복잡해진다.
+    """
+
+    grouped: dict[str, list[dict]] = {}
+    for bronze_result in bronze_files:
+        grouped.setdefault(bronze_result["taxi_type"], []).append(bronze_result)
+
+    chunks = [
+        grouped[taxi_type]
+        for taxi_type in TAXI_TYPE_PRIORITY
+        if taxi_type in grouped
+    ]
+
+    logger.info(f"Bronze 검증 청크 {len(chunks)}개 생성 (파일 {len(bronze_files)}개)")
+
+    return chunks
+
 
 class CriticalValidationError(Exception):
     """Bronze 파일의 critical 검증(필수 컬럼 존재)이 실패했을 때 발생한다."""

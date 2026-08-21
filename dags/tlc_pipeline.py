@@ -1,5 +1,5 @@
 """
-TLC 전체 ETL Pipeline
+TLC 전체 ETL Pipeline (Bronze까지)
 
 Download
     ↓
@@ -8,10 +8,8 @@ Validate
 Bronze
     ↓
 Validate (Great Expectations)
-    ↓
-Silver
 
-의 전체 파이프라인을 단계별로 구성한다.
+의 파이프라인을 단계별로 구성한다.
 
 파일별로 독립적으로 흘러가는 방식이 아니라,
 한 단계(예: Download)가 전체 파일에 대해 다 끝나야
@@ -36,12 +34,8 @@ from src.tlc.bronze import (
     store_bronze,
 )
 
-from src.tlc.silver1 import (
-    build_silver,
-    chunk_bronze_files,
-)
-
 from src.tlc.bronze_validation import (
+    chunk_bronze_files,
     validate_bronze_quality,
 )
 
@@ -115,16 +109,8 @@ def tlc_pipeline():
     # 6. 청크별 Bronze 데이터 품질 검증 (Great Expectations)
     # -----------------------------------------
 
-    validated_chunks = validate_bronze_quality.expand(
+    validate_bronze_quality.expand(
         bronze_chunk=bronze_chunks,
-    )
-
-    # -----------------------------------------
-    # 7. 청크별 Silver 변환 (청크당 Spark 세션 1개)
-    # -----------------------------------------
-
-    build_silver.expand(
-        bronze_chunk=validated_chunks,
     )
 
 

@@ -17,8 +17,6 @@ Validate
 Bronze
     ↓
 Validate (Great Expectations)
-    ↓
-Silver
 
 신규 파일이 없는 날은 각 단계가 빈 목록에 대해 실행되어
 아무 일도 하지 않고 정상 종료된다.
@@ -42,12 +40,8 @@ from src.tlc.bronze import (
     store_bronze,
 )
 
-from src.tlc.silver1 import (
-    build_silver,
-    chunk_bronze_files,
-)
-
 from src.tlc.bronze_validation import (
+    chunk_bronze_files,
     validate_bronze_quality,
 )
 
@@ -123,16 +117,8 @@ def tlc_daily():
     # 6. 청크별 Bronze 데이터 품질 검증 (Great Expectations)
     # -----------------------------------------
 
-    validated_chunks = validate_bronze_quality.expand(
+    validate_bronze_quality.expand(
         bronze_chunk=bronze_chunks,
-    )
-
-    # -----------------------------------------
-    # 7. 청크별 Silver 변환 (청크당 Spark 세션 1개)
-    # -----------------------------------------
-
-    build_silver.expand(
-        bronze_chunk=validated_chunks,
     )
 
 
