@@ -158,6 +158,9 @@ DATASETS = {
     "closure": "https://data.cityofnewyork.us/resource/ezy6-djsf.json",
     "event": "https://nycopendata.socrata.com/resource/tvpp-9vvx.json",
     "parks": "https://data.cityofnewyork.us/resource/enfh-gkve.json",
+    # NYC DOT Real-Time Traffic Speed Data
+    # https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds/i4gi-tjb9
+    "speed": "https://data.cityofnewyork.us/resource/i4gi-tjb9.json",
 }
 
 # ==========================
@@ -291,3 +294,26 @@ if APP_ENV == "local":
     EMR_JOBS_DIR = PROJECT_ROOT / "data" / "emr-jobs"
 else:
     EMR_JOBS_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/emr-jobs")
+
+# ==========================
+# 속도(speed) - LION 매핑 설정
+# ==========================
+#
+# ticketmaster/gold1.py의 venue-LION 매핑과 동일한 buffer+nearest 패턴을
+# 쓴다 — 대상이 Point(venue)가 아니라 LineString(속도 링크)이라는 점만 다르다.
+
+SPEED_CRS = "EPSG:4326"
+
+# 속도 링크 주변 도로 매핑 반경(feet). 도로 링크는 보통 LION 세그먼트 여러
+# 개로 쪼개져 있어(하나의 corridor가 여러 블록으로 나뉨), venue보다 좁게
+# 잡아도 충분히 겹친다 — 정성적 초안(TODO, 팀 검토 필요).
+SPEED_LION_BUFFER_FT = 50
+
+# fallback nearest 매핑 품질 기준.
+SPEED_LION_WARN_DISTANCE_FT = 200
+SPEED_LION_MAX_DISTANCE_FT = 1000
+
+# 이 미만인 속도 판독값은 계산에서 제외한다(0 또는 비정상적으로 낮은 값 —
+# 정차/정지 상태로 잘못 기록된 값과 실제 정체를 구분하기 위한 정성적
+# 초안, TODO 팀 검토 필요).
+MIN_VALID_SPEED_MPH = 1.0
