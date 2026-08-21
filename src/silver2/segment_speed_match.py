@@ -19,6 +19,7 @@ from src.common.config import (
     SPEED_CRS,
     SPEED_LION_BUFFER_FT,
     SPEED_LION_MAX_DISTANCE_FT,
+    SPEED_LION_WARN_DISTANCE_FT,
 )
 from src.common.logger import get_logger
 
@@ -109,6 +110,12 @@ def match_links_to_segments(links_df: pd.DataFrame, dim_segment_df: pd.DataFrame
             distance_col="distance_ft",
         )
         nearest["mapping_method"] = "nearest_fallback"
+
+        over_warn = nearest["distance_ft"] > SPEED_LION_WARN_DISTANCE_FT
+        if over_warn.any():
+            logger.warning(
+                f"nearest fallback 경고 거리 {SPEED_LION_WARN_DISTANCE_FT}ft 초과: {int(over_warn.sum())}건"
+            )
 
         too_far = nearest["distance_ft"] > SPEED_LION_MAX_DISTANCE_FT
         if too_far.any():
