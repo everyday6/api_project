@@ -378,6 +378,48 @@ services:
 
 
   # =========================================================
+  # Segment Metrics API
+  #
+  # 내비게이션이 쓰는 세그먼트 지표(시간/길이) 조회 API. DynamoDB만 보고
+  # 응답하므로 postgres/redis/celery 불필요.
+  # =========================================================
+  nav-api:
+    <<: *airflow-image
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: traffic-nav-api
+
+    restart: unless-stopped
+
+    environment:
+      PYTHONPATH: /opt/airflow
+      APP_ENV: ${APP_ENV}
+      AWS_REGION: ${AWS_REGION}
+      DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1}
+      DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2}
+
+    volumes:
+      - ./src:/opt/airflow/src
+
+    working_dir: /opt/airflow
+
+    ports:
+      - "8001:8001"
+
+    entrypoint: []
+    command: >
+      uvicorn src.serving.nav_api:app --host 0.0.0.0 --port 8001
+
+    depends_on:
+      - dynamodb-local
+
+    networks:
+      - airflow-network
+
+
+  # =========================================================
   # Spark Master
   # =========================================================
   spark-master:
