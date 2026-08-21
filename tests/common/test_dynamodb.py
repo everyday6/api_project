@@ -3,12 +3,13 @@ import pytest
 from moto import mock_aws
 
 from src.common import dynamodb
+from src.common.config import AWS_REGION
 
 
 TABLE_NAME = "TestSegmentMetrics"
 
 
-def _create_test_table(region="us-east-1"):
+def _create_test_table(region=AWS_REGION):
     client = boto3.client("dynamodb", region_name=region)
     client.create_table(
         TableName=TABLE_NAME,
