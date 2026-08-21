@@ -43,6 +43,7 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
     bucket_avg_speed = (
         bucketed.groupBy("segment_id", "bucket")
         .agg(avg("speed").alias("avg_speed"))
+        .filter(col("avg_speed") > 0)
     )
 
     joined = bucket_avg_speed.join(length_df, on="segment_id", how="inner")

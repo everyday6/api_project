@@ -54,6 +54,22 @@ def test_to_dynamodb_items_includes_bucket_and_avg(spark):
     assert by_sk[("1", "AVG")] == 40  # (30+50)/2
 
 
+def test_compute_time_seconds_excludes_zero_speed_segment(spark):
+    df = spark.createDataFrame([
+        {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
+        {"segment_id": "2", "speed": 0.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
+    ])
+    dim_segment_length_df = pd.DataFrame([
+        {"segment_id": "1", "length_ft": 5280.0},
+        {"segment_id": "2", "length_ft": 5280.0},
+    ])
+
+    result = gold2.compute_time_seconds(df, dim_segment_length_df).collect()
+
+    assert len(result) == 1
+    assert result[0]["segment_id"] == "1"
+
+
 def test_write_to_dynamodb_calls_batch_write_and_returns_count():
     items = [{"segment_id": "1", "sk": "1200", "value": 30}]
 
