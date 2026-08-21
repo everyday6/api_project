@@ -140,7 +140,7 @@ services:
       -jar DynamoDBLocal.jar -sharedDb -inMemory
 
     ports:
-      - "8000:8000"
+      - "8002:8000"
 
     networks:
       - airflow-network
