@@ -2,22 +2,15 @@
 DAG: lion_pipeline
 
 NYC DCP LION(도로망) ingestion + dim_segment Silver 변환 + 파생 테이블(존
-매핑, 인접 그래프, traffic_score 기초값)까지 담당하는 도메인 파이프라인.
-분기마다 새 릴리즈가 나오는 전체 스냅샷 데이터라, 증분 개념 없이 매번
-통째로 받는다.
+매핑, 인접 그래프)까지 담당하는 도메인 파이프라인. 분기마다 새 릴리즈가
+나오는 전체 스냅샷 데이터라, 증분 개념 없이 매번 통째로 받는다.
 
 실제 로직은 src/lion/bronze.py(적재), src/lion/silver1.py(dim_segment 기본
-컬럼 정제), src/lion/gold2.py(road_class/capacity 계산 + 매개중심성 기반
-traffic_score_v0, 둘 다 "LION만으로 새 지표를 만드는" Gold2 성격이라 한
-파일에 있음), src/silver2/zone_segment.py(dim_segment x Taxi Zone 매핑 + 검증),
-src/lion/silver2.py(세그먼트 인접 그래프 + 검증, 자기 도메인끼리의 구조적
-조인이라 Silver2)에 있고, 이 파일은 언제/어떤 순서로 그 함수들을 실행할지만
-정의한다.
-
-build_dim_segment_traffic_score는 매개중심성 근사 계산 때문에 k=1000 기준
-약 8~9분 걸린다(직접 측정함) — 분기 1회 배치라 문제없는 수준이다. 다른
-파이프라인이 필요로 하는 게 아니라 이 안에서만 쓰이는 값이라 별도 DAG로 안
-뺐다.
+컬럼 정제), src/lion/gold2.py(road_class/capacity 계산 — "LION만으로 새
+지표를 만드는" Gold2 성격), src/silver2/zone_segment.py(dim_segment x Taxi
+Zone 매핑 + 검증), src/lion/silver2.py(세그먼트 인접 그래프 + 검증, 자기
+도메인끼리의 구조적 조인이라 Silver2)에 있고, 이 파일은 언제/어떤 순서로
+그 함수들을 실행할지만 정의한다.
 
 map_zone_segment는 Taxi Zone(정적 참조 데이터, taxi_zone_pipeline DAG)도
 필요하다. Taxi Zone은 거의 안 바뀌는 데이터라 별도 DAG 의존성 연결 없이,
@@ -39,18 +32,9 @@ from airflow.sdk import Asset
 
 from src.common.alerts import notify_slack_failure
 from src.lion.bronze import ingest_lion
-from src.lion.gold2 import (
-    build_dim_segment,
-    build_dim_segment_traffic_score,
-    validate_dim_segment,
-    validate_dim_segment_traffic_score,
-)
+from src.lion.gold2 import build_dim_segment, validate_dim_segment
 from src.lion.silver1 import build_dim_segment_base
-from src.lion.silver2 import (
-    GRAPH_SEGMENT_ADJACENCY_PATH,
-    build_graph_segment_adjacency,
-    validate_graph_segment_adjacency,
-)
+from src.lion.silver2 import build_graph_segment_adjacency, validate_graph_segment_adjacency
 from src.silver2.zone_segment import build_map_zone_segment, validate_map_zone_segment
 
 default_args = {
@@ -61,7 +45,7 @@ default_args = {
 
 with DAG(
     dag_id="lion_pipeline",
-    description="LION(도로망) 분기 Bronze/Silver/Mapping + traffic_score 기초값",
+    description="LION(도로망) 분기 Bronze/Silver/Mapping",
     schedule="0 5 1 1,4,7,10 *",     # 1/4/7/10월 1일 새벽 5시
     start_date=datetime(2025, 1, 1),
     catchup=False,                    # 과거 분기 버전은 지금 굳이 안 채움 (최신 버전이면 충분)
@@ -132,27 +116,7 @@ with DAG(
         },
     )
 
-    task_build_traffic_score = PythonOperator(
-        task_id="build_dim_segment_traffic_score",
-        python_callable=build_dim_segment_traffic_score,
-        op_kwargs={
-            # graph_path는 필수 인자다(gold2가 silver2를 모듈 최상단에서 import하면
-            # 순환참조가 되어 기본값을 못 둠 — src/lion/gold2.py 참고).
-            "graph_path": GRAPH_SEGMENT_ADJACENCY_PATH,
-        },
-        # dim_segment_path는 기본값(common.config 기준) 사용.
-    )
-
-    task_validate_traffic_score = PythonOperator(
-        task_id="validate_dim_segment_traffic_score",
-        python_callable=validate_dim_segment_traffic_score,
-        op_kwargs={
-            "path": "{{ ti.xcom_pull(task_ids='build_dim_segment_traffic_score') }}",
-        },
-    )
-
     task_ingest_lion >> task_build_dim_segment_base >> task_build_dim_segment >> task_validate_dim_segment
 
     task_validate_dim_segment >> task_build_map_zone_segment >> task_validate_map_zone_segment
     task_validate_dim_segment >> task_build_graph_segment_adjacency >> task_validate_graph_segment_adjacency
-    task_validate_graph_segment_adjacency >> task_build_traffic_score >> task_validate_traffic_score
