@@ -25,6 +25,9 @@ boto3
 cloudpathlib[s3]
 s3fs
 
+# DynamoDB 로컬 모킹 테스트용(src/common/dynamodb.py, src/common/emr_serverless.py 테스트).
+moto[dynamodb]
+
 # RDS(Postgres) 서빙 테이블 읽기/쓰기(src/common/db.py)에 사용.
 psycopg2-binary
 sqlalchemy
