@@ -1,16 +1,20 @@
 # EC2(2 vCPU)에서 docker compose build로 이미지를 직접 빌드하면 pip install 등
 # 빌드 자체가 CPU를 잡아먹어 배포 시점에 파이프라인 태스크와 자원 경합이 난다.
 # 대신 여기서 미리 빌드해서 ECR에 push해두고, EC2는 docker compose pull만 하도록 한다.
+# build-and-push가 끝나면 SSH로 EC2에 들어가 git pull + docker compose pull/up까지
+# 이어서 한다.
 #
-# 필요한 사전 준비 (AWS 콘솔, 리포지토리 관리자):
-#   1. ECR 리포지토리 생성 (예: three-idiots-airflow)
+# 필요한 사전 준비 (AWS 콘솔/GitHub, 리포지토리 관리자):
+#   1. ECR 리포지토리 생성 (예: traffic-score-airflow)
 #   2. GitHub Actions가 push할 수 있는 IAM 롤 생성 (OIDC 신뢰 관계:
 #      token.actions.githubusercontent.com, 이 리포지토리로 조건 제한)
 #   3. 리포지토리 Settings > Secrets에 AWS_ECR_PUSH_ROLE_ARN 등록
 #   4. EC2 인스턴스 롤에 ecr:GetAuthorizationToken / BatchGetImage /
 #      GetDownloadUrlForLayer 권한 추가
-
-# 리포 owner transfer 후 트러스트 정책 sub 조건 수정 검증용 트리거 커밋.
+#   5. EC2 보안그룹 22번 포트를 GitHub Actions에서 접근 가능하게 열기
+#      (러너 IP가 고정이 아니라서 사실상 0.0.0.0/0으로 열어야 함 — SSH는
+#      키 인증만 허용하고 비밀번호 로그인은 막혀 있어야 함)
+#   6. 리포지토리 Settings > Secrets에 EC2_HOST / EC2_USER / EC2_SSH_KEY 등록
 name: Build and Push to ECR
 
 on:
@@ -56,3 +60,22 @@ jobs:
           docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
+
+  deploy:
+    needs: build-and-push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Deploy to EC2
+        uses: appleboy/ssh-action@v1
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+          script: |
+            set -e
+            cd /home/ubuntu/three-idiots
+            git pull
+            docker run --rm --network host amazon/aws-cli ecr get-login-password --region ap-northeast-2 \
+              | docker login --username AWS --password-stdin 181252290322.dkr.ecr.ap-northeast-2.amazonaws.com
+            docker compose pull
+            docker compose up -d
