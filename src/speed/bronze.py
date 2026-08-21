@@ -11,7 +11,6 @@ DOT 소스는 5분 간격으로 갱신되지만, 이 DAG는 30분마다 한 번�
 from __future__ import annotations
 
 from datetime import datetime
-from pathlib import Path
 
 import pandas as pd
 
@@ -56,7 +55,7 @@ def has_new_speed_data(window_start: datetime, window_end: datetime) -> bool:
 def collect_speed_window(
     window_start: datetime,
     window_end: datetime,
-    bronze_root: Path = BRONZE_ROOT,
+    bronze_root=BRONZE_ROOT,
 ) -> str:
     """지정 구간의 속도 판독값을 전부 받아 Bronze에 parquet으로 저장한다.
 
