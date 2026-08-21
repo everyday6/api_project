@@ -54,6 +54,13 @@ x-airflow-env: &airflow-env
 
   PYTHONPATH: /opt/airflow
 
+# CI(GitHub Actions)가 ECR에 미리 빌드해둔 이미지를 가리키는 값.
+# 비워두면 기존처럼 로컬 Dockerfile을 직접 빌드한다 — EC2(2 vCPU)에서
+# pip install 등 빌드 자체가 CPU를 잡아먹는 걸 피하려면 CI에서 빌드/push하고
+# 여기선 AIRFLOW_IMAGE를 ECR 경로로 채운 뒤 `docker compose pull`만 하면 된다.
+x-airflow-image: &airflow-image
+  image: ${AIRFLOW_IMAGE:-three-idiots-airflow:local}
+
 x-airflow-volumes: &airflow-volumes
   - ./dags:/opt/airflow/dags
   - ./src:/opt/airflow/src
@@ -122,6 +129,7 @@ services:
   # DB Migration + 관리자 계정 생성
   # =========================================================
   airflow-init:
+    <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
@@ -162,6 +170,7 @@ services:
   # Airflow 3.x부터 Webserver가 API Server로 대체됨 (UI도 여기서 서빙)
   # =========================================================
   airflow-apiserver:
+    <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
@@ -193,6 +202,7 @@ services:
   # Airflow Scheduler
   # =========================================================
   airflow-scheduler:
+    <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
@@ -226,6 +236,7 @@ services:
   # 별도 컴포넌트로 필수 실행되어야 함
   # =========================================================
   airflow-dag-processor:
+    <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
@@ -255,6 +266,7 @@ services:
   # 현재는 1개
   # =========================================================
   airflow-worker:
+    <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
@@ -297,6 +309,7 @@ services:
   # FastAPI로 감싸서 대시보드(dashboard/index.html)에 서빙한다.
   # =========================================================
   traffic-score-api:
+    <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
