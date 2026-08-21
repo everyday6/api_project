@@ -7,20 +7,37 @@ Spark Session 생성 모듈
 
 from pyspark.sql import SparkSession
 
-from src.common.config import AWS_REGION
+from src.common.config import APP_ENV, AWS_REGION
 
 
 def to_spark_path(path) -> str:
     """S3Path(또는 문자열)를 Spark/Hadoop이 이해하는 s3a:// 문자열로 바꾼다.
 
     cloudpathlib은 "s3://"를 쓰지만 Hadoop S3A 커넥터는 "s3a://"만 인식한다.
+    APP_ENV=local이면 path가 로컬 pathlib.Path라 "s3://"가 원래 없으므로
+    이 replace는 그냥 아무 효과 없이 지나간다 — 호출부가 분기를 몰라도 된다.
     """
 
     return str(path).replace("s3://", "s3a://", 1)
 
 
 def get_spark() -> SparkSession:
-    """Spark Session 반환"""
+    """Spark Session 반환.
+
+    APP_ENV=local이면 spark-master 클러스터에 붙지 않고 이 프로세스 안에서
+    단일 JVM으로 돈다(local[*]) — S3A 커넥터(hadoop-aws)도 필요 없다(로컬
+    디스크를 그냥 읽으므로). 나머지 튜닝(코어 수 고정, shuffle partitions)은
+    클러스터 자원 경합을 피하기 위한 설정이라 로컬 단일 프로세스에는
+    의미가 없어서 뺀다.
+    """
+
+    if APP_ENV == "local":
+        return (
+            SparkSession.builder
+            .appName("NYC TLC Pipeline (local)")
+            .master("local[*]")
+            .getOrCreate()
+        )
 
     return (
         SparkSession.builder

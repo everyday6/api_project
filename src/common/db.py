@@ -10,20 +10,31 @@ import pandas as pd
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.engine import Engine
 
-from src.common.config import RDS_DB, RDS_HOST, RDS_PASSWORD, RDS_PORT, RDS_USER
+from src.common.config import APP_ENV, PROJECT_ROOT, RDS_DB, RDS_HOST, RDS_PASSWORD, RDS_PORT, RDS_USER
 
 _engine: Engine | None = None
 
+# APP_ENV=local일 때 쓰는 서빙 테이블 대체 DB. 로컬에 실제 RDS(Postgres)를
+# 새로 띄우는 대신 파일 하나짜리 SQLite를 쓴다 — 이 모듈이 쓰는 SQL(to_sql,
+# read_sql, DELETE ... WHERE dt = :dt)이 Postgres 전용 문법에 안 걸려서
+# SQLite로도 그대로 동작한다.
+LOCAL_DB_PATH = PROJECT_ROOT / "data" / "local_serving.db"
+
 
 def get_engine() -> Engine:
-    """RDS 연결 Engine을 반환한다 (프로세스당 한 번만 생성해서 재사용)."""
+    """서빙 테이블 DB 연결 Engine을 반환한다 (프로세스당 한 번만 생성해서
+    재사용). APP_ENV=local이면 RDS 대신 로컬 SQLite 파일을 쓴다."""
 
     global _engine
 
     if _engine is None:
-        _engine = create_engine(
-            f"postgresql+psycopg2://{RDS_USER}:{RDS_PASSWORD}@{RDS_HOST}:{RDS_PORT}/{RDS_DB}"
-        )
+        if APP_ENV == "local":
+            LOCAL_DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+            _engine = create_engine(f"sqlite:///{LOCAL_DB_PATH}")
+        else:
+            _engine = create_engine(
+                f"postgresql+psycopg2://{RDS_USER}:{RDS_PASSWORD}@{RDS_HOST}:{RDS_PORT}/{RDS_DB}"
+            )
 
     return _engine
 
@@ -113,8 +124,12 @@ def read_partition(table_name: str, dt: str, columns: list[str] | None = None) -
 
     column_list = ", ".join(columns) if columns else "*"
 
+    # %(dt)s(psycopg2 고유 pyformat)가 아니라 SQLAlchemy의 이식 가능한 :dt
+    # bindparam을 쓴다 — text()로 감싸지 않은 raw 문자열 + %(dt)s는 DBAPI에
+    # 그대로 전달돼서 Postgres(psycopg2)에서는 우연히 동작하지만 SQLite
+    # (APP_ENV=local)에서는 "near %: syntax error"로 깨진다.
     return pd.read_sql(
-        f"SELECT {column_list} FROM {table_name} WHERE dt = %(dt)s",
+        text(f"SELECT {column_list} FROM {table_name} WHERE dt = :dt"),
         engine,
         params={"dt": dt},
     )
@@ -130,7 +145,7 @@ def read_latest_partition(table_name: str, columns: list[str] | None = None) -> 
     column_list = ", ".join(columns) if columns else "*"
 
     return pd.read_sql(
-        f"SELECT {column_list} FROM {table_name} WHERE dt = %(dt)s",
+        text(f"SELECT {column_list} FROM {table_name} WHERE dt = :dt"),
         get_engine(),
         params={"dt": dt},
     )

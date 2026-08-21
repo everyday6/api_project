@@ -61,6 +61,13 @@ LOG_DIR = PROJECT_ROOT / "logs"
 # S3로 올린다(예: src/tlc/bronze.py의 store_bronze).
 TMP_DIR = PROJECT_ROOT / "data" / "tmp"
 
+# 로컬 개발 모드 전환 스위치. 기본값은 반드시 "aws"여야 한다 — EC2의 .env는
+# 이 변수를 안 갖고 있으므로 os.getenv()가 그냥 기본값으로 떨어지고, 지금과
+# 동일하게 S3/RDS/Spark 클러스터를 그대로 쓴다. "local"은 로컬 .env에서만
+# 명시적으로 켜서, 개발자 각자 컴퓨터에서 S3/RDS/Spark 클러스터 접근 없이
+# 로컬 디스크+SQLite+Spark local[*]로 돌릴 때 쓴다.
+APP_ENV = os.getenv("APP_ENV", "aws")
+
 # S3 버킷 이름 (.env에서 불러옴). 로컬/EC2 밖에서는 SCP가 이 버킷 접근
 # 자체를 막아서 실제로는 EC2 인스턴스의 IAM 롤에서만 동작한다.
 AWS_REGION = os.getenv("AWS_REGION")
@@ -71,12 +78,22 @@ S3_BUCKET_DASHBOARD = os.getenv("S3_BUCKET_DASHBOARD")
 # (glob/mkdir/exists/unlink/`/` 등)를 제공해서 기존 호출부 대부분은 그대로
 # 동작한다. 다만 pandas I/O(read_parquet/to_parquet 등)에 넘길 때는
 # str(path)로 변환해야 한다(안 그러면 pandas가 로컬 캐시 경로로 오해한다).
-BRONZE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/bronze")
-
-SILVER1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver1")
-SILVER2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver2")
-GOLD1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold1")
-GOLD2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold2")
+#
+# APP_ENV=local이면 같은 이름의 로컬 디스크 경로를 쓴다 — cloudpathlib의
+# S3Path와 pathlib.Path 둘 다 glob/mkdir/exists/`/` 인터페이스가 같아서
+# 호출부 코드는 이 분기를 몰라도 된다.
+if APP_ENV == "local":
+    BRONZE_DIR = PROJECT_ROOT / "data" / "bronze"
+    SILVER1_DIR = PROJECT_ROOT / "data" / "silver1"
+    SILVER2_DIR = PROJECT_ROOT / "data" / "silver2"
+    GOLD1_DIR = PROJECT_ROOT / "data" / "gold1"
+    GOLD2_DIR = PROJECT_ROOT / "data" / "gold2"
+else:
+    BRONZE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/bronze")
+    SILVER1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver1")
+    SILVER2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver2")
+    GOLD1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold1")
+    GOLD2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold2")
 
 # ==========================
 # RDS (Gold 서빙 테이블) 설정
