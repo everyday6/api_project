@@ -15,6 +15,10 @@
 #      (러너 IP가 고정이 아니라서 사실상 0.0.0.0/0으로 열어야 함 — SSH는
 #      키 인증만 허용하고 비밀번호 로그인은 막혀 있어야 함)
 #   6. 리포지토리 Settings > Secrets에 EC2_HOST / EC2_USER / EC2_SSH_KEY 등록
+#
+# EC2가 Graviton(arm64, t4g.large)이라 빌드도 arm64 러너에서 네이티브로 해야
+# 한다 — amd64 러너(ubuntu-latest)에서 빌드하면 EC2가 에뮬레이션으로 억지로
+# 돌리다 실패한다(exit 255).
 name: Build and Push to ECR
 
 on:
@@ -38,7 +42,7 @@ env:
 
 jobs:
   build-and-push:
-    runs-on: ubuntu-latest
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
