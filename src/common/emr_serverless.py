@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -43,7 +44,7 @@ def _upload_src_bundle() -> str:
     거의 없고, 코드가 바뀐 채로 캐시된 옛 zip을 잘못 쓰는 사고를 막는다.
     """
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = TMP_DIR / "emr_src_bundle.zip"
+    zip_path = TMP_DIR / f"emr_src_bundle_{uuid.uuid4().hex}.zip"
 
     src_dir = PROJECT_ROOT / "src"
 
