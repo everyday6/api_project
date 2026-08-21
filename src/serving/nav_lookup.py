@@ -67,8 +67,15 @@ def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk:
 
     for sid in ids:
         item = items.get((sid, sk))
-        if item is not None:
+        if item is None:
+            continue
+        try:
             resolved[sid] = int(item["value"])
+        except (KeyError, ValueError, TypeError):
+            logger.exception(
+                f"DynamoDB 항목 형식 오류(다음 fallback 단계로 넘어감): "
+                f"table={table_name} sk={sk} segment_id={sid}"
+            )
 
 
 def _lookup_global_default(table_name: str, type_: int) -> int:
@@ -86,8 +93,20 @@ def _lookup_global_default(table_name: str, type_: int) -> int:
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
     """요청받은 segment_ids 순서(중복 포함)대로 값을 반환한다. 항상 길이가
-    같은 리스트를 반환한다 — 예외를 던지지 않는다."""
+    같은 리스트를 반환한다 — 절대 예외를 던지지 않는다(이 함수가 최후의
+    방어선이다 — 상위에 입력 검증 레이어가 없어도 안전해야 한다)."""
+    try:
+        return _resolve_segment_values_inner(segment_ids, type_, time_str)
+    except Exception:
+        logger.exception(
+            f"resolve_segment_values 예상치 못한 오류 - 코드 상수로 응답: "
+            f"type={type_} time={time_str}"
+        )
+        fallback_value = _HARDCODED_DEFAULTS.get(type_, _HARDCODED_DEFAULTS[1])
+        return [fallback_value] * len(segment_ids)
 
+
+def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
     table_name = table_for_type(type_)
 
     # Type에 따라 첫 번째 tier에서 사용할 sort key 결정

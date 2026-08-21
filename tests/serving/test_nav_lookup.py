@@ -108,3 +108,32 @@ def test_resolve_preserves_order_and_duplicates():
     result = nav_lookup.resolve_segment_values(["2", "1", "2"], 2, "12:00")
 
     assert result == [200, 100, 200]
+
+
+@mock_aws
+def test_resolve_skips_malformed_item_and_falls_through():
+    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE1)
+    from src.common.dynamodb import get_table
+
+    # "value" 필드가 없는 깨진 항목을 직접 DynamoDB에 넣음(put_item 헬퍼로는 못 만드니 저수준으로)
+    get_table(nav_lookup.DYNAMODB_TABLE_TYPE1).put_item(Item={"segment_id": "1", "sk": "1200"})
+    from src.common.dynamodb import put_item
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE1, {"segment_id": "1", "sk": "AVG", "value": 40})
+
+    result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
+    assert result == [40]
+
+
+def test_resolve_never_raises_on_invalid_type():
+    result = nav_lookup.resolve_segment_values(["1", "2"], 3, "12:00")
+
+    assert len(result) == 2
+    assert all(isinstance(v, int) for v in result)
+
+
+def test_resolve_never_raises_on_malformed_time():
+    result = nav_lookup.resolve_segment_values(["1"], 1, "not-a-time")
+
+    assert len(result) == 1
+    assert isinstance(result[0], int)
