@@ -4,8 +4,10 @@
 #
 # 사용법: ./scripts/package_emr_dependencies.sh
 #
-# 주의: 이 스크립트는 실제 AWS 계정의 S3 버킷에 파일을 업로드한다 — 팀이
-# 의도적으로 실행할 때만 돌려야 한다(CI에서 자동 실행하려면 별도 검토 필요).
+# .github/workflows/build-push-ecr.yml의 deploy 작업이 매 nav 배포마다
+# EC2에서 이 스크립트를 자동 실행한다(Dockerfile 내용이 안 바뀌면 대부분
+# 레이어 캐시로 스킵되어 대체로 빠름) - 수동으로 직접 돌릴 때도 동일하게
+# 동작한다.
 
 set -euo pipefail
 
