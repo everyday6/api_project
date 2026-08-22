@@ -79,6 +79,14 @@ jobs:
             set -e
             cd /home/ubuntu/three-idiots
             git pull
+            # EMR Serverless가 spark.archives로 실어가는 서드파티 파이썬 venv
+            # 패키지. Dockerfile 내용이 안 바뀌면 대부분 레이어 캐시로
+            # 스킵되니 매 배포마다 실행해도 대체로 빠르다 - requirements.txt
+            # 변경이 이 스크립트 자체를 다시 실행할 필요를 만들 때마다
+            # 별도로 트리거하는 장치는 아직 없어서(3차 전사 재검토 I3 발견),
+            # 최소한 배포 시점마다는 최신 상태로 맞춘다.
+            set -a; source .env; set +a
+            bash scripts/package_emr_dependencies.sh
             docker run --rm --network host amazon/aws-cli ecr get-login-password --region ap-northeast-2 \
               | docker login --username AWS --password-stdin 181252290322.dkr.ecr.ap-northeast-2.amazonaws.com
             docker compose pull
