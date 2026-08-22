@@ -101,6 +101,9 @@ HTTP_TIMEOUT = 60
 CHUNK_SIZE = 8192
 USER_AGENT = {"User-Agent": "Navigation-Data-Project/1.0"}
 
+# NYC Open Data(Socrata) 페이지당 최대 조회 건수
+SOCRATA_PAGE_SIZE = 50_000
+
 # Airflow 장애 알림
 SLACK_WEBHOOK_URL = os.getenv("SLACK_WEBHOOK_URL")
 
