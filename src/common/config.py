@@ -106,6 +106,24 @@ RDS_USER = os.getenv("RDS_USER")
 RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 
 # ==========================
+# DynamoDB (nav 골드 데이터셋 서빙) 설정
+# ==========================
+
+# nav 골드 데이터셋(segment_id x type 조회)은 RDS가 아니라 DynamoDB로
+# 서빙한다 — 접근 패턴이 key-value 조회(BatchGetItem)뿐이고, 타입별로
+# 갱신 주기가 달라 RDS의 write_table() 전체 replace 방식이 안 맞기
+# 때문이다(자세한 배경은 docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md).
+DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# APP_ENV=local이면 docker-compose의 dynamodb-local(호스트 포트 8002)에
+# 붙는다. 컨테이너 안에서 도는 스크립트/DAG는 LOCAL_RDS_HOST와 동일한
+# 이유로 서비스명("dynamodb-local")을 써야 하므로 환경변수로 덮어쓸 수
+# 있게 둔다.
+DYNAMO_LOCAL_ENDPOINT = os.getenv("DYNAMO_LOCAL_ENDPOINT", "http://localhost:8002")
+
+NAV_GOLD_TABLE = "nav_gold_values"
+
+# ==========================
 # HTTP 설정
 # ==========================
 

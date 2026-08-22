@@ -178,11 +178,41 @@ docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md 참고.
 
 from __future__ import annotations
 
+from decimal import Decimal
+
 import boto3
 
 from src.common.config import APP_ENV, DYNAMO_LOCAL_ENDPOINT, DYNAMO_REGION, NAV_GOLD_TABLE
 
 _resource = None
+
+
+def _floats_to_decimals(value):
+    """DynamoDB(boto3)는 Python float을 못 받고 Decimal만 받는다
+    (TypeError: Float types are not supported). str로 한 번 거쳐 변환해서
+    이진부동소수점 오차가 Decimal로 그대로 옮겨붙는 걸 피한다."""
+
+    if isinstance(value, float):
+        return Decimal(str(value))
+    if isinstance(value, dict):
+        return {k: _floats_to_decimals(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_floats_to_decimals(v) for v in value]
+    return value
+
+
+def _decimals_to_floats(value):
+    """조회 결과(Decimal)를 다시 보통 숫자로 되돌린다 — 소비처(API
+    응답 등)가 Decimal을 몰라도 되게 하기 위함."""
+
+    if isinstance(value, Decimal):
+        as_float = float(value)
+        return int(as_float) if as_float.is_integer() else as_float
+    if isinstance(value, dict):
+        return {k: _decimals_to_floats(v) for k, v in value.items()}
+    if isinstance(value, list):
+        return [_decimals_to_floats(v) for v in value]
+    return value
 
 
 def get_resource():
@@ -233,7 +263,7 @@ def ensure_table(table_name: str = NAV_GOLD_TABLE) -> None:
 def put_item(item: dict, table_name: str = NAV_GOLD_TABLE) -> None:
     """아이템 하나를 쓴다. item은 최소 {segment_id, sk, value}를 포함해야 한다."""
 
-    get_resource().Table(table_name).put_item(Item=item)
+    get_resource().Table(table_name).put_item(Item=_floats_to_decimals(item))
 
 
 def batch_write_items(items: list[dict], table_name: str = NAV_GOLD_TABLE) -> None:
@@ -243,7 +273,7 @@ def batch_write_items(items: list[dict], table_name: str = NAV_GOLD_TABLE) -> No
     table = get_resource().Table(table_name)
     with table.batch_writer() as batch:
         for item in items:
-            batch.put_item(Item=item)
+            batch.put_item(Item=_floats_to_decimals(item))
 
 
 def get_value(segment_id: str, sk: str, table_name: str = NAV_GOLD_TABLE, default=0):
@@ -253,7 +283,7 @@ def get_value(segment_id: str, sk: str, table_name: str = NAV_GOLD_TABLE, defaul
 
     response = get_resource().Table(table_name).get_item(Key={"segment_id": segment_id, "sk": sk})
     item = response.get("Item")
-    return item["value"] if item is not None else default
+    return _decimals_to_floats(item["value"]) if item is not None else default
 
 
 def batch_get_values(
@@ -281,10 +311,12 @@ def batch_get_values(
             RequestItems={table_name: {"Keys": keys}}
         )
         for item in response["Responses"][table_name]:
-            found[item["segment_id"]] = item["value"]
+            found[item["segment_id"]] = _decimals_to_floats(item["value"])
 
     return [found.get(sid, default) for sid in segment_ids]
 ```
+
+> **실행 중 발견한 이슈(Task 1 실제 실행 시 수정됨)**: boto3 DynamoDB는 Python `float`를 직접 못 받는다(`TypeError: Float types are not supported. Use Decimal types instead.`). 위 코드는 이미 `_floats_to_decimals`/`_decimals_to_floats` 변환을 반영한 버전이다 — 이후 태스크(Task 6의 `put_item`/`batch_write_items` 사용)는 이 변환이 이미 적용된 것으로 보고 그대로 쓰면 된다.
 
 - [ ] **Step 7: 테스트 통과 확인**
 
