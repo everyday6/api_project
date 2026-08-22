@@ -106,6 +106,22 @@ RDS_USER = os.getenv("RDS_USER")
 RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 
 # ==========================
+# EMR Serverless (Spark 잡 실행) 설정
+# ==========================
+#
+# TLC Spark 잡(build_silver 등)을 Airflow worker 안에서 SparkSession으로
+# 직접 여는 대신 EMR Serverless에 제출한다 — spark-master/worker 컨테이너를
+# EC2에 상주시키지 않고, 무거운 컴퓨트를 온디맨드로 분리하기 위함
+# (src/common/emr_serverless.py 참고). APP_ENV=local 로컬 개발 모드는 아직
+# 이 경로를 지원하지 않는다 — EMR Serverless는 실제 AWS 계정이 있어야
+# 제출 가능해서 로컬 대체 수단이 없다.
+
+EMR_APPLICATION_ID = os.getenv("EMR_APPLICATION_ID")
+EMR_JOB_ROLE_ARN = os.getenv("EMR_JOB_ROLE_ARN")
+
+EMR_JOBS_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/emr-jobs")
+
+# ==========================
 # HTTP 설정
 # ==========================
 
