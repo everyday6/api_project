@@ -47,16 +47,22 @@ def get_logger(
         )
 
         if not already_attached:
-            LOG_DIR.mkdir(exist_ok=True, parents=True)
-            file_handler = RotatingFileHandler(
-                log_path,
-                maxBytes=MAX_BYTES,
-                backupCount=BACKUP_COUNT,
-                encoding="utf-8",
-            )
-            file_handler.setFormatter(
-                logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s")
-            )
-            logger.addHandler(file_handler)
+            try:
+                LOG_DIR.mkdir(exist_ok=True, parents=True)
+                file_handler = RotatingFileHandler(
+                    log_path,
+                    maxBytes=MAX_BYTES,
+                    backupCount=BACKUP_COUNT,
+                    encoding="utf-8",
+                )
+                file_handler.setFormatter(
+                    logging.Formatter("[%(asctime)s] %(levelname)s - %(message)s")
+                )
+                logger.addHandler(file_handler)
+            except OSError:
+                # 읽기 전용 파일시스템(예: AWS Lambda의 /var/task)에서는 파일
+                # 핸들러를 못 붙인다 — 표준 출력(→ CloudWatch Logs 등)으로만
+                # 로깅을 계속한다.
+                pass
 
     return logger
