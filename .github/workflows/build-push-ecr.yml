@@ -82,4 +82,8 @@ jobs:
             docker run --rm --network host amazon/aws-cli ecr get-login-password --region ap-northeast-2 \
               | docker login --username AWS --password-stdin 181252290322.dkr.ecr.ap-northeast-2.amazonaws.com
             docker compose pull
-            docker compose up -d
+            # --remove-orphans: 서비스 이름이 바뀌면(예: traffic-score-api ->
+            # navigation-api) 옛 이름의 컨테이너가 새 compose 파일엔 없는
+            # "orphan"으로 남아 포트를 계속 물고 있는다. 그대로면 새 컨테이너가
+            # 같은 호스트 포트를 못 열고 뜬다.
+            docker compose up -d --remove-orphans
