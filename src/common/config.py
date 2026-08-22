@@ -106,6 +106,40 @@ RDS_USER = os.getenv("RDS_USER")
 RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 
 # ==========================
+# DynamoDB (nav 골드 데이터셋 서빙) 설정
+# ==========================
+
+# nav 골드 데이터셋(segment_id x type 조회)은 RDS가 아니라 DynamoDB로
+# 서빙한다 — 접근 패턴이 key-value 조회(BatchGetItem)뿐이고, 타입별로
+# 갱신 주기가 달라 RDS의 write_table() 전체 replace 방식이 안 맞기
+# 때문이다(자세한 배경은 docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md).
+DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
+
+# APP_ENV=local이면 docker-compose의 dynamodb-local(호스트 포트 8002)에
+# 붙는다. 컨테이너 안에서 도는 스크립트/DAG는 LOCAL_RDS_HOST와 동일한
+# 이유로 서비스명("dynamodb-local")을 써야 하므로 환경변수로 덮어쓸 수
+# 있게 둔다.
+DYNAMO_LOCAL_ENDPOINT = os.getenv("DYNAMO_LOCAL_ENDPOINT", "http://localhost:8002")
+
+NAV_GOLD_TABLE = "nav_gold_values"
+
+# ==========================
+# EMR Serverless (Spark 잡 실행) 설정
+# ==========================
+#
+# TLC Spark 잡(build_silver 등)을 Airflow worker 안에서 SparkSession으로
+# 직접 여는 대신 EMR Serverless에 제출한다 — spark-master/worker 컨테이너를
+# EC2에 상주시키지 않고, 무거운 컴퓨트를 온디맨드로 분리하기 위함
+# (src/common/emr_serverless.py 참고). APP_ENV=local 로컬 개발 모드는 아직
+# 이 경로를 지원하지 않는다 — EMR Serverless는 실제 AWS 계정이 있어야
+# 제출 가능해서 로컬 대체 수단이 없다.
+
+EMR_APPLICATION_ID = os.getenv("EMR_APPLICATION_ID")
+EMR_JOB_ROLE_ARN = os.getenv("EMR_JOB_ROLE_ARN")
+
+EMR_JOBS_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/emr-jobs")
+
+# ==========================
 # HTTP 설정
 # ==========================
 
