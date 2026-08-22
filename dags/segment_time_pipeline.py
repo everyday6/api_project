@@ -9,6 +9,7 @@ Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 하나의 EMR
 Serverless Spark job으로 묶어서 제출한다.
 """
 
+import logging
 import uuid
 from datetime import datetime, timedelta
 
@@ -19,6 +20,8 @@ from src.common.config import DYNAMODB_TABLE_TYPE1, EMR_JOBS_DIR, PROJECT_ROOT
 from src.common.emr_serverless import read_json_result, run_spark_job
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.speed.bronze import collect_speed_data, has_new_speed_data
+
+logger = logging.getLogger(__name__)
 
 default_args = {
     "retries": 3,
@@ -47,6 +50,22 @@ def segment_time_pipeline():
     def collect_bronze() -> str:
         return collect_speed_data()
 
+    @task.short_circuit
+    def check_dim_segment_exists() -> bool:
+        """segment_length_pipeline이 1월/7월에만 도는 dim_segment.parquet에
+        이 파이프라인(30분마다)이 매번 의존한다. 그 파일이 아직 없으면(최초
+        부트스트랩 전, 또는 두 스케줄 사이 기간) EMR job이 매번 크래시하는
+        대신 여기서 건너뛴다 - 부트스트랩 절차는 설계 문서 8절 참고."""
+        exists = DIM_SEGMENT_PATH.exists()
+        if not exists:
+            logger.warning(
+                "%s 없음 - segment_length_pipeline이 아직 dim_segment를 만들지 "
+                "않았거나 수동 부트스트랩이 필요함. 이번 실행은 EMR job 제출을 "
+                "건너뛴다.",
+                DIM_SEGMENT_PATH,
+            )
+        return exists
+
     @task
     def submit_nav_time_job(speed_bronze_path: str) -> dict:
         run_id = uuid.uuid4().hex
@@ -69,7 +88,10 @@ def segment_time_pipeline():
     bronze_path = collect_bronze()
     bronze_path.set_upstream(new_data)
 
-    submit_nav_time_job(bronze_path)
+    dim_segment_ready = check_dim_segment_exists()
+
+    submit_result = submit_nav_time_job(bronze_path)
+    submit_result.set_upstream(dim_segment_ready)
 
 
 segment_time_pipeline()
