@@ -133,28 +133,6 @@ services:
 
 
   # =========================================================
-  # DynamoDB Local
-  # 로컬 개발/테스트용 — 세그먼트 지표 서빙 저장소를 AWS 자격증명 없이
-  # 재현한다. APP_ENV=local일 때 src/common/config.py의
-  # DYNAMODB_ENDPOINT_URL이 이 서비스를 가리킨다.
-  # =========================================================
-  dynamodb-local:
-    image: amazon/dynamodb-local:latest
-    container_name: traffic-dynamodb-local
-
-    restart: unless-stopped
-
-    command: >
-      -jar DynamoDBLocal.jar -sharedDb -inMemory
-
-    ports:
-      - "8002:8000"
-
-    networks:
-      - airflow-network
-
-
-  # =========================================================
   # Airflow 초기화
   # DB Migration + 관리자 계정 생성
   # =========================================================
