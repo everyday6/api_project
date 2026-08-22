@@ -3,6 +3,10 @@
 # 게 아니라, `docker build` 후 컨테이너에서 결과 tarball만 꺼내 쓴다
 # (scripts/package_emr_dependencies.sh 참고).
 #
+# (이 줄은 build-emr-python-env 잡의 paths-filter가 이 파일 변경을 감지해야
+# scripts/package_emr_dependencies.sh에 추가한 진단용 `ls -la`가 실제로
+# 실행되므로 트리거 목적으로 추가 — 원인 확인되면 지워도 된다.)
+#
 # 로컬 Mac(arm64/Darwin)에서 그냥 pip install해서 만든 venv는 EMR
 # Serverless(Amazon Linux, x86_64)에서 그대로 못 쓴다 — geopandas/shapely/
 # pyproj 등은 C 확장을 포함해서 OS/아키텍처가 다르면 import 시점에
