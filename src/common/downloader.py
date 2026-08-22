@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import time
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 import requests
 from dateutil.relativedelta import relativedelta
@@ -26,8 +27,6 @@ from airflow.decorators import task
 
 from src.common.config import (
     BASE_URL,
-    INITIAL_START_DATE,
-    INITIAL_END_DATE,
     TMP_DIR,
     TAXI_TYPES,
     HTTP_TIMEOUT,
@@ -35,6 +34,7 @@ from src.common.config import (
     USER_AGENT,
     TLC_PUBLISH_LAG_MONTHS,
     RECENT_MONTHS_WINDOW,
+    TLC_TIMEZONE,
 )
 
 from src.common.logger import get_logger
@@ -174,100 +174,27 @@ def check_file_exists(
 
 
 # =========================================================
-# 다운로드 목록 생성
-# =========================================================
-
-@task(
-    retries=5,
-    retry_delay=timedelta(minutes=1),
-    # TLC 서버가 몇 분 이상 일시적으로 403/5xx를 뱉는 경우까지
-    # 버티도록 재시도 간격을 지수적으로 늘린다 (1분 → 2분 → ... → 최대 10분).
-    retry_exponential_backoff=True,
-    max_retry_delay=timedelta(minutes=10),
-)
-def generate_download_list() -> list[dict]:
-    """
-    지정된 기간 동안 존재하는 TLC 데이터의
-    다운로드 목록을 생성한다.
-
-    Airflow XCom으로 전달하기 위해
-    DownloadFile 객체 대신 dict를 반환한다.
-    """
-
-    # 다운로드 대상 파일 목록
-    download_list: list[dict] = []
-
-    # 시작 날짜
-    current = INITIAL_START_DATE
-
-    # 설정된 종료 날짜까지 월 단위로 반복
-    while current <= INITIAL_END_DATE:
-
-        year = current.year
-        month = current.month
-
-        # Yellow / Green / FHV / FHVHV 순회
-        for taxi_type in TAXI_TYPES:
-
-            # -------------------------------------------------
-            # 1. 파일명 생성
-            # -------------------------------------------------
-
-            filename = build_filename(
-                taxi_type=taxi_type,
-                year=year,
-                month=month,
-            )
-
-            # -------------------------------------------------
-            # 2. 다운로드 URL 생성
-            # -------------------------------------------------
-
-            url = build_url(
-                filename=filename,
-            )
-
-            # -------------------------------------------------
-            # 3. 파일 존재 여부 확인
-            # -------------------------------------------------
-
-            if check_file_exists(url):
-
-                logger.info(
-                    f"파일 확인됨 : {filename}"
-                )
-
-                # 커스텀 객체 대신 dict 사용
-                # → Airflow XCom에서 안전하게 전달 가능
-                download_list.append(
-                    {
-                        "taxi_type": taxi_type,
-                        "filename": filename,
-                        "url": url,
-                    }
-                )
-
-            else:
-
-                logger.warning(
-                    f"건너뜀 : {filename}"
-                )
-
-        # 다음 달로 이동
-        current += relativedelta(
-            months=1
-        )
-
-    logger.info(
-        f"전체 파일 수 : {len(download_list)}"
-    )
-
-    return download_list
-
-
-# =========================================================
 # 신규 데이터 확인 (운영 중 매일 실행)
 # =========================================================
+
+def get_recent_service_months(reference_time: datetime | None = None) -> list[datetime]:
+    """다음 공개 후보 1개월과 최근 완료 3개월의 월 시작일을 반환한다."""
+
+    current_time = reference_time or datetime.now(ZoneInfo(TLC_TIMEZONE))
+    return [
+        (current_time - relativedelta(months=offset)).replace(
+            day=1,
+            hour=0,
+            minute=0,
+            second=0,
+            microsecond=0,
+        )
+        for offset in range(
+            TLC_PUBLISH_LAG_MONTHS,
+            TLC_PUBLISH_LAG_MONTHS + RECENT_MONTHS_WINDOW,
+        )
+    ]
+
 
 @task(
     retries=2,
@@ -277,8 +204,7 @@ def generate_incremental_download_list() -> list[dict]:
     """
     오늘 날짜 기준으로 새로 올라왔을 만한 TLC 데이터를 확인한다.
 
-    TLC는 보통 TLC_PUBLISH_LAG_MONTHS만큼 지연을 두고 데이터를 올리므로,
-    그 기준 달부터 RECENT_MONTHS_WINDOW개월치를 매일 다시 확인한다.
+    다음 공개 후보 1개월과 최근 완료 3개월을 매일 다시 확인한다.
 
     이미 Bronze에 저장된 파일은 로컬에 존재하는지만 확인해서 건너뛰고
     (서버에 다시 물어보지 않음), 아직 없는 파일만 서버에 존재 여부를 확인한다.
@@ -286,14 +212,7 @@ def generate_incremental_download_list() -> list[dict]:
 
     download_list: list[dict] = []
 
-    today = datetime.now()
-
-    for offset in range(
-        TLC_PUBLISH_LAG_MONTHS,
-        TLC_PUBLISH_LAG_MONTHS + RECENT_MONTHS_WINDOW,
-    ):
-
-        target = today - relativedelta(months=offset)
+    for target in get_recent_service_months():
 
         for taxi_type in TAXI_TYPES:
 
@@ -470,15 +389,3 @@ def download_file(
             save_path.unlink()
 
         raise
-
-
-# =========================================================
-# 시작 날짜 반환
-# =========================================================
-
-def get_start_date() -> datetime:
-    """
-    다운로드 시작 날짜를 반환한다.
-    """
-
-    return INITIAL_START_DATE
