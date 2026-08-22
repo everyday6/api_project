@@ -947,7 +947,30 @@ def test_match_cbd_zone_keeps_segments_touching_boundary():
     result = match_cbd_zone(segments, zone_polygon)
 
     assert list(result["segment_id"]) == ["BOUNDARY"]
+
+
+def test_match_cbd_zone_reprojects_when_crs_differs():
+    # CBD Geofence는 위경도(EPSG:4326)로 오고 LION segment는 EPSG:2263(피트)다.
+    # 좌표계가 다르면 좌표값 범위 자체가 완전히 달라서(-180~180 vs 수십만 단위)
+    # 재투영 없이 조인하면 실제로 안 겹치는 걸로 나온다(실제로 겪은 버그).
+    zone_polygon = gpd.GeoDataFrame(
+        {"geometry": [Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])]},
+        crs="EPSG:4326",
+    )
+    segments = gpd.GeoDataFrame(
+        {
+            "segment_id": ["INSIDE"],
+            "geometry": [LineString([(2, 2), (3, 3)])],
+        },
+        crs="EPSG:4326",
+    ).to_crs("EPSG:2263")
+
+    result = match_cbd_zone(segments, zone_polygon)
+
+    assert list(result["segment_id"]) == ["INSIDE"]
 ```
+
+> **실행 중 발견한 버그**: 위 테스트 중 처음 두 개(`crs=None`인 단순 GeoDataFrame)만으로는 안 잡히는 버그가 있었다 — 실제 LION(EPSG:2263)과 CBD Geofence(EPSG:4326)로 돌려보니 `gpd.sjoin`이 좌표계 불일치를 경고만 띄우고 **조용히 0건**을 반환했다(에러가 안 나서 더 위험). `test_match_cbd_zone_reprojects_when_crs_differs`로 이 케이스를 재현/고정했고, 아래 `match_cbd_zone` 구현에 CRS 재투영 로직을 추가해서 해결했다.
 
 - [ ] **Step 2: 테스트 실패 확인**
 
@@ -971,6 +994,11 @@ def match_cbd_zone(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -
 
     if segments.crs is None:
         segments = segments.set_crs(zone_polygon.crs, allow_override=True)
+    elif zone_polygon.crs is not None and segments.crs != zone_polygon.crs:
+        # CBD Geofence는 위경도(EPSG:4326)로 오고 LION segment는 EPSG:2263
+        # (피트)이라 좌표계가 다르면 gpd.sjoin이 경고만 내고 조용히 0건을
+        # 반환한다(실제로 겪음) — 반드시 같은 좌표계로 맞춰야 한다.
+        zone_polygon = zone_polygon.to_crs(segments.crs)
 
     joined = gpd.sjoin(segments, zone_polygon, how="inner", predicate="intersects")
     return joined[["segment_id"]].drop_duplicates().reset_index(drop=True)

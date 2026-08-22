@@ -64,3 +64,42 @@ def build_map_toll_facility_segment(
 
     logger.info(f"[toll_silver2] 시설 매핑 {len(result)}행 저장 -> {out_path}")
     return str(out_path)
+
+
+MAP_CBD_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_cbd_zone_segment.parquet"
+
+
+def match_cbd_zone(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -> pd.DataFrame:
+    """segments 중 CBD(Congestion Relief Zone) 폴리곤과 교차하는(경계에
+    걸친 것 포함) segment_id만 반환한다. intersects를 쓰는 이유: zone
+    "안"으로 완전히 들어간 segment뿐 아니라 zone 경계를 지나는 진입
+    segment도 혼잡통행료 대상이기 때문이다(둘을 구분할 필요 없음 — 스펙
+    참고: zone 내부 segment 전부에 값을 넣고 dedup은 클라이언트가 함)."""
+
+    if segments.crs is None:
+        segments = segments.set_crs(zone_polygon.crs, allow_override=True)
+    elif zone_polygon.crs is not None and segments.crs != zone_polygon.crs:
+        # CBD Geofence는 위경도(EPSG:4326)로 오고 LION segment는 EPSG:2263
+        # (피트)이라 좌표계가 다르면 gpd.sjoin이 경고만 내고 조용히 0건을
+        # 반환한다(실제로 겪음) — 반드시 같은 좌표계로 맞춰야 한다.
+        zone_polygon = zone_polygon.to_crs(segments.crs)
+
+    joined = gpd.sjoin(segments, zone_polygon, how="inner", predicate="intersects")
+    return joined[["segment_id"]].drop_duplicates().reset_index(drop=True)
+
+
+def build_map_cbd_zone_segment(
+    gdb_path: Path,
+    cbd_geofence_path: Path = Path("data/bronze/toll/cbd_geofence.geojson"),
+    out_path: Path = MAP_CBD_ZONE_SEGMENT_PATH,
+) -> str:
+    segments = load_lion_segments(gdb_path)
+    zone_polygon = gpd.read_file(cbd_geofence_path)
+
+    result = match_cbd_zone(segments, zone_polygon)
+
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    result.to_parquet(str(out_path), index=False)
+
+    logger.info(f"[toll_silver2] CBD zone 매핑 {len(result)}행 저장 -> {out_path}")
+    return str(out_path)
