@@ -33,7 +33,7 @@
 **Interfaces:**
 - Produces: `src.common.dynamo.{NAV_GOLD_TABLE, get_resource, ensure_table, put_item, batch_write_items, get_value, batch_get_values}` (이후 모든 nav 골드 타입이 이 모듈로 DynamoDB에 쓰고 읽음 — 이번 플랜에서는 toll 도메인이 첫 소비처)
 
-- [ ] **Step 1: docker-compose.yml에 dynamodb-local 서비스 추가**
+- [x] **Step 1: docker-compose.yml에 dynamodb-local 서비스 추가**
 
 `docker-compose.yml`의 `spark-worker` 서비스와 `crash-monitor` 서비스 사이에 추가:
 
@@ -60,7 +60,7 @@
       - airflow-network
 ```
 
-- [ ] **Step 2: src/common/config.py에 Dynamo 설정 추가**
+- [x] **Step 2: src/common/config.py에 Dynamo 설정 추가**
 
 `config.py`의 "RDS (Gold 서빙 테이블) 설정" 섹션 뒤에 추가:
 
@@ -84,13 +84,13 @@ DYNAMO_LOCAL_ENDPOINT = os.getenv("DYNAMO_LOCAL_ENDPOINT", "http://localhost:800
 NAV_GOLD_TABLE = "nav_gold_values"
 ```
 
-- [ ] **Step 3: 테스트 폴더 생성**
+- [x] **Step 3: 테스트 폴더 생성**
 
 ```bash
 mkdir -p tests/common
 ```
 
-- [ ] **Step 4: 실패하는 테스트 작성**
+- [x] **Step 4: 실패하는 테스트 작성**
 
 `tests/common/test_dynamo.py`:
 ```python
@@ -151,7 +151,7 @@ def test_batch_get_values_handles_more_than_100_segments():
     assert result == [0.75] * 120
 ```
 
-- [ ] **Step 5: 테스트 실패 확인**
+- [x] **Step 5: 테스트 실패 확인**
 
 먼저 dynamodb-local을 띄운다:
 ```bash
@@ -161,7 +161,7 @@ docker compose up -d dynamodb-local
 Run: `APP_ENV=local pytest tests/common/test_dynamo.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.common.dynamo'`
 
-- [ ] **Step 6: src/common/dynamo.py 작성**
+- [x] **Step 6: src/common/dynamo.py 작성**
 
 ```python
 """
@@ -332,12 +332,12 @@ def batch_get_values(
 
 > **실행 중 발견한 이슈(Task 1 실제 실행 시 수정됨)**: boto3 DynamoDB는 Python `float`를 직접 못 받는다(`TypeError: Float types are not supported. Use Decimal types instead.`). 위 코드는 이미 `_floats_to_decimals`/`_decimals_to_floats` 변환을 반영한 버전이다 — 이후 태스크(Task 6의 `put_item`/`batch_write_items` 사용)는 이 변환이 이미 적용된 것으로 보고 그대로 쓰면 된다.
 
-- [ ] **Step 7: 테스트 통과 확인**
+- [x] **Step 7: 테스트 통과 확인**
 
 Run: `APP_ENV=local pytest tests/common/test_dynamo.py -v`
 Expected: 4개 테스트 전부 PASS
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add docker-compose.yml src/common/config.py src/common/dynamo.py tests/common/test_dynamo.py
@@ -359,14 +359,14 @@ git commit -m "feat: nav 골드 데이터셋 서빙용 DynamoDB 로컬 인프라
 **Interfaces:**
 - Produces: `src.toll.bronze.{CBD_GEOFENCE_URL, upload_rates, upload_facilities, upload_cbd_geofence, main}` (Task 4/5가 Bronze에 저장된 파일들을 읽음)
 
-- [ ] **Step 1: 폴더/테스트 폴더 생성**
+- [x] **Step 1: 폴더/테스트 폴더 생성**
 
 ```bash
 mkdir -p src/toll tests/toll
 touch src/toll/__init__.py tests/toll/__init__.py
 ```
 
-- [ ] **Step 2: config/toll_rates.yaml 작성**
+- [x] **Step 2: config/toll_rates.yaml 작성**
 
 ```yaml
 # 택시 전용 통행료 요금표(뉴욕 전역) — 사람이 직접 관리한다(자동 크롤링 없음).
@@ -425,7 +425,7 @@ road:
     passenger: 16.79
 ```
 
-- [ ] **Step 3: config/toll_facilities.yaml 작성**
+- [x] **Step 3: config/toll_facilities.yaml 작성**
 
 ```yaml
 # 다리/터널 시설 목록(뉴욕 전역, MTA 9개 + Port Authority 6개 = 15개) —
@@ -481,7 +481,7 @@ outerbridge_crossing:
 
 > **실행 중 발견한 이슈**: 처음엔 대표 예시로 6개 시설만 넣었는데, 실제로는 MTA 9개+Port Authority 6개(총 15개) 전부 있어야 한다는 걸 지적받고 전체로 확장했다. GW 브리지는 "GEO WASHINGTON BR"이 아니라 "GEORGE WASHINGTON BRIDGE"(full word)로 들어있던 것도 수정. 15개 패턴 전부 `ogrinfo`로 실제 LION GDB 대조 확인 + 헷갈리는 케이스(같은 이름의 비과금 도로/무관한 거리)까지 자동화된 매칭 테스트로 검증했다.
 
-- [ ] **Step 4: 실패하는 테스트 작성**
+- [x] **Step 4: 실패하는 테스트 작성**
 
 `tests/toll/test_bronze.py`:
 ```python
@@ -517,12 +517,12 @@ def test_upload_facilities_copies_yaml_to_bronze(tmp_path):
     assert data["lincoln_tunnel"]["street_contains"] == "LINCOLN TUNNEL"
 ```
 
-- [ ] **Step 5: 테스트 실패 확인**
+- [x] **Step 5: 테스트 실패 확인**
 
 Run: `pytest tests/toll/test_bronze.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.toll.bronze'`
 
-- [ ] **Step 6: src/toll/bronze.py 작성**
+- [x] **Step 6: src/toll/bronze.py 작성**
 
 ```python
 """
@@ -607,12 +607,12 @@ if __name__ == "__main__":
     main()
 ```
 
-- [ ] **Step 7: 테스트 통과 확인**
+- [x] **Step 7: 테스트 통과 확인**
 
 Run: `pytest tests/toll/test_bronze.py -v`
 Expected: 2개 테스트 전부 PASS
 
-- [ ] **Step 8: 커밋**
+- [x] **Step 8: 커밋**
 
 ```bash
 git add config/toll_rates.yaml config/toll_facilities.yaml src/toll/__init__.py src/toll/bronze.py tests/toll/__init__.py tests/toll/test_bronze.py
@@ -639,7 +639,7 @@ git commit -m "feat: 통행료 요금표/시설목록/CBD 폴리곤 Bronze 업�
 - Consumes: `src.common.alerts.notify_slack_message`
 - Produces: `src.toll.rate_monitor.{RATE_PAGE_URLS, build_reminder_message}` (dags/toll_rate_monitor.py가 매달 이 함수를 호출)
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/toll/test_rate_monitor.py`:
 ```python
@@ -659,12 +659,12 @@ def test_build_reminder_message_mentions_config_file():
     assert "toll_rates.yaml" in message
 ```
 
-- [ ] **Step 2: 테스트 실패 확인**
+- [x] **Step 2: 테스트 실패 확인**
 
 Run: `pytest tests/toll/test_rate_monitor.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.toll.rate_monitor'`
 
-- [ ] **Step 3: src/toll/rate_monitor.py 작성**
+- [x] **Step 3: src/toll/rate_monitor.py 작성**
 
 ```python
 """
@@ -699,12 +699,12 @@ def build_reminder_message(urls: list[str] = RATE_PAGE_URLS) -> str:
     )
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [x] **Step 4: 테스트 통과 확인**
 
 Run: `pytest tests/toll/test_rate_monitor.py -v`
 Expected: 2개 테스트 전부 PASS
 
-- [ ] **Step 5: dags/toll_rate_monitor.py 작성**
+- [x] **Step 5: dags/toll_rate_monitor.py 작성**
 
 ```python
 """
@@ -755,7 +755,7 @@ def toll_rate_monitor():
 toll_rate_monitor()
 ```
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/toll/rate_monitor.py tests/toll/test_rate_monitor.py dags/toll_rate_monitor.py
@@ -774,7 +774,7 @@ git commit -m "feat: 통행료 요금표 월간 확인 알림 DAG 추가"
 - Consumes: `src.toll.bronze.BRONZE_ROOT`(경로 규칙), LION Bronze GDB(`data/bronze/lion/version_date=*/lion/lion.gdb`)
 - Produces: `src.toll.silver2.{MAP_TOLL_FACILITY_SEGMENT_PATH, load_lion_segments, match_toll_facilities, build_map_toll_facility_segment}` (Task 6이 이 매핑을 읽음)
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/toll/test_silver2.py`:
 ```python
@@ -823,12 +823,12 @@ def test_match_toll_facilities_excludes_non_matching_segments(tmp_path):
     assert result.empty
 ```
 
-- [ ] **Step 2: 테스트 실패 확인**
+- [x] **Step 2: 테스트 실패 확인**
 
 Run: `pytest tests/toll/test_silver2.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.toll.silver2'`
 
-- [ ] **Step 3: src/toll/silver2.py 작성 (이번 태스크 분량만)**
+- [x] **Step 3: src/toll/silver2.py 작성 (이번 태스크 분량만)**
 
 ```python
 """
@@ -906,12 +906,12 @@ def build_map_toll_facility_segment(
     return str(out_path)
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [x] **Step 4: 테스트 통과 확인**
 
 Run: `pytest tests/toll/test_silver2.py -v`
 Expected: 2개 테스트 전부 PASS
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/toll/silver2.py tests/toll/test_silver2.py
@@ -929,7 +929,7 @@ git commit -m "feat: LION segment 추출 + 다리/터널 시설명 매칭(Silver
 **Interfaces:**
 - Produces: `src.toll.silver2.{MAP_CBD_ZONE_SEGMENT_PATH, match_cbd_zone, build_map_cbd_zone_segment}` (Task 6이 이 매핑을 읽음)
 
-- [ ] **Step 1: 실패하는 테스트 추가**
+- [x] **Step 1: 실패하는 테스트 추가**
 
 `tests/toll/test_silver2.py` 끝에 추가:
 ```python
@@ -993,12 +993,12 @@ def test_match_cbd_zone_reprojects_when_crs_differs():
 
 > **실행 중 발견한 버그**: 위 테스트 중 처음 두 개(`crs=None`인 단순 GeoDataFrame)만으로는 안 잡히는 버그가 있었다 — 실제 LION(EPSG:2263)과 CBD Geofence(EPSG:4326)로 돌려보니 `gpd.sjoin`이 좌표계 불일치를 경고만 띄우고 **조용히 0건**을 반환했다(에러가 안 나서 더 위험). `test_match_cbd_zone_reprojects_when_crs_differs`로 이 케이스를 재현/고정했고, 아래 `match_cbd_zone` 구현에 CRS 재투영 로직을 추가해서 해결했다.
 
-- [ ] **Step 2: 테스트 실패 확인**
+- [x] **Step 2: 테스트 실패 확인**
 
 Run: `pytest tests/toll/test_silver2.py -v -k cbd_zone`
 Expected: FAIL with `ImportError: cannot import name 'match_cbd_zone'`
 
-- [ ] **Step 3: src/toll/silver2.py에 함수 추가**
+- [x] **Step 3: src/toll/silver2.py에 함수 추가**
 
 `src/toll/silver2.py` 끝에 추가(import문은 파일 상단에 이미 있는 `gpd`/`pd`/`Path`/`SILVER2_DIR`/`logger` 재사용):
 
@@ -1042,12 +1042,12 @@ def build_map_cbd_zone_segment(
     return str(out_path)
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [x] **Step 4: 테스트 통과 확인**
 
 Run: `pytest tests/toll/test_silver2.py -v`
 Expected: 4개 테스트 전부 PASS
 
-- [ ] **Step 5: 커밋**
+- [x] **Step 5: 커밋**
 
 ```bash
 git add src/toll/silver2.py tests/toll/test_silver2.py
@@ -1066,7 +1066,7 @@ git commit -m "feat: CBD Geofence 폴리곤 x LION segment 공간 매칭(Silver2
 - Consumes: `src.toll.silver2.{MAP_TOLL_FACILITY_SEGMENT_PATH, MAP_CBD_ZONE_SEGMENT_PATH}`, `src.common.dynamo.{batch_write_items, get_value}`
 - Produces: `src.toll.gold.{TYPE_CONGESTION, TYPE_ROAD_TOLL, load_rate_table, build_gold_items, write_gold_items, get_toll_value}` (서빙 API가 `get_toll_value`를 호출)
 
-- [ ] **Step 1: 실패하는 테스트 작성**
+- [x] **Step 1: 실패하는 테스트 작성**
 
 `tests/toll/test_gold.py`:
 ```python
@@ -1132,12 +1132,12 @@ def test_build_gold_items_skips_facility_without_rate():
     assert items == []
 ```
 
-- [ ] **Step 2: 테스트 실패 확인**
+- [x] **Step 2: 테스트 실패 확인**
 
 Run: `pytest tests/toll/test_gold.py -v`
 Expected: FAIL with `ModuleNotFoundError: No module named 'src.toll.gold'`
 
-- [ ] **Step 3: src/toll/gold.py 작성**
+- [x] **Step 3: src/toll/gold.py 작성**
 
 ```python
 """
@@ -1251,12 +1251,12 @@ if __name__ == "__main__":
     build_and_write()
 ```
 
-- [ ] **Step 4: 테스트 통과 확인**
+- [x] **Step 4: 테스트 통과 확인**
 
 Run: `pytest tests/toll/test_gold.py -v`
 Expected: 4개 테스트 전부 PASS
 
-- [ ] **Step 5: get_toll_value 테스트 추가 및 확인**
+- [x] **Step 5: get_toll_value 테스트 추가 및 확인**
 
 `tests/toll/test_gold.py` 끝에 추가:
 ```python
@@ -1280,7 +1280,7 @@ def test_get_toll_value_returns_written_value():
 Run: `APP_ENV=local pytest tests/toll/test_gold.py -v -k get_toll_value`
 Expected: 2개 테스트 전부 PASS (dynamodb-local이 떠 있어야 함: `docker compose up -d dynamodb-local`)
 
-- [ ] **Step 6: 커밋**
+- [x] **Step 6: 커밋**
 
 ```bash
 git add src/toll/gold.py tests/toll/test_gold.py
@@ -1304,7 +1304,7 @@ git commit -m "feat: 통행료 Gold 계산 + DynamoDB 적재 + 서빙 조회 함
 **Interfaces:**
 - Consumes: `src.toll.bronze.{upload_rates, upload_facilities, upload_cbd_geofence}`, `src.toll.silver2.{build_map_toll_facility_segment, build_map_cbd_zone_segment}`, `src.toll.gold.build_and_write`
 
-- [ ] **Step 1: dags/toll_bronze_pipeline.py 작성**
+- [x] **Step 1: dags/toll_bronze_pipeline.py 작성**
 
 ```python
 """
@@ -1371,7 +1371,7 @@ def toll_bronze_pipeline():
 toll_bronze_pipeline()
 ```
 
-- [ ] **Step 2: dags/toll_gold_pipeline.py 작성**
+- [x] **Step 2: dags/toll_gold_pipeline.py 작성**
 
 ```python
 """
@@ -1453,7 +1453,7 @@ def toll_gold_pipeline():
 toll_gold_pipeline()
 ```
 
-- [ ] **Step 3: 두 DAG 모두 smoke import 확인**
+- [x] **Step 3: 두 DAG 모두 smoke import 확인**
 
 ```bash
 python -c "
@@ -1464,7 +1464,7 @@ print('OK')
 ```
 Expected: `OK` 출력, ImportError 없음. (Airflow가 로컬에 없으면 `docker compose exec airflow-scheduler python -c "..."`로 컨테이너 안에서 실행)
 
-- [ ] **Step 4: 커밋**
+- [x] **Step 4: 커밋**
 
 ```bash
 git add dags/toll_bronze_pipeline.py dags/toll_gold_pipeline.py
@@ -1475,6 +1475,8 @@ git commit -m "feat: 통행료 Bronze DAG + Asset 트리거 Gold DAG 연결"
 
 ## 완료 후 확인 사항
 
-- [ ] `docker compose up -d dynamodb-local` 후 `docker compose exec airflow-scheduler airflow dags trigger toll_bronze_pipeline`로 전체 파이프라인이 끝까지 도는지 수동 확인
-- [ ] `python -c "from src.toll.gold import get_toll_value; print(get_toll_value('아는_다리_세그먼트_id', 5))"`로 실제 값이 나오는지 확인
-- [ ] Task 2의 CBD Geofence URL, 요금표 금액 두 TODO를 실제 값으로 교체했는지 확인
+- [x] `docker compose up -d dynamodb-local` 후 `docker compose exec airflow-scheduler airflow dags trigger toll_bronze_pipeline`로 전체 파이프라인이 끝까지 도는지 수동 확인
+  — **막힘**: DAG는 정상 등록되고(`airflow dags list-import-errors` 클린) 트리거도 큐에 들어가지만, 스케줄러가 태스크를 워커에 할당을 안 해서 `queued` 상태에서 안 넘어감. Celery 워커 자체는 정상(연결됨, active task 0개). 워커 로그 확인 결과 2026-08-21 오전 이후 이 로컬 환경에서 `construction_pipeline` 등 기존 스케줄된 DAG도 전혀 실행되지 않고 있었음 — **이 플랜과 무관한, 이 로컬 Airflow 환경의 기존 스케줄러 이슈**로 판단. scheduler/worker 재시작으로도 해결 안 됨. 별도로 조사 필요.
+  — 대신 Bronze/Silver2/Gold 각 함수는 Task 2~6에서 실제 데이터로 개별 검증 완료(문서 내 각 태스크의 "실행 중 발견한 이슈" 참고), DAG 파일 자체는 Python import + Airflow 파싱 레벨까지 검증함.
+- [x] `python -c "from src.toll.gold import get_toll_value; print(get_toll_value('아는_다리_세그먼트_id', 5))"`로 실제 값이 나오는지 확인 (Task 6에서 완료 — Lincoln Tunnel segment $16.79, CBD zone segment $0.75)
+- [x] Task 2의 CBD Geofence URL, 요금표 금액 두 TODO를 실제 값으로 교체했는지 확인 (완료)
