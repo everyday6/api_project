@@ -37,9 +37,11 @@ on:
     paths:
       - Dockerfile
       - requirements.txt
+      - requirements-lambda.txt
       - src/**
       - dags/**
       - docker/emr-python-env/Dockerfile
+      - docker/lambda/Dockerfile
       - .github/workflows/build-push-ecr.yml
   workflow_dispatch: {}
 
@@ -76,6 +78,34 @@ jobs:
           docker build -t "$IMAGE:${{ github.sha }}" -t "$IMAGE:latest" .
           docker push "$IMAGE:${{ github.sha }}"
           docker push "$IMAGE:latest"
+
+  build-and-push-lambda:
+    # nav-api 서빙 API는 ECS/ALB 대신 Lambda + API Gateway로 돈다(ALB가
+    # 조직 SCP로 막혀 있었다 — docs/superpowers/plans/2026-08-22-nav-api-lambda-migration.md).
+    # 같은 ECR 리포지토리에 lambda- 접두사 태그로 별도 이미지를 올린다.
+    runs-on: ubuntu-24.04-arm
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: ${{ secrets.AWS_ECR_PUSH_ROLE_ARN }}
+          aws-region: ${{ env.AWS_REGION }}
+
+      - name: Login to Amazon ECR
+        id: ecr-login
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Build and push (Lambda 이미지)
+        env:
+          REGISTRY: ${{ steps.ecr-login.outputs.registry }}
+        run: |
+          IMAGE="$REGISTRY/$ECR_REPOSITORY"
+          docker build --platform linux/amd64 -f docker/lambda/Dockerfile \
+            -t "$IMAGE:lambda-${{ github.sha }}" -t "$IMAGE:lambda-latest" .
+          docker push "$IMAGE:lambda-${{ github.sha }}"
+          docker push "$IMAGE:lambda-latest"
 
   build-emr-python-env:
     runs-on: ubuntu-latest
@@ -131,24 +161,3 @@ jobs:
             # "orphan"으로 남아 포트를 계속 물고 있는다. 그대로면 새 컨테이너가
             # 같은 호스트 포트를 못 열고 뜬다.
             docker compose up -d --remove-orphans
-
-  deploy-nav-api:
-    # nav-api는 더 이상 EC2 docker-compose가 아니라 ECS Fargate에서 돈다
-    # (docs/superpowers/plans/2026-08-22-nav-api-ecs-fargate-migration.md).
-    # 새 이미지가 ECR에 올라간 뒤 서비스에 강제 재배포를 걸어 최신 이미지로
-    # 태스크를 교체한다.
-    needs: build-and-push
-    runs-on: ubuntu-latest
-    steps:
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: ${{ secrets.AWS_ECR_PUSH_ROLE_ARN }}
-          aws-region: ${{ env.AWS_REGION }}
-
-      - name: Force new ECS deployment
-        run: |
-          aws ecs update-service \
-            --cluster nav-api-cluster \
-            --service nav-api-service \
-            --force-new-deployment
