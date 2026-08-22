@@ -83,7 +83,11 @@ jobs:
     # nav-api 서빙 API는 ECS/ALB 대신 Lambda + API Gateway로 돈다(ALB가
     # 조직 SCP로 막혀 있었다 — docs/superpowers/plans/2026-08-22-nav-api-lambda-migration.md).
     # 같은 ECR 리포지토리에 lambda- 접두사 태그로 별도 이미지를 올린다.
-    runs-on: ubuntu-24.04-arm
+    # amd64 Lambda 이미지라 amd64 러너에서 네이티브로 빌드한다 — arm64
+    # 러너(build-and-push job과 달리 여긴 Graviton EC2 제약이 없다)에서
+    # --platform linux/amd64로 크로스 빌드하면 GitHub 호스팅 러너엔 QEMU가
+    # 기본 설치돼 있지 않아 실패한다.
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
