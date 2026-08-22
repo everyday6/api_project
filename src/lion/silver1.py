@@ -1,0 +1,179 @@
+"""
+Silver1 변환: LION bronze -> dim_segment(기본 컬럼)
+
+구조적 정제(컬럼명 통일, 타입 캐스팅, 도로명 정규화, SegmentID dedupe)만
+한다. is_routable 계산은 src/lion/gold2.py가 이 산출물을 읽어서 한다 —
+그 계산에 필요한 원본 코드 컬럼(RW_TYPE, FeatureTyp)은 이름 그대로
+통과시켜 둔다.
+
+pandas를 쓰는 이유: LION은 분기 1회 갱신되는 24만 행짜리 참조 테이블이라
+이 컴퓨터 한 대의 메모리로 몇 초면 끝난다. Spark로 짜면 밑줄로 시작하는
+파일을 숨김파일로 취급해 스키마 추론이 실패하거나, dedupe 한 번에
+shuffle이 필요해지는 등 득보다 실이 크다.
+
+Spark든 pandas든 File Geodatabase(.gdb)를 직접 읽는 방법은 없어서, ogr2ogr
+(GDAL CLI, Dockerfile에 gdal-bin으로 설치됨)로 필요한 컬럼 + WKT 지오메트리만
+CSV로 평탄화한 뒤 그 CSV를 읽는다.
+"""
+
+from __future__ import annotations
+
+import subprocess
+import tempfile
+from pathlib import Path
+
+import pandas as pd
+
+from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
+from src.common.logger import get_logger
+from src.common.utils import clean_street
+
+logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
+
+LION_BRONZE_ROOT = BRONZE_DIR / "lion"
+DIM_SEGMENT_BASE_PATH = SILVER1_DIR / "dim_segment.parquet"
+
+LION_COLUMNS = [
+    "SegmentID", "Street", "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir",
+    "FeatureTyp", "Number_Travel_Lanes", "Number_Total_Lanes",
+    "StreetWidth_Min", "StreetWidth_Max", "SHAPE_Length", "LBoro", "NodeIDFrom", "NodeIDTo",
+]
+
+VALID_BOROUGH_CODES = ["1", "2", "3", "4", "5"]
+MIN_EXPECTED_ROWS = 100_000
+MAX_EXPECTED_ROWS = 300_000
+
+
+def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
+    """ogr2ogr가 뽑은 평탄 DataFrame을 정제한다. ogr2ogr 의존이 없어 단독으로
+    단위 테스트할 수 있다."""
+
+    df = df.copy()
+
+    if "SHAPE" not in df.columns and "WKT" in df.columns:
+        df = df.rename(columns={"WKT": "SHAPE"})
+
+    df["RW_TYPE"] = df["RW_TYPE"].str.strip()
+    df["TRUCK_ROUTE_TYPE"] = df["TRUCK_ROUTE_TYPE"].str.strip()
+    df["Number_Travel_Lanes"] = pd.to_numeric(df["Number_Travel_Lanes"].astype(str).str.strip(), errors="coerce")
+    df["SHAPE_Length"] = pd.to_numeric(df["SHAPE_Length"], errors="coerce")
+    df["Street"] = df["Street"].apply(clean_street)
+
+    before = len(df)
+    df = df.drop_duplicates(subset="SegmentID", keep="first")
+    logger.info(f"[lion_silver] dedupe: {before}행 -> {len(df)}행")
+
+    dim_segment = df.rename(
+        columns={
+            "SegmentID": "segment_id",
+            "Street": "street_name",
+            "LBoro": "borough_code",
+            "SHAPE": "geometry",
+            "SHAPE_Length": "length_ft",
+            "Number_Travel_Lanes": "lanes_total",
+            "NodeIDFrom": "node_from",
+            "NodeIDTo": "node_to",
+        }
+    )[[
+        "segment_id", "street_name", "borough_code", "geometry", "length_ft",
+        "lanes_total", "node_from", "node_to",
+        "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir", "FeatureTyp",
+    ]]
+
+    return dim_segment
+
+
+def _latest_bronze_version(bronze_root: Path = LION_BRONZE_ROOT) -> Path:
+    versions = sorted(bronze_root.glob("version_date=*"))
+    if not versions:
+        raise FileNotFoundError(f"LION bronze 데이터가 없습니다: {bronze_root}")
+    return versions[-1]
+
+
+def _find_gdb(version_dir: Path) -> Path:
+    gdbs = list(version_dir.rglob("*.gdb"))
+    if not gdbs:
+        raise FileNotFoundError(f"{version_dir} 안에 .gdb가 없습니다")
+    return gdbs[0]
+
+
+def _stage_gdb_locally(gdb_path, work_dir: Path) -> Path:
+    if isinstance(gdb_path, Path):
+        return gdb_path
+
+    local_gdb = work_dir / gdb_path.name
+    downloaded_path = Path(gdb_path.download_to(local_gdb))
+
+    if not downloaded_path.is_dir() or not any(p.is_file() for p in downloaded_path.rglob("*")):
+        raise RuntimeError(f"LION .gdb 로컬 다운로드 검증 실패: {gdb_path}")
+
+    return downloaded_path
+
+
+def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+
+    cmd = [
+        "ogr2ogr", "-f", "CSV", str(out_path), str(gdb_path), "lion",
+        "-select", ",".join(LION_COLUMNS),
+        "-lco", "GEOMETRY=AS_WKT",
+        "-nlt", "CONVERT_TO_LINEAR",
+    ]
+    logger.info(f"[lion_silver] ogr2ogr 실행: {' '.join(cmd)}")
+    result = subprocess.run(cmd, capture_output=True, text=True)
+    if result.returncode != 0:
+        logger.error(f"[lion_silver] ogr2ogr 실패: {result.stderr}")
+        raise RuntimeError(f"ogr2ogr 변환 실패: {result.stderr}")
+
+    return out_path
+
+
+def build_dim_segment_base(
+    bronze_root: Path = LION_BRONZE_ROOT,
+    silver1_root: Path = SILVER1_DIR,
+) -> str:
+    """LION 최신 bronze 스냅샷을 읽어 dim_segment Silver1(기본 컬럼) 테이블을 만든다."""
+
+    version_dir = _latest_bronze_version(bronze_root)
+    gdb_path = _find_gdb(version_dir)
+    logger.info(f"[lion_silver] 입력 bronze: {gdb_path}")
+
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="lion_silver1_", dir=TMP_DIR) as tmp:
+        work_dir = Path(tmp)
+        local_gdb_path = _stage_gdb_locally(gdb_path, work_dir)
+        tmp_csv = work_dir / "lion_flat.csv"
+        _gdb_to_flat_csv(local_gdb_path, tmp_csv)
+
+        raw_df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
+
+    dim_segment = _clean_lion_dataframe(raw_df)
+
+    dim_segment_path = silver1_root / "dim_segment.parquet"
+    silver1_root.mkdir(parents=True, exist_ok=True)
+    dim_segment.to_parquet(str(dim_segment_path), index=False)
+
+    logger.info(f"[lion_silver] dim_segment(Silver1) {len(dim_segment)}행 저장 -> {dim_segment_path}")
+    return str(dim_segment_path)
+
+
+def validate_dim_segment_base(path: str) -> str:
+    df = pd.read_parquet(path)
+
+    assert df["segment_id"].is_unique, "segment_id 중복 발견 (dedupe 로직 확인 필요)"
+    assert df["borough_code"].isin(VALID_BOROUGH_CODES + [""]).all(), (
+        f"알 수 없는 borough_code 값: {sorted(set(df['borough_code']) - set(VALID_BOROUGH_CODES) - {''})}"
+    )
+
+    n = len(df)
+    assert MIN_EXPECTED_ROWS <= n <= MAX_EXPECTED_ROWS, (
+        f"행 수가 예상 범위({MIN_EXPECTED_ROWS}~{MAX_EXPECTED_ROWS}) 밖입니다: {n}"
+    )
+
+    logger.info(f"[lion_silver] dim_segment(Silver1) 검증 통과 ({n}행) -> {path}")
+    return path
+
+
+if __name__ == "__main__":
+    out = build_dim_segment_base()
+    validate_dim_segment_base(out)

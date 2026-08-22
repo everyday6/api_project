@@ -52,6 +52,13 @@ x-airflow-env: &airflow-env
   RDS_USER: ${RDS_USER}
   RDS_PASSWORD: ${RDS_PASSWORD}
 
+  # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
+  # nav-api 서비스와 동일한 DYNAMODB_TABLE_TYPE1/2 기본값 패턴을 공유한다.
+  EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:-}
+  EMR_JOB_ROLE_ARN: ${EMR_JOB_ROLE_ARN:-}
+  DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
+  DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
+
   PYTHONPATH: /opt/airflow
 
 # CI(GitHub Actions)가 ECR에 미리 빌드해둔 이미지를 가리키는 값.
@@ -64,6 +71,7 @@ x-airflow-image: &airflow-image
 x-airflow-volumes: &airflow-volumes
   - ./dags:/opt/airflow/dags
   - ./src:/opt/airflow/src
+  - ./spark_jobs:/opt/airflow/spark_jobs
   - ./data:/opt/airflow/data
   - ./logs:/opt/airflow/logs
   - ./plugins:/opt/airflow/plugins
@@ -122,6 +130,28 @@ services:
       interval: 10s
       timeout: 5s
       retries: 5
+
+
+  # =========================================================
+  # DynamoDB Local
+  # 로컬 개발/테스트용 — 세그먼트 지표 서빙 저장소를 AWS 자격증명 없이
+  # 재현한다. APP_ENV=local일 때 src/common/config.py의
+  # DYNAMODB_ENDPOINT_URL이 이 서비스를 가리킨다.
+  # =========================================================
+  dynamodb-local:
+    image: amazon/dynamodb-local:latest
+    container_name: traffic-dynamodb-local
+
+    restart: unless-stopped
+
+    command: >
+      -jar DynamoDBLocal.jar -sharedDb -inMemory
+
+    ports:
+      - "8002:8000"
+
+    networks:
+      - airflow-network
 
 
   # =========================================================
@@ -350,6 +380,48 @@ services:
     entrypoint: []
     command: >
       uvicorn src.serving.api:app --host 0.0.0.0 --port 8000
+
+    networks:
+      - airflow-network
+
+
+  # =========================================================
+  # Segment Metrics API
+  #
+  # 내비게이션이 쓰는 세그먼트 지표(시간/길이) 조회 API. DynamoDB만 보고
+  # 응답하므로 postgres/redis/celery 불필요.
+  # =========================================================
+  nav-api:
+    <<: *airflow-image
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: traffic-nav-api
+
+    restart: unless-stopped
+
+    environment:
+      PYTHONPATH: /opt/airflow
+      APP_ENV: ${APP_ENV:-aws}
+      AWS_REGION: ${AWS_REGION}
+      DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
+      DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
+
+    volumes:
+      - ./src:/opt/airflow/src
+
+    working_dir: /opt/airflow
+
+    ports:
+      - "8001:8001"
+
+    entrypoint: []
+    command: >
+      uvicorn src.serving.nav_api:app --host 0.0.0.0 --port 8001
+
+    depends_on:
+      - dynamodb-local
 
     networks:
       - airflow-network

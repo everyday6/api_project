@@ -1,0 +1,75 @@
+"""
+DAG: segment_time_pipeline (type1 — 시간)
+
+NYC DOT 실시간 속도 데이터를 30분마다 수집해서, LION 세그먼트별 30분 버킷
+평균 통행시간을 계산해 DynamoDB(SegmentMetricsType1)에 upsert한다(설계
+문서 8절).
+
+Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 하나의 EMR
+Serverless Spark job으로 묶어서 제출한다.
+"""
+
+import uuid
+from datetime import datetime, timedelta
+
+from airflow.decorators import dag, task
+
+from src.common.alerts import notify_slack_failure
+from src.common.config import DYNAMODB_TABLE_TYPE1, EMR_JOBS_DIR, PROJECT_ROOT
+from src.common.emr_serverless import read_json_result, run_spark_job
+from src.lion.gold2 import DIM_SEGMENT_PATH
+from src.speed.bronze import collect_speed_window, has_new_speed_data
+
+default_args = {
+    "retries": 3,
+    "retry_delay": timedelta(minutes=5),
+}
+
+
+@dag(
+    dag_id="segment_time_pipeline",
+    description="type1(시간) — NYC DOT 속도 데이터를 세그먼트별 통행시간으로 변환",
+    schedule="*/30 * * * *",
+    start_date=datetime(2026, 1, 1),
+    catchup=False,
+    max_active_runs=1,
+    default_args=default_args,
+    on_failure_callback=notify_slack_failure,
+    tags=["nav", "type1", "time"],
+)
+def segment_time_pipeline():
+
+    @task.short_circuit
+    def check_new_data(data_interval_start=None, data_interval_end=None) -> bool:
+        return has_new_speed_data(data_interval_start, data_interval_end)
+
+    @task
+    def collect_bronze(data_interval_start=None, data_interval_end=None) -> str:
+        return collect_speed_window(data_interval_start, data_interval_end)
+
+    @task
+    def submit_nav_time_job(speed_bronze_path: str) -> dict:
+        run_id = uuid.uuid4().hex
+        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_{run_id}.json"
+
+        run_spark_job(
+            job_name=f"nav-time-{run_id}",
+            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_job.py",
+            entry_point_args=[
+                "--speed-bronze-path", speed_bronze_path,
+                "--dim-segment-path", str(DIM_SEGMENT_PATH),
+                "--dynamodb-table", DYNAMODB_TABLE_TYPE1,
+                "--output-s3", str(output_s3),
+            ],
+        )
+
+        return read_json_result(str(output_s3))
+
+    new_data = check_new_data()
+    bronze_path = collect_bronze()
+    bronze_path.set_upstream(new_data)
+
+    submit_nav_time_job(bronze_path)
+
+
+segment_time_pipeline()

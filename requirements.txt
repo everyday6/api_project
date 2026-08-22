@@ -25,6 +25,9 @@ boto3
 cloudpathlib[s3]
 s3fs
 
+# DynamoDB 로컬 모킹 테스트용(src/common/dynamodb.py, src/common/emr_serverless.py 테스트).
+moto[dynamodb]
+
 # RDS(Postgres) 서빙 테이블 읽기/쓰기(src/common/db.py)에 사용.
 psycopg2-binary
 sqlalchemy
@@ -37,6 +40,10 @@ great_expectations>=1.20.0
 # 이미지에 Airflow 자체 의존성으로 딸려 들어와 있어서 없어도 동작하지만,
 # 베이스 이미지가 바뀌면 조용히 깨질 수 있어 명시한다. 버전은 안 박아서
 # 이미 설치된 버전(Airflow가 요구하는 버전)과 충돌하지 않게 한다.
+# 세그먼트 지표 서빙 API(src/serving/nav_api.py)가 씀.
 fastapi
 uvicorn
 PyYAML
+
+# FastAPI TestClient(starlette.testclient)가 내부적으로 사용 — 테스트 전용.
+httpx

@@ -1,15 +1,27 @@
 """
 EMR Serverless Spark 잡 제출/대기 헬퍼
 
-Airflow worker 프로세스 안에서 SparkSession을 직접 여는 대신(예전 get_spark()
-방식), 변환 로직을 담은 스크립트(spark_jobs/*.py)를 EMR Serverless에
-제출하고 완료를 기다린다. src/ 전체를 zip으로 묶어 --py-files로 넘겨서,
-잡 스크립트가 src.tlc.* 등 기존 순수 변환 함수를 그대로 import해서 쓸 수
-있게 한다 — 변환 로직을 spark_jobs 쪽에 복제하지 않기 위함.
+Airflow worker 프로세스 안에서 SparkSession을 직접 여는 대신, 변환 로직을
+담은 스크립트(spark_jobs/*.py)를 EMR Serverless에 제출하고 완료를 기다린다.
+src/ 전체를 zip으로 묶어 --py-files로 넘겨서, 잡 스크립트가 src.tlc.* 등
+기존 순수 변환 함수를 그대로 import해서 쓸 수 있게 한다 — 변환 로직을
+spark_jobs 쪽에 복제하지 않기 위함이다.
+
+우리 Spark job(nav_length_job.py, nav_time_job.py 등)은 pandas/geopandas/
+shapely/pyproj/cloudpathlib 같은 서드파티 라이브러리도 쓰는데, EMR
+Serverless 기본 이미지에는 이게 없다. --py-files는 순수 파이썬 코드만
+배포하고 패키지를 설치해주지 않으므로, venv-pack으로 미리 패키징해둔
+파이썬 환경(scripts/package_emr_dependencies.sh로 빌드/업로드)을
+spark.archives로 같이 실어서 드라이버/executor가 그 환경의 python을
+쓰게 한다(AWS 공식 권장 방식). 자세한 배경은
+.superpowers/sdd/final-review-c3-report.md 참고.
 """
+
+from __future__ import annotations
 
 import json
 import time
+import uuid
 import zipfile
 from pathlib import Path
 
@@ -21,6 +33,7 @@ from src.common.config import (
     EMR_APPLICATION_ID,
     EMR_JOB_ROLE_ARN,
     EMR_JOBS_DIR,
+    EMR_PYTHON_ENV_S3_PATH,
     PROJECT_ROOT,
     TMP_DIR,
 )
@@ -35,14 +48,13 @@ _TERMINAL_STATES = {"SUCCESS", "FAILED", "CANCELLED"}
 
 
 def _upload_src_bundle() -> str:
-    """src/ 디렉토리를 zip으로 묶어 S3에 올리고 s3:// 경로를 반환한다.
+    """src/ 디렉터리를 zip으로 묶어 EMR_JOBS_DIR에 올리고 경로를 반환한다.
 
     잡마다 매번 새로 올린다 — src/가 몇백 KB 수준이라 비용/시간 부담이
     거의 없고, 코드가 바뀐 채로 캐시된 옛 zip을 잘못 쓰는 사고를 막는다.
     """
-
     TMP_DIR.mkdir(parents=True, exist_ok=True)
-    zip_path = TMP_DIR / "emr_src_bundle.zip"
+    zip_path = TMP_DIR / f"emr_src_bundle_{uuid.uuid4().hex}.zip"
 
     src_dir = PROJECT_ROOT / "src"
 
@@ -51,17 +63,28 @@ def _upload_src_bundle() -> str:
             zf.write(path, arcname=path.relative_to(PROJECT_ROOT))
 
     dest = EMR_JOBS_DIR / "bundles" / "src.zip"
-    dest.upload_from(zip_path)
+
+    if isinstance(dest, Path):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(zip_path.read_bytes())
+    else:
+        dest.upload_from(zip_path)
+
     zip_path.unlink()
 
     return str(dest)
 
 
 def _upload_script(local_path: Path, job_name: str) -> str:
-    """잡 엔트리포인트 스크립트를 S3에 올리고 s3:// 경로를 반환한다."""
-
+    """잡 엔트리포인트 스크립트를 EMR_JOBS_DIR에 올리고 경로를 반환한다."""
     dest = EMR_JOBS_DIR / "scripts" / f"{job_name}.py"
-    dest.upload_from(local_path)
+
+    if isinstance(dest, Path):
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        dest.write_bytes(local_path.read_bytes())
+    else:
+        dest.upload_from(local_path)
+
     return str(dest)
 
 
@@ -75,7 +98,6 @@ def run_spark_job(
     실패(FAILED/CANCELLED)면 예외를 던져 Airflow가 기존 재시도/Slack
     실패 알림 경로를 그대로 타게 한다.
     """
-
     client = boto3.client("emr-serverless", region_name=AWS_REGION)
 
     src_bundle_s3 = _upload_src_bundle()
@@ -91,16 +113,19 @@ def run_spark_job(
             "sparkSubmit": {
                 "entryPoint": entry_point_s3,
                 "entryPointArguments": entry_point_args,
-                "sparkSubmitParameters": f"--py-files {src_bundle_s3}",
+                "sparkSubmitParameters": (
+                    f"--py-files {src_bundle_s3} "
+                    f"--conf spark.archives={EMR_PYTHON_ENV_S3_PATH}#environment "
+                    f"--conf spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python "
+                    f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python"
+                ),
             }
         },
     )
 
     job_run_id = response["jobRunId"]
 
-    logger.info(
-        f"EMR Serverless 잡 실행 중: {job_name} (jobRunId={job_run_id})"
-    )
+    logger.info(f"EMR Serverless 잡 실행 중: {job_name} (jobRunId={job_run_id})")
 
     while True:
         time.sleep(_POLL_INTERVAL_SECONDS)
@@ -126,6 +151,5 @@ def run_spark_job(
 
 
 def read_json_result(s3_path: str):
-    """잡이 S3에 써둔 JSON 결과 파일을 읽는다."""
-
+    """잡이 저장해둔 JSON 결과 파일을 읽는다."""
     return json.loads(S3Path(s3_path).read_text())

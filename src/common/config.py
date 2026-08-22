@@ -192,6 +192,9 @@ DATASETS = {
     "closure": "https://data.cityofnewyork.us/resource/ezy6-djsf.json",
     "event": "https://nycopendata.socrata.com/resource/tvpp-9vvx.json",
     "parks": "https://data.cityofnewyork.us/resource/enfh-gkve.json",
+    # NYC DOT Real-Time Traffic Speed Data
+    # https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds/i4gi-tjb9
+    "speed": "https://data.cityofnewyork.us/resource/i4gi-tjb9.json",
 }
 
 # ==========================
@@ -276,3 +279,80 @@ HOTSPOT_SEGMENT_BUFFER_FT = 100
 # 위에 정확히 있어 distance=0이 되는 경우의 0-division만 막는 최소 상수. 정성적
 # 초안이다(TODO, 팀 검토 필요).
 HOTSPOT_INVERSE_DISTANCE_EPSILON_FT = 1.0
+
+# ==========================
+# 세그먼트 지표 API — DynamoDB 서빙 저장소 설정
+# ==========================
+#
+# 타입별로 완전히 분리된 테이블을 쓴다(팀원이 타입별로 독립 개발하기 때문 —
+# 접두사 컨벤션이 아니라 물리적으로 다른 테이블). 자세한 설계 근거는
+# docs/superpowers/specs/2026-08-21-segment-metrics-api-design.md 6절 참고.
+
+DYNAMODB_TABLE_TYPE1 = os.getenv("DYNAMODB_TABLE_TYPE1", "SegmentMetricsType1")
+DYNAMODB_TABLE_TYPE2 = os.getenv("DYNAMODB_TABLE_TYPE2", "SegmentMetricsType2")
+
+# APP_ENV=local이면 dynamodb-local 컨테이너를 가리킨다. aws(EC2)에서는 빈 값으로
+# 둬서 boto3가 기본 리전 엔드포인트를 쓰게 한다(다른 AWS 자격증명 설정과 동일한
+# 패턴 — 여기서 없다고 에러내지 않는다, 실제 클라이언트 생성 시점에서만 확인).
+DYNAMODB_ENDPOINT_URL = (
+    "http://dynamodb-local:8000" if APP_ENV == "local" else None
+)
+
+# Fallback 체인(설계 문서 7절)에서 쓰는 예약 키.
+# GLOBAL_PARTITION_KEY: 실제 segment_id가 아닌 예약된 PK — 배포 시점에 수동으로
+#   심어두는 전역 기본값 전용 파티션.
+GLOBAL_PARTITION_KEY = "GLOBAL"
+DEFAULT_SORT_KEY = "DEFAULT"
+AVG_SORT_KEY = "AVG"
+LENGTH_SORT_KEY = "LENGTH"
+
+# 하루를 30분 단위로 나눈 버킷 수(00:00~23:30 -> 48개). 버킷 키는 "HHMM" 문자열.
+BUCKET_MINUTES = 30
+
+# type1(시간) 버킷 값을 계산할 때 참고하는 최근 관측치 범위(일). 조정 가능한
+# 파라미터라 상수로 뺐다 — 실측 후 조정.
+ROLLING_WINDOW_DAYS = 14
+
+# ==========================
+# EMR Serverless (Spark job 실행) 설정
+# ==========================
+#
+# Airflow worker 프로세스 안에서 SparkSession을 직접 여는 대신, 변환 로직을
+# 담은 스크립트(spark_jobs/*.py)를 EMR Serverless에 제출하고 완료를 기다린다
+# (src/common/emr_serverless.py 참고).
+
+EMR_APPLICATION_ID = os.getenv("EMR_APPLICATION_ID")
+EMR_JOB_ROLE_ARN = os.getenv("EMR_JOB_ROLE_ARN")
+
+if APP_ENV == "local":
+    EMR_JOBS_DIR = PROJECT_ROOT / "data" / "emr-jobs"
+else:
+    EMR_JOBS_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/emr-jobs")
+
+# EMR Serverless job이 spark.archives로 실어가는 패키징된 파이썬 venv
+# (pandas/geopandas/shapely/pyproj 등 서드파티 의존성). requirements.txt가
+# 바뀌면 scripts/package_emr_dependencies.sh로 다시 만들어 올려야 한다.
+EMR_PYTHON_ENV_S3_PATH = EMR_JOBS_DIR / "python-env" / "pyspark_deps.tar.gz"
+
+# ==========================
+# 속도(speed) - LION 매핑 설정
+# ==========================
+#
+# ticketmaster/gold1.py의 venue-LION 매핑과 동일한 buffer+nearest 패턴을
+# 쓴다 — 대상이 Point(venue)가 아니라 LineString(속도 링크)이라는 점만 다르다.
+
+SPEED_CRS = "EPSG:4326"
+
+# 속도 링크 주변 도로 매핑 반경(feet). 도로 링크는 보통 LION 세그먼트 여러
+# 개로 쪼개져 있어(하나의 corridor가 여러 블록으로 나뉨), venue보다 좁게
+# 잡아도 충분히 겹친다 — 정성적 초안(TODO, 팀 검토 필요).
+SPEED_LION_BUFFER_FT = 50
+
+# fallback nearest 매핑 품질 기준.
+SPEED_LION_WARN_DISTANCE_FT = 200
+SPEED_LION_MAX_DISTANCE_FT = 1000
+
+# 이 미만인 속도 판독값은 계산에서 제외한다(0 또는 비정상적으로 낮은 값 —
+# 정차/정지 상태로 잘못 기록된 값과 실제 정체를 구분하기 위한 정성적
+# 초안, TODO 팀 검토 필요).
+MIN_VALID_SPEED_MPH = 1.0
