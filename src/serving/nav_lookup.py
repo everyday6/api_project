@@ -39,6 +39,13 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
 # 정성적 초안.
 _HARDCODED_DEFAULTS = {1: 45, 2: 300}
 
+# type1은 세그먼트마다 순차로 DynamoDB를 조회하므로(누적시각 때문에 배치 불가),
+# DynamoDB 리전 전체가 응답 불가능한 상황에서는 세그먼트 수만큼 호출이 전부
+# 느리게 실패하며 쌓여 응답 자체가 타임아웃날 수 있다. 연속으로 이 횟수만큼
+# 호출 자체가 실패하면 남은 세그먼트는 DynamoDB를 더 안 건드리고 곧바로
+# 코드 상수로 채운다.
+_CIRCUIT_BREAKER_THRESHOLD = 3
+
 
 def time_to_bucket(time_str: str) -> str:
     """'HH:MM' -> 'HHMM' (30분 단위로 내림)."""
@@ -66,12 +73,15 @@ def table_for_type(type_: int) -> str:
     raise ValueError(f"알 수 없는 type: {type_}")
 
 
-def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk: str) -> None:
+def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk: str) -> bool:
     """아직 못 찾은 segment_id들에 대해 (segment_id, sk) 키로 조회해서
     찾은 만큼 resolved에 채운다. DynamoDB 호출 자체가 실패해도 예외를
-    삼키고 로그만 남긴다(호출부가 다음 fallback 단계로 계속 진행)."""
+    삼키고 로그만 남긴다(호출부가 다음 fallback 단계로 계속 진행).
+
+    반환값은 "값을 찾았는지"가 아니라 "DynamoDB 호출 자체가 성공했는지"다
+    (circuit breaker가 장애와 단순 미스를 구분하는 데 씀)."""
     if not ids:
-        return
+        return True
 
     keys = [{"segment_id": sid, "sk": sk} for sid in ids]
 
@@ -79,7 +89,7 @@ def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk:
         items = batch_get_items(table_name, keys)
     except Exception:
         logger.exception(f"DynamoDB batch_get_items 실패: table={table_name} sk={sk}")
-        return
+        return False
 
     for sid in ids:
         item = items.get((sid, sk))
@@ -92,6 +102,8 @@ def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk:
                 f"DynamoDB 항목 형식 오류(다음 fallback 단계로 넘어감): "
                 f"table={table_name} sk={sk} segment_id={sid}"
             )
+
+    return True
 
 
 def _lookup_global_default(table_name: str, type_: int) -> int:
@@ -153,24 +165,57 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
     세그먼트에 실제로 도착하는 시점의 버킷을 봐야 하기 때문이다. 이 누적
     시각은 앞 세그먼트의 조회 *결과*에 의존하므로 순서대로(순차) 처리해야
     하고, 같은 segment_id가 경로에 두 번 나와도(루프) 등장 위치의 누적
-    시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다."""
+    시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다.
+
+    GLOBAL#DEFAULT는 요청 전체에서 값이 불변이므로 한 번만 조회해서
+    재사용한다(세그먼트마다 다시 조회하지 않음). 또한 DynamoDB 호출이
+    연속으로 실패하면(circuit breaker) 남은 세그먼트는 더 이상 DynamoDB를
+    건드리지 않고 코드 상수로 바로 채운다 - 안 그러면 리전 전체 장애 시
+    세그먼트 수만큼 느린 실패가 순차로 쌓여 응답이 타임아웃날 수 있다."""
     values: list[int] = []
     elapsed_seconds = 0
+    consecutive_failures = 0
+    circuit_open = False
+    cached_default: int | None = None
+
+    def get_default() -> int:
+        nonlocal cached_default
+        if cached_default is None:
+            cached_default = _lookup_global_default(table_name, 1)
+        return cached_default
 
     for sid in segment_ids:
+        if circuit_open:
+            value = _HARDCODED_DEFAULTS[1]
+            values.append(value)
+            elapsed_seconds += value
+            continue
+
         lookup_time = _add_seconds(time_str, elapsed_seconds)
         bucket = time_to_bucket(lookup_time)
 
         resolved: dict[str, int] = {}
-        _resolve_tier(resolved, [sid], table_name, bucket)
+        call_ok = _resolve_tier(resolved, [sid], table_name, bucket)
 
         if sid not in resolved:
-            _resolve_tier(resolved, [sid], table_name, AVG_SORT_KEY)
+            call_ok = _resolve_tier(resolved, [sid], table_name, AVG_SORT_KEY) and call_ok
 
-        if sid not in resolved:
-            resolved[sid] = _lookup_global_default(table_name, 1)
+        if sid in resolved:
+            consecutive_failures = 0
+            value = resolved[sid]
+        else:
+            if call_ok:
+                consecutive_failures = 0
+            else:
+                consecutive_failures += 1
+                if consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                    circuit_open = True
+                    logger.warning(
+                        f"DynamoDB 호출 {_CIRCUIT_BREAKER_THRESHOLD}회 연속 실패 -> "
+                        f"circuit open, 남은 세그먼트는 코드 상수로 응답: table={table_name}"
+                    )
+            value = get_default()
 
-        value = resolved[sid]
         values.append(value)
         elapsed_seconds += value
 

@@ -44,3 +44,12 @@ def test_get_segment_values_rejects_empty_segment_list():
     )
 
     assert response.status_code == 422
+
+
+def test_get_segment_values_rejects_too_many_segment_ids():
+    response = client.post(
+        "/segments/values",
+        json={"segment_ids": [str(i) for i in range(501)], "type": 1, "time": "12:00"},
+    )
+
+    assert response.status_code == 422

@@ -190,3 +190,28 @@ def test_resolve_type2_still_dedupes_since_time_independent():
     result = nav_lookup.resolve_segment_values(["1", "1", "1"], 2, "09:00")
 
     assert result == [500, 500, 500]
+
+
+def test_resolve_time_values_memoizes_global_default_across_segments():
+    # 여러 세그먼트가 전부 DynamoDB엔 값이 없어 기본값으로 떨어지는 경우,
+    # GLOBAL#DEFAULT 조회는 요청 전체에서 딱 한 번만 해야 한다(세그먼트마다
+    # 다시 조회하면 안 됨).
+    with patch.object(nav_lookup, "batch_get_items", return_value={}), \
+         patch.object(nav_lookup, "_lookup_global_default", return_value=99) as mock_default:
+        result = nav_lookup.resolve_segment_values(["1", "2", "3"], 1, "12:00")
+
+    assert result == [99, 99, 99]
+    mock_default.assert_called_once()
+
+
+def test_resolve_time_values_circuit_breaker_bounds_dynamodb_calls():
+    # DynamoDB 리전 전체가 죽었을 때, 세그먼트 수만큼 순차로 느린 실패가
+    # 쌓이면 안 된다 - 연속 실패가 임계치를 넘으면 남은 세그먼트는
+    # DynamoDB를 더 안 건드리고 코드 상수로 바로 채워야 한다.
+    segment_ids = [str(i) for i in range(10)]
+
+    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")) as mock_batch:
+        result = nav_lookup.resolve_segment_values(segment_ids, 1, "12:00")
+
+    assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 10
+    assert mock_batch.call_count < 3 * len(segment_ids)
