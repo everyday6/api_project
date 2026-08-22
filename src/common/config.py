@@ -166,10 +166,6 @@ LENGTH_SORT_KEY = "LENGTH"
 # 하루를 30분 단위로 나눈 버킷 수(00:00~23:30 -> 48개). 버킷 키는 "HHMM" 문자열.
 BUCKET_MINUTES = 30
 
-# type1(시간) 버킷 값을 계산할 때 참고하는 최근 관측치 범위(일). 조정 가능한
-# 파라미터라 상수로 뺐다 — 실측 후 조정.
-ROLLING_WINDOW_DAYS = 14
-
 # ==========================
 # EMR Serverless (Spark job 실행) 설정
 # ==========================
@@ -199,6 +195,9 @@ EMR_PYTHON_ENV_S3_PATH = EMR_JOBS_DIR / "python-env" / "pyspark_deps.tar.gz"
 # 쓴다 — 대상이 Point(venue)가 아니라 LineString(속도 링크)이라는 점만 다르다.
 
 SPEED_CRS = "EPSG:4326"
+
+# NYC LION 좌표계(feet 단위) — 거리 계산은 이 좌표계로 변환해서 한다.
+LION_CRS = "EPSG:2263"
 
 # 속도 링크 주변 도로 매핑 반경(feet). 도로 링크는 보통 LION 세그먼트 여러
 # 개로 쪼개져 있어(하나의 corridor가 여러 블록으로 나뉨), venue보다 좁게

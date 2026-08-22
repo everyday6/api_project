@@ -515,7 +515,7 @@ services:
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-api,navigation-spark-master
+      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-api,navigation-spark-master,traffic-nav-api,traffic-dynamodb-local
       POLL_INTERVAL_SECONDS: 30
 
     volumes:
