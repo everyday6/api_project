@@ -1,0 +1,27 @@
+# 택시 전용 통행료 요금표 — 사람이 직접 관리한다(자동 크롤링 없음).
+# 공식 요금 페이지가 바뀌면 dags/toll_rate_monitor.py가 Slack으로 알려주고,
+# 그때 이 파일을 직접 고친 뒤 dags/toll_bronze_pipeline.py를 수동 트리거한다.
+#
+# TODO(팀 검토 필요): 아래 금액은 2026-08 기준 조사값이다. 실제 반영 전
+# mta.info/fares-tolls/tolls/congestion-relief-zone, panynj.gov 요금표에서
+# 재확인할 것.
+
+congestion:
+  # 택시/그린캡: zone(60번가 이남) 통과 트립마다 정액, 시간대 무관, 하루 상한 없음.
+  taxi_flat_rate: 0.75
+
+road:
+  # facility_key는 config/toll_facilities.yaml의 키와 일치해야 한다.
+  # 택시 전용 요금이 별도로 없으면 passenger(E-ZPass 승용차) 요금을 그대로 쓴다.
+  verrazzano_narrows:
+    passenger: 10.67
+  queens_midtown_tunnel:
+    passenger: 6.94
+  hugh_l_carey_tunnel:
+    passenger: 6.94
+  lincoln_tunnel:
+    passenger: 17.00
+  holland_tunnel:
+    passenger: 17.00
+  george_washington_bridge:
+    passenger: 17.00

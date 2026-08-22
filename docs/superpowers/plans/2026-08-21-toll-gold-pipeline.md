@@ -17,7 +17,7 @@
 - 요금표/시설목록/CBD 폴리곤은 전부 **사람이 관리**한다(자동 크롤링/파싱 없음). 자동화되는 건 "공식 요금 페이지가 바뀌었는지 감지해서 알림 보내는 것"뿐이다.
 - 시설/zone에 해당하지 않는 segment는 값을 쓰지 않는다(DynamoDB에 아이템 자체가 없음) — 서빙 함수가 "값 없음"을 항상 `0`으로 변환해서 반환한다("무결점 응답": null/에러 없이 항상 값 반환).
 - 매 태스크 끝에 `git add`(관련 파일만, `git add -A` 금지) + commit.
-- MTA Central Business District Geofence의 정확한 다운로드 URL은 이 플랜 작성 시점에 확인된 공식 파일 링크가 아니라 카탈로그 페이지(`https://catalog.data.gov/dataset/mta-central-business-district-geofence-beginning-june-2024`)만 확인됐다 — **Task 2 착수 전 그 페이지에서 실제 GeoJSON/Shapefile 다운로드 링크를 직접 확인할 것.**
+- ~~MTA Central Business District Geofence의 정확한 다운로드 URL은...~~ **(해결됨)** 실제 실행 시 확인한 결과 `https://data.ny.gov/resource/srxy-5nxn.geojson`가 실제 폴리곤 좌표를 반환하는 올바른 엔드포인트다(참고로 비슷한 이름의 `vaq5-qfkz`는 geometry가 비어있는 잘못된 데이터셋이라 헷갈리지 말 것 — curl로 직접 응답 내용 확인해서 검증함).
 - 요금표(`config/toll_rates.yaml`)의 금액은 이 플랜 작성 시점에 조사한 참고값이다 — **Task 2 착수 전 `mta.info`/`panynj.gov` 공식 요금표에서 실제 현재 금액을 다시 확인하고 반영할 것** (다른 상수들처럼 TODO 주석으로 표시해뒀다).
 
 ---
@@ -402,8 +402,10 @@ lincoln_tunnel:
 holland_tunnel:
   street_contains: "HOLLAND TUNNEL"
 george_washington_bridge:
-  street_contains: "GEO WASHINGTON BR"
+  street_contains: "GEORGE WASHINGTON BR"
 ```
+
+> **실행 중 발견한 이슈**: 실제 LION 데이터로 검증해보니 GW 브리지는 "GEO WASHINGTON BR"이 아니라 "GEORGE WASHINGTON BRIDGE"(full word)로 들어있다. 위 패턴은 이미 수정된 버전이다 — 나머지 5개(verrazzano/queens_midtown_tunnel/hugh_l_carey_tunnel/lincoln_tunnel/holland_tunnel)는 `ogrinfo`로 실제 LION GDB에 대조 확인해서 문제없음을 확인했다.
 
 - [ ] **Step 4: 실패하는 테스트 작성**
 
@@ -478,8 +480,10 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_bronze")
 SOURCE = "toll"
 BRONZE_ROOT = BRONZE_DIR / SOURCE
 
-# TODO(팀 검토 필요): 카탈로그 페이지에서 실제 GeoJSON 다운로드 링크로 교체할 것.
-CBD_GEOFENCE_URL = "https://data.ny.gov/resource/PLACEHOLDER-VERIFY-BEFORE-USE.geojson"
+# data.ny.gov(Socrata)의 "MTA Central Business District Geofence: Beginning
+# June 2024" 데이터셋(srxy-5nxn). 비슷한 이름의 vaq5-qfkz는 geometry가
+# 비어있는 잘못된 데이터셋이라 혼동하지 말 것(직접 curl로 확인함).
+CBD_GEOFENCE_URL = "https://data.ny.gov/resource/srxy-5nxn.geojson"
 
 
 def upload_rates(source_path: str = "config/toll_rates.yaml", bronze_root: Path = BRONZE_ROOT) -> Path:
