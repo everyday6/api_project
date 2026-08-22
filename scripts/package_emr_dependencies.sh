@@ -1,13 +1,16 @@
 #!/usr/bin/env bash
 # EMR Serverless Spark job이 쓰는 서드파티 파이썬 의존성을 패키징해서 S3에 올린다.
-# 의존성(requirements.txt)이 바뀔 때마다 다시 실행해야 한다.
+# docker/emr-python-env/Dockerfile 내용이 바뀔 때마다 다시 실행해야 한다.
 #
 # 사용법: ./scripts/package_emr_dependencies.sh
 #
-# .github/workflows/build-push-ecr.yml의 deploy 작업이 매 nav 배포마다
-# EC2에서 이 스크립트를 자동 실행한다(Dockerfile 내용이 안 바뀌면 대부분
-# 레이어 캐시로 스킵되어 대체로 빠름) - 수동으로 직접 돌릴 때도 동일하게
-# 동작한다.
+# .github/workflows/build-push-ecr.yml의 build-emr-python-env 잡이 amd64
+# GitHub Actions 러너(ubuntu-latest)에서 이 스크립트를 자동 실행한다
+# (docker/emr-python-env/Dockerfile이 변경된 push에서만). 예전엔 deploy
+# 단계에서 (arm64) EC2가 직접 실행했는데, Dockerfile이 amd64로 고정돼
+# 있어서 arm64 EC2에서는 QEMU 에뮬레이션 위에서 dnf가 죽었다(exit 255).
+# 로컬에서 수동으로 돌릴 때도 동일하게 동작한다 — 단, amd64/Linux
+# 호스트여야 에뮬레이션 없이 빌드된다.
 
 set -euo pipefail
 
