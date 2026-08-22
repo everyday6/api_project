@@ -532,7 +532,9 @@ Expected: `200 OK`, `{"values":[...]}` — fallback 체인을 타고 값이 채�
 
 ---
 
-### Task 9: 배포 자동화 (CI/CD)
+### Task 9: 배포 자동화 (CI/CD) ✅ 완료 (2026-08-22)
+
+`nav-api-lambda-deploy` 인라인 정책을 `github-actions-ecr-push-role`에 추가하고 `deploy-lambda` job을 병합 — PR 머지 후 `build-and-push-lambda` → `deploy-lambda` 전부 성공 확인함. **이 플랜의 모든 태스크 완료.**
 
 **Files:**
 - Modify: `.github/workflows/build-push-ecr.yml`
