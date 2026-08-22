@@ -55,6 +55,14 @@ RUN python3.11 -m venv /build/environment && \
 # "Current environment is not a virtual environment"로 실패한다.
 # venv-pack 0.2.0 기준 확인된 동작이며, activate 없이도 VIRTUAL_ENV만
 # 명시하면 정상 동작한다.
-RUN VIRTUAL_ENV=/build/environment /build/environment/bin/venv-pack -o /build/pyspark_deps.tar.gz
+RUN VIRTUAL_ENV=/build/environment /build/environment/bin/venv-pack -o /build/pyspark_deps.tar.gz && \
+    chmod 644 /build/pyspark_deps.tar.gz
+
+# 위 tar.gz는 이 RUN(빌드 시점, root)이 만들어서 root 소유다. 컨테이너를
+# `docker run --user "$(id -u):$(id -g)"`(호스트 비-root UID, CI 러너나
+# 로컬 유저)로 돌리면 CMD의 cp가 이 파일을 "읽지"도 못해서
+# "Permission denied"로 죽는다(scripts/package_emr_dependencies.sh 참고,
+# 이 스크립트는 컨테이너를 host UID로 돌려서 대신 /output 쓰기 문제만
+# 해결했었다) — 그래서 world-readable로 열어준다.
 
 CMD ["cp", "/build/pyspark_deps.tar.gz", "/output/pyspark_deps.tar.gz"]
