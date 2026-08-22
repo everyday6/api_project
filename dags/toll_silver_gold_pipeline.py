@@ -1,13 +1,18 @@
 """
 DAG: toll_silver_gold_pipeline
 
-toll_bronze_pipeline이 요금표/시설목록/CBD 폴리곤을 갱신할 때마다
-(Asset("toll_bronze_updated") 트리거) Silver2 매핑(lion_facility,
-lion_cbd)을 다시 만들고 Gold 값을 재계산해서 DynamoDB에 적재한다. 이름을
+toll_bronze_pipeline이 요금표/시설목록/CBD 폴리곤을 갱신하거나
+(Asset("toll_bronze_updated")), lion_pipeline이 분기 LION을 갱신할 때
+(Asset("lion_bronze_updated")) Silver2 매핑(lion_facility, lion_cbd)을
+다시 만들고 Gold 값을 재계산해서 DynamoDB에 적재한다. 이름을
 "gold_pipeline"이 아니라 "silver_gold_pipeline"으로 붙인 이유는 실제로
 Silver2 매핑 태스크가 여기 포함돼 있어서다(순수 Gold 계산만 하는 DAG가
 아님). 요금표가 1년에 한 번 정도만 바뀌므로 cron 스케줄 없이 Asset
 트리거만 쓴다(gold_closure_penalty와 동일한 패턴).
+
+두 Asset을 리스트로 넘기면 Airflow는 AND로 해석해서 "둘 다" 갱신돼야
+트리거한다(둘 중 하나만 바뀌어도 반응해야 하는 이 상황엔 안 맞음) —
+그래서 리스트 대신 `|` 연산자로 OR 조건을 명시한다.
 """
 
 from datetime import timedelta
@@ -26,8 +31,8 @@ default_args = {
 
 @dag(
     dag_id="toll_silver_gold_pipeline",
-    description="통행료 Silver2 매핑(lion_facility, lion_cbd) + Gold 계산 (toll_bronze_pipeline Asset 트리거)",
-    schedule=[Asset("toll_bronze_updated")],
+    description="통행료 Silver2 매핑(lion_facility, lion_cbd) + Gold 계산 (toll_bronze_pipeline 또는 lion_pipeline Asset 트리거)",
+    schedule=Asset("toll_bronze_updated") | Asset("lion_bronze_updated"),
     start_date=pendulum.datetime(2026, 8, 1),
     catchup=False,
     max_active_runs=1,

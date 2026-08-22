@@ -70,7 +70,7 @@ def match_lion_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> 
 
 def build_lion_facility_mapping(
     gdb_path: Path,
-    facilities_path: Path = Path("config/toll_facilities.yaml"),
+    facilities_path: Path = Path("data/bronze/toll/toll_facilities.yaml"),
     out_path: Path = MAP_LION_FACILITY_PATH,
 ) -> str:
     logger.info(f"[toll_silver2] lion_facility 매핑 시작 (facilities={facilities_path})")

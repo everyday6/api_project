@@ -1488,3 +1488,34 @@ DAG 이름과 실제 하는 일이 안 맞는다는 지적으로 아래처럼 �
 - 매핑 관련 이름에 조인하는 두 주체를 명시: `MAP_TOLL_FACILITY_SEGMENT_PATH`→`MAP_LION_FACILITY_PATH`, `MAP_CBD_ZONE_SEGMENT_PATH`→`MAP_LION_CBD_PATH`, `match_toll_facilities`→`match_lion_facilities`, `build_map_toll_facility_segment`→`build_lion_facility_mapping`, `match_cbd_zone`→`match_lion_cbd`, `build_map_cbd_zone_segment`→`build_lion_cbd_mapping`
 
 이 문서의 위 태스크 본문 코드 블록들은 전부 새 이름으로 갱신했다.
+
+## 사후 수정: 컨테이너 환경변수 + Bronze lineage/트리거 (2026-08-22)
+
+운영 중 실제로 겪은 버그 두 건과, 코드 리뷰 중 지적받아 고친 lineage 문제
+두 건을 수정했다.
+
+**1) `EndpointConnectionError`/`NoCredentialsError`**: `docker-compose.yml`의
+`x-airflow-env`가 `DYNAMO_LOCAL_ENDPOINT`/`APP_ENV`를 컨테이너에 전달하지
+않아서, 컨테이너 안에서는 `.env`의 `APP_ENV=local` 설정이 무시되고 항상
+aws 모드(`DYNAMO_LOCAL_ENDPOINT` 기본값 `localhost:8002`, 컨테이너 자기
+자신을 가리켜서 연결 안 됨)로 떨어졌다. 두 변수를 `x-airflow-env`에
+명시적으로 추가해서 해결. 컨테이너 재생성 후 신규 DAG run으로
+`find_latest_lion_gdb → build_lion_facility_mapping/build_lion_cbd_mapping
+→ build_and_write_gold` 전체가 success로 끝나는 것까지 확인.
+
+**2) `build_lion_facility_mapping`이 Bronze를 안 거침**: 기본
+`facilities_path`가 `config/toll_facilities.yaml`(원본)을 직접 가리켜서,
+`toll_bronze_pipeline`이 만든 `data/bronze/toll/toll_facilities.yaml`
+사본을 안 쓰고 있었다(옆의 `build_lion_cbd_mapping`은 이미 Bronze 경로가
+기본값이라 이 함수만 예외였음). 기본값을
+`data/bronze/toll/toll_facilities.yaml`로 수정.
+
+**3) LION 갱신이 toll 파이프라인을 안 깨움**: `lion_pipeline`(분기 자동
+cron)이 Asset을 하나도 안 내보내서, `toll_silver_gold_pipeline`은 요금표가
+바뀔 때만 재계산됐다 — LION만 갱신되고 요금표는 안 바뀌는 흔한 경우(1년에
+한 번 정도만 요금이 바뀜) segment 매핑이 조용히 stale 상태로 남는
+문제였다. `lion_pipeline`의 `ingest_lion` 태스크에
+`outlets=[Asset("lion_bronze_updated")]` 추가, `toll_silver_gold_pipeline`의
+`schedule`을 `Asset("toll_bronze_updated") | Asset("lion_bronze_updated")`로
+변경(리스트로 넘기면 AND로 해석돼서 둘 다 갱신돼야 트리거되므로 반드시
+`|` 연산자로 OR을 명시해야 함 — 실제로 확인).

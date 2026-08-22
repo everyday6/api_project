@@ -7,6 +7,10 @@ NYC DCP LION(도로망) Bronze와 Silver1을 담당하는 도메인 파이프라
 
 검증된 Silver1 dim_segment가 운영 경로에 반영된 뒤에만 Zone-Segment
 매핑 DAG를 실행한다.
+
+ingest_lion은 Asset("lion_bronze_updated")를 outlet으로 내보낸다 —
+toll_silver_gold_pipeline이 이 Asset을 구독해서, 분기 LION 갱신 때도
+(요금표가 안 바뀌어도) segment 매핑을 다시 계산하도록 하기 위함이다.
 """
 
 from datetime import datetime, timedelta
@@ -14,6 +18,7 @@ from datetime import datetime, timedelta
 from airflow import DAG
 from airflow.operators.python import PythonOperator
 from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
+from airflow.sdk import Asset
 
 from src.common.alerts import notify_slack_failure
 from src.lion.bronze import ingest_lion
@@ -29,6 +34,8 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
     "on_failure_callback": notify_slack_failure,
 }
+
+LION_BRONZE_UPDATED = Asset("lion_bronze_updated")
 
 with DAG(
     dag_id="lion_pipeline",
@@ -49,6 +56,7 @@ with DAG(
             # 실행일을 그대로 버전 태그로 사용 (파일명이 아니라 "언제 받았는지" 기준)
             "version_date": "{{ ds }}",
         },
+        outlets=[LION_BRONZE_UPDATED],
     )
 
     task_build_dim_segment_staged = PythonOperator(
