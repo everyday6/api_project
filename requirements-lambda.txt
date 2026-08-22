@@ -1,0 +1,6 @@
+fastapi
+mangum
+boto3
+python-dotenv
+cloudpathlib[s3]
+s3fs
