@@ -53,3 +53,19 @@ def test_batch_get_values_handles_more_than_100_segments():
     result = dynamo.batch_get_values(segment_ids, "TYPE#4", table_name=TEST_TABLE, default=0)
 
     assert result == [0.75] * 120
+
+
+def test_get_value_returns_default_when_table_does_not_exist():
+    # ensure_table을 아예 안 부른 테이블 — Gold 파이프라인이 한 번도 안
+    # 돈 상태를 재현한다. 에러 없이 default가 나와야 한다("무결점 응답").
+    result = dynamo.get_value("S1", "TYPE#4", table_name="table_that_does_not_exist", default=0)
+
+    assert result == 0
+
+
+def test_batch_get_values_returns_defaults_when_table_does_not_exist():
+    result = dynamo.batch_get_values(
+        ["S1", "S2"], "TYPE#4", table_name="table_that_does_not_exist", default=0
+    )
+
+    assert result == [0, 0]

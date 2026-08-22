@@ -1,9 +1,12 @@
+from pathlib import Path
+from unittest.mock import patch
+
 import geopandas as gpd
 import pandas as pd
 import yaml
 from shapely.geometry import LineString, Polygon
 
-from src.toll.silver2 import match_cbd_zone, match_toll_facilities
+from src.toll.silver2 import load_lion_segments, match_cbd_zone, match_toll_facilities
 
 
 def test_match_toll_facilities_matches_by_street_substring(tmp_path):
@@ -94,3 +97,19 @@ def test_match_cbd_zone_reprojects_when_crs_differs():
     result = match_cbd_zone(segments, zone_polygon)
 
     assert list(result["segment_id"]) == ["INSIDE"]
+
+
+def test_load_lion_segments_drops_duplicate_segment_ids():
+    # 실측: LION 원본은 같은 segment_id가 여러 행으로 중복돼 있다
+    # (243,237행 중 고유 segment_id는 218,373개). 중복이 남아있으면
+    # DynamoDB batch_write_item이 "duplicate keys" 에러를 낸다(실제로 겪음).
+    raw = gpd.GeoDataFrame({
+        "SegmentID": ["S1", "S1", "S2"],
+        "Street": ["MAIN ST", "MAIN ST", "5 AVE"],
+        "geometry": [LineString([(0, 0), (1, 1)])] * 3,
+    })
+
+    with patch("src.toll.silver2.gpd.read_file", return_value=raw):
+        result = load_lion_segments(Path("dummy.gdb"))
+
+    assert sorted(result["segment_id"]) == ["S1", "S2"]

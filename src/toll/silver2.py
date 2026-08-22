@@ -27,10 +27,17 @@ MAP_TOLL_FACILITY_SEGMENT_PATH = SILVER2_DIR / "map_toll_facility_segment.parque
 
 
 def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
-    """LION Bronze GDB에서 segment_id/street/geometry만 뽑는다."""
+    """LION Bronze GDB에서 segment_id/street/geometry만 뽑는다.
+
+    LION 원본은 같은 segment_id가 여러 행으로 중복돼 있다(실측:
+    243,237행 중 고유 segment_id는 218,373개 — 약 2.5만 건 중복). 원래
+    lion/silver1.py가 이 dedup을 해줬는데 지금은 lion 도메인이 Bronze만
+    있어서 이 파일에서 직접 처리한다(조용히 첫 번째 행만 남김, 기존
+    lion/silver1.py와 동일한 정책)."""
 
     gdf = gpd.read_file(gdb_path, layer="lion")
     gdf = gdf.rename(columns={"SegmentID": "segment_id", "Street": "street"})
+    gdf = gdf.drop_duplicates(subset="segment_id", keep="first")
     return gdf[["segment_id", "street", "geometry"]]
 
 

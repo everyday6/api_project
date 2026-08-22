@@ -15,6 +15,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
 from src.common.config import APP_ENV, DYNAMO_LOCAL_ENDPOINT, DYNAMO_REGION, NAV_GOLD_TABLE
 
@@ -112,10 +113,16 @@ def batch_write_items(items: list[dict], table_name: str = NAV_GOLD_TABLE) -> No
 
 def get_value(segment_id: str, sk: str, table_name: str = NAV_GOLD_TABLE, default=0):
     """(segment_id, sk) 하나를 조회한다. 없으면 default를 반환한다 —
-    nav 골드 데이터셋의 "무결점 응답" 원칙: 값이 없어도 절대 None/에러를
-    반환하지 않는다."""
+    nav 골드 데이터셋의 "무결점 응답" 원칙: 값이 없어도, 심지어 테이블
+    자체가 아직 안 만들어졌어도(Gold 파이프라인이 한 번도 안 돈 경우 등)
+    절대 None/에러를 반환하지 않는다."""
 
-    response = get_resource().Table(table_name).get_item(Key={"segment_id": segment_id, "sk": sk})
+    try:
+        response = get_resource().Table(table_name).get_item(Key={"segment_id": segment_id, "sk": sk})
+    except ClientError as error:
+        if error.response["Error"]["Code"] == "ResourceNotFoundException":
+            return default
+        raise
     item = response.get("Item")
     return _decimals_to_floats(item["value"]) if item is not None else default
 
@@ -129,6 +136,8 @@ def batch_get_values(
     """segment_id 목록 + 고정 sk로 값 목록을 조회한다. 응답 순서는
     요청한 segment_ids 순서와 항상 동일하다(DynamoDB BatchGetItem 자체는
     순서를 보장 안 해서 직접 맞춰준다). 없는 segment_id는 default로 채운다.
+    테이블 자체가 아직 안 만들어졌어도(get_value와 동일한 이유) 전부
+    default로 채워서 반환한다.
     """
 
     if not segment_ids:
@@ -141,9 +150,14 @@ def batch_get_values(
     for i in range(0, len(segment_ids), 100):
         chunk = segment_ids[i : i + 100]
         keys = [{"segment_id": sid, "sk": sk} for sid in chunk]
-        response = table.meta.client.batch_get_item(
-            RequestItems={table_name: {"Keys": keys}}
-        )
+        try:
+            response = table.meta.client.batch_get_item(
+                RequestItems={table_name: {"Keys": keys}}
+            )
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "ResourceNotFoundException":
+                continue
+            raise
         for item in response["Responses"][table_name]:
             found[item["segment_id"]] = _decimals_to_floats(item["value"])
 

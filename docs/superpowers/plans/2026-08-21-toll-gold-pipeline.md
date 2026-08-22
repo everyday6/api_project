@@ -181,6 +181,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import boto3
+from botocore.exceptions import ClientError
 
 from src.common.config import APP_ENV, DYNAMO_LOCAL_ENDPOINT, DYNAMO_REGION, NAV_GOLD_TABLE
 
@@ -278,10 +279,16 @@ def batch_write_items(items: list[dict], table_name: str = NAV_GOLD_TABLE) -> No
 
 def get_value(segment_id: str, sk: str, table_name: str = NAV_GOLD_TABLE, default=0):
     """(segment_id, sk) 하나를 조회한다. 없으면 default를 반환한다 —
-    nav 골드 데이터셋의 "무결점 응답" 원칙: 값이 없어도 절대 None/에러를
-    반환하지 않는다."""
+    nav 골드 데이터셋의 "무결점 응답" 원칙: 값이 없어도, 심지어 테이블
+    자체가 아직 안 만들어졌어도(Gold 파이프라인이 한 번도 안 돈 경우 등)
+    절대 None/에러를 반환하지 않는다."""
 
-    response = get_resource().Table(table_name).get_item(Key={"segment_id": segment_id, "sk": sk})
+    try:
+        response = get_resource().Table(table_name).get_item(Key={"segment_id": segment_id, "sk": sk})
+    except ClientError as error:
+        if error.response["Error"]["Code"] == "ResourceNotFoundException":
+            return default
+        raise
     item = response.get("Item")
     return _decimals_to_floats(item["value"]) if item is not None else default
 
@@ -295,6 +302,8 @@ def batch_get_values(
     """segment_id 목록 + 고정 sk로 값 목록을 조회한다. 응답 순서는
     요청한 segment_ids 순서와 항상 동일하다(DynamoDB BatchGetItem 자체는
     순서를 보장 안 해서 직접 맞춰준다). 없는 segment_id는 default로 채운다.
+    테이블 자체가 아직 안 만들어졌어도(get_value와 동일한 이유) 전부
+    default로 채워서 반환한다.
     """
 
     if not segment_ids:
@@ -307,9 +316,14 @@ def batch_get_values(
     for i in range(0, len(segment_ids), 100):
         chunk = segment_ids[i : i + 100]
         keys = [{"segment_id": sid, "sk": sk} for sid in chunk]
-        response = table.meta.client.batch_get_item(
-            RequestItems={table_name: {"Keys": keys}}
-        )
+        try:
+            response = table.meta.client.batch_get_item(
+                RequestItems={table_name: {"Keys": keys}}
+            )
+        except ClientError as error:
+            if error.response["Error"]["Code"] == "ResourceNotFoundException":
+                continue
+            raise
         for item in response["Responses"][table_name]:
             found[item["segment_id"]] = _decimals_to_floats(item["value"])
 
@@ -846,10 +860,17 @@ MAP_TOLL_FACILITY_SEGMENT_PATH = SILVER2_DIR / "map_toll_facility_segment.parque
 
 
 def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
-    """LION Bronze GDB에서 segment_id/street/geometry만 뽑는다."""
+    """LION Bronze GDB에서 segment_id/street/geometry만 뽑는다.
+
+    LION 원본은 같은 segment_id가 여러 행으로 중복돼 있다(실측:
+    243,237행 중 고유 segment_id는 218,373개 — 약 2.5만 건 중복). 원래
+    lion/silver1.py가 이 dedup을 해줬는데 지금은 lion 도메인이 Bronze만
+    있어서 이 파일에서 직접 처리한다(조용히 첫 번째 행만 남김, 기존
+    lion/silver1.py와 동일한 정책)."""
 
     gdf = gpd.read_file(gdb_path, layer="lion")
     gdf = gdf.rename(columns={"SegmentID": "segment_id", "Street": "street"})
+    gdf = gdf.drop_duplicates(subset="segment_id", keep="first")
     return gdf[["segment_id", "street", "geometry"]]
 
 
@@ -1178,7 +1199,25 @@ def build_gold_items(rate_table: dict, zone_map: pd.DataFrame, facility_map: pd.
             "value": road_rates[facility_key]["passenger"],
         })
 
-    return items
+    return _dedupe_items(items)
+
+
+def _dedupe_items(items: list[dict]) -> list[dict]:
+    """(segment_id, sk) 기준으로 중복을 제거한다(첫 값 유지). DynamoDB
+    batch_write_item은 같은 배치 안에 동일 키가 두 번 있으면 통째로
+    에러를 낸다 — 실제로 LION 원본에 중복 segment_id 행이 있어서 겪었다
+    (load_lion_segments에서 1차로 제거하지만, 여기서도 한 번 더 방어)."""
+
+    seen: set[tuple] = set()
+    deduped = []
+    for item in items:
+        key = (item["segment_id"], item["sk"])
+        if key in seen:
+            logger.warning(f"[toll_gold] 중복 키 건너뜀: {key}")
+            continue
+        seen.add(key)
+        deduped.append(item)
+    return deduped
 
 
 def write_gold_items(items: list[dict]) -> None:
@@ -1247,6 +1286,12 @@ Expected: 2개 테스트 전부 PASS (dynamodb-local이 떠 있어야 함: `dock
 git add src/toll/gold.py tests/toll/test_gold.py
 git commit -m "feat: 통행료 Gold 계산 + DynamoDB 적재 + 서빙 조회 함수(get_toll_value) 추가"
 ```
+
+> **실행 중 발견한 버그 2개(실제 Silver2 데이터로 `build_and_write()` 돌려보다 발견)**:
+> 1. **테이블 없음 예외**: `get_toll_value`/`dynamo.get_value`가 `nav_gold_values` 테이블이 아직 한 번도 안 만들어진 상태에서 호출되면 `ResourceNotFoundException`을 그대로 던졌다 — "무결점 응답" 원칙에 어긋난다. `src/common/dynamo.py`의 `get_value`/`batch_get_values`에 `ClientError`(`ResourceNotFoundException`) 캐치를 추가해서 이 경우도 `default`를 반환하게 고쳤다(Task 1 코드도 반영해뒀다).
+> 2. **중복 키로 배치 쓰기 실패**: 실제 LION GDB는 같은 `segment_id`가 여러 행으로 중복돼 있다(243,237행 중 고유 218,373개, 약 2.5만 건 중복 — 예전 `lion/silver1.py`가 이 dedup을 해주던 걸 지금은 아무도 안 함). 이 때문에 `dynamo.batch_write_items`가 `ValidationException: duplicate keys`로 실패했다. `src/toll/silver2.py`의 `load_lion_segments`에 `drop_duplicates(subset="segment_id")`를 추가하고, `src/toll/gold.py`의 `build_gold_items`에도 `_dedupe_items()` 방어 로직을 추가했다.
+>
+> 두 수정 다 위 코드 블록에는 이미 반영 안 돼 있으니, 실제 구현 시 `src/common/dynamo.py`(Task 1)의 `get_value`/`batch_get_values`에 `ClientError` 캐치를, `src/toll/silver2.py`의 `load_lion_segments`에 dedup을 반드시 추가할 것.
 
 ---
 
