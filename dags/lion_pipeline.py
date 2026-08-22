@@ -8,12 +8,17 @@ NYC DCP LION(도로망) Bronze ingestion만 담당하는 도메인 파이프라�
 실제 로직은 src/lion/bronze.py(적재)에 있고, 이 파일은 언제 실행할지만
 정의한다. dim_segment 등 파생 Silver/Gold 산출물은 nav 골드 데이터셋
 재설계 범위에서 다시 만든다.
+
+ingest_lion은 Asset("lion_bronze_updated")를 outlet으로 내보낸다 —
+toll_silver_gold_pipeline이 이 Asset을 구독해서, 분기 LION 갱신 때도
+(요금표가 안 바뀌어도) segment 매핑을 다시 계산하도록 하기 위함이다.
 """
 
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
+from airflow.sdk import Asset
 
 from src.common.alerts import notify_slack_failure
 from src.lion.bronze import ingest_lion
@@ -23,6 +28,8 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
     "on_failure_callback": notify_slack_failure,
 }
+
+LION_BRONZE_UPDATED = Asset("lion_bronze_updated")
 
 with DAG(
     dag_id="lion_pipeline",
@@ -41,4 +48,5 @@ with DAG(
             # 실행일을 그대로 버전 태그로 사용 (파일명이 아니라 "언제 받았는지" 기준)
             "version_date": "{{ ds }}",
         },
+        outlets=[LION_BRONZE_UPDATED],
     )
