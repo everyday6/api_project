@@ -425,6 +425,28 @@ services:
 
 
   # =========================================================
+  # DynamoDB Local
+  # nav 골드 데이터셋(segment_id x type 조회) 서빙용. APP_ENV=local이면
+  # 여기 붙고, aws면 실 DynamoDB에 붙는다(src/common/dynamo.py 참고).
+  # -inMemory: 로컬 개발/테스트 DB라 재시작 시 초기화돼도 상관없음
+  # (rds-local의 postgres_data 볼륨과 다르게 영속화 안 함).
+  # =========================================================
+  dynamodb-local:
+    image: amazon/dynamodb-local:2.5.4
+    container_name: traffic-dynamodb-local
+    restart: unless-stopped
+
+    command: >
+      -jar DynamoDBLocal.jar -inMemory -sharedDb
+
+    ports:
+      - "8002:8000"
+
+    networks:
+      - airflow-network
+
+
+  # =========================================================
   # 컨테이너 크래시 감시
   #
   # restart 정책은 "죽으면 다시 살리기"만 할 뿐, 죽었다는 사실 자체는
