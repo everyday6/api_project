@@ -32,10 +32,6 @@ mkdir -p /tmp/emr-python-env-output
 # Directory is not readable"로 못 읽는다. 호스트 UID:GID로 맞춰서 실행.
 docker run --rm --user "$(id -u):$(id -g)" -v /tmp/emr-python-env-output:/output emr-python-env
 
-# TODO(진단용, 원인 확인되면 제거): --user를 넘겼는데도 aws s3 cp가
-# "File/Directory is not readable"를 내서, 실제 소유자/권한을 찍어본다.
-ls -la /tmp/emr-python-env-output/
-
 DEST="s3://${S3_BUCKET_DATA}/emr-jobs/python-env/pyspark_deps.tar.gz"
 echo "S3 업로드: ${DEST}"
 aws s3 cp /tmp/emr-python-env-output/pyspark_deps.tar.gz "${DEST}"
