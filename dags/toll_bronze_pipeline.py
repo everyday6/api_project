@@ -38,7 +38,7 @@ TOLL_BRONZE_UPDATED = Asset("toll_bronze_updated")
 )
 def toll_bronze_pipeline():
 
-    @task(task_id="upload_rates", outlets=[TOLL_BRONZE_UPDATED])
+    @task(task_id="upload_rates")
     def upload_rates_task():
         from src.toll.bronze import upload_rates
         return str(upload_rates())
@@ -53,9 +53,24 @@ def toll_bronze_pipeline():
         from src.toll.bronze import upload_cbd_geofence
         return str(upload_cbd_geofence())
 
-    upload_rates_task()
-    upload_facilities_task()
-    upload_cbd_geofence_task()
+    @task(task_id="publish_toll_bronze", outlets=[TOLL_BRONZE_UPDATED])
+    def publish_toll_bronze(
+        rates_path: str,
+        facilities_path: str,
+        cbd_geofence_path: str,
+    ) -> dict:
+        """세 Bronze 입력이 모두 성공한 경우에만 갱신 Asset을 발행한다."""
+
+        return {
+            "rates_path": rates_path,
+            "facilities_path": facilities_path,
+            "cbd_geofence_path": cbd_geofence_path,
+        }
+
+    rates = upload_rates_task()
+    facilities = upload_facilities_task()
+    cbd_geofence = upload_cbd_geofence_task()
+    publish_toll_bronze(rates, facilities, cbd_geofence)
 
 
 toll_bronze_pipeline()

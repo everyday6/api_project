@@ -30,12 +30,22 @@ BRONZE_ROOT = BRONZE_DIR / SOURCE
 CBD_GEOFENCE_URL = "https://data.ny.gov/resource/srxy-5nxn.geojson"
 
 
+def _copy_file_to_bronze(source_path: str, out_path) -> None:
+    """로컬 목적지는 파일 복사, S3 목적지는 객체 업로드로 저장한다."""
+
+    source = Path(source_path)
+    if isinstance(out_path, Path):
+        shutil.copyfile(source, out_path)
+    else:
+        out_path.upload_from(source)
+
+
 def upload_rates(source_path: str = "config/toll_rates.yaml", bronze_root: Path = BRONZE_ROOT) -> Path:
     """toll_rates.yaml을 그대로 Bronze에 올린다."""
 
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / "toll_rates.yaml"
-    shutil.copyfile(source_path, out_path)
+    _copy_file_to_bronze(source_path, out_path)
 
     logger.info(f"[toll_bronze] 요금표 업로드 완료 -> {out_path}")
     return out_path
@@ -46,7 +56,7 @@ def upload_facilities(source_path: str = "config/toll_facilities.yaml", bronze_r
 
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / "toll_facilities.yaml"
-    shutil.copyfile(source_path, out_path)
+    _copy_file_to_bronze(source_path, out_path)
 
     logger.info(f"[toll_bronze] 시설목록 업로드 완료 -> {out_path}")
     return out_path
