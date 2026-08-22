@@ -15,6 +15,9 @@ Silver1/Gold2에서).
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+
 import pandas as pd
 
 from src.common.config import BRONZE_DIR, DATASETS
@@ -27,11 +30,21 @@ SPEED_URL = DATASETS["speed"]
 BRONZE_ROOT = BRONZE_DIR / "speed"
 
 _MARKER_FILENAME = "_last_ingested_data_as_of.txt"
-# 마커가 없을 때(최초 실행)도 where절이 항상 유효한 문자열이 되도록 쓰는
-# 더미 하한선. socrata.fetch_all의 페이지네이션(_combine_where)이 where=None을
-# 커서 조건과 결합할 때 문자열 포맷이 깨지므로, None 대신 항상 실제 비교식을
-# 넘긴다.
-_EPOCH_SENTINEL = "1970-01-01T00:00:00"
+
+_NY_TZ = ZoneInfo("America/New_York")
+# 마커가 아직 없을 때(최초 실행) 쓰는 하한선. 진짜 1970년부터로 잡으면
+# NYC DOT 피드 전체 역사(실측 1억 행 이상)를 한 번에 끌어오려다 Airflow
+# worker가 죽는다. 데이터 발행 지연(2~3시간)보다 넉넉하게 잡은 최근
+# 시점이면 되고, 마커가 생긴 뒤로는 다시 안 쓰인다 - 정확한 시간대/지연
+# 추정이 필요 없다는 이 모듈의 핵심 설계는 그대로 유지된다(대략적인
+# 하한선이면 충분).
+_BOOTSTRAP_LOOKBACK_HOURS = 6
+
+
+def _bootstrap_marker() -> str:
+    return (datetime.now(_NY_TZ) - timedelta(hours=_BOOTSTRAP_LOOKBACK_HOURS)).strftime(
+        "%Y-%m-%dT%H:%M:%S"
+    )
 
 
 def _marker_path(bronze_root):
@@ -42,7 +55,7 @@ def _read_marker(bronze_root) -> str | None:
     marker_path = _marker_path(bronze_root)
     if not marker_path.exists():
         return None
-    return marker_path.read_text()
+    return marker_path.read_text().strip()
 
 
 def _write_marker(bronze_root, data_as_of: str) -> None:
@@ -51,7 +64,7 @@ def _write_marker(bronze_root, data_as_of: str) -> None:
 
 
 def _new_data_where(marker: str | None) -> str:
-    return f"data_as_of > '{marker or _EPOCH_SENTINEL}'"
+    return f"data_as_of > '{marker or _bootstrap_marker()}'"
 
 
 def _get_count(session, marker: str | None) -> int:

@@ -1,3 +1,4 @@
+from datetime import datetime, timedelta
 from unittest.mock import MagicMock, patch
 
 import pandas as pd
@@ -78,12 +79,20 @@ def test_collect_speed_data_uses_marker_as_lower_bound(tmp_path):
     assert "2026-08-21T12:00:00" in where
 
 
-def test_collect_speed_data_without_marker_uses_epoch_sentinel(tmp_path):
+def test_collect_speed_data_without_marker_uses_recent_bootstrap_not_epoch(tmp_path):
+    # 마커가 없다고 진짜 1970년부터 요청하면 NYC DOT 피드 전체 역사(실측
+    # 1억 행 이상)를 한 번에 끌어오려다 죽는다 - 최근 시점(부트스트랩
+    # lookback 이내)이어야 한다.
     with patch.object(bronze, "fetch_all", return_value=[]) as mock_fetch:
         bronze.collect_speed_data(bronze_root=tmp_path)
 
     where = mock_fetch.call_args.kwargs["where"]
-    assert bronze._EPOCH_SENTINEL in where
+    assert "1970" not in where
+
+    bound_str = where.split("'")[1]
+    bound = datetime.fromisoformat(bound_str).replace(tzinfo=bronze._NY_TZ)
+    now_ny = datetime.now(bronze._NY_TZ)
+    assert timedelta(0) < now_ny - bound <= timedelta(hours=bronze._BOOTSTRAP_LOOKBACK_HOURS) + timedelta(minutes=1)
 
 
 def test_collect_speed_data_does_not_advance_marker_past_last_written_value(tmp_path):
