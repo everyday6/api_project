@@ -98,8 +98,11 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     바뀐 버킷 하나만큼만 평균에 반영하는 증분 갱신 공식을 쓴다:
       - 그 버킷이 처음 생기는 거면(기존 값 없음):
           new_avg = old_avg + (new_value - old_avg) / new_count   (new_count = old_count + 1)
-      - 이미 있던 버킷 값을 교체하는 거면:
+      - 이미 있던 버킷 값을 교체하는 거면(count를 아는 경우):
           new_avg = old_avg + (new_value - old_bucket_value) / count   (count는 그대로)
+      - 이미 있던 버킷 값을 교체하는데 count를 모르는 경우(레거시 AVG, count 필드가
+        없던 옛 버전이 저장한 레코드): 몇 개로 만들어진 평균인지 알 수 없어 기존
+        값을 델타에 섞을 수 없으므로, 그 값을 버리고 new_value로 리셋한다.
     """
 
     rows = bucket_df.collect()
@@ -143,9 +146,16 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
         if old_bucket_item is None:
             new_count = min(old_count + 1, BUCKETS_PER_DAY)
             new_avg = old_avg + (new_value - old_avg) / new_count
+        elif old_count == 0:
+            # 레거시 AVG(count 없음)인데 버킷 값은 이미 있는 경우. old_count를 1로
+            # 우겨서 델타를 그대로 반영하면 old_avg를 "1개짜리 평균"으로 오인해
+            # 매번 큰 델타가 그대로 반영되고, 평균이 무한정 발산한다(음수까지 감).
+            # 몇 개로 만들어진 평균인지 모르므로 리셋한다.
+            new_count = 1
+            new_avg = new_value
         else:
             old_bucket_value = float(old_bucket_item.get("value", 0))
-            new_count = old_count if old_count > 0 else 1
+            new_count = old_count
             new_avg = old_avg + (new_value - old_bucket_value) / new_count
 
         running_state[sid] = (new_avg, new_count)
