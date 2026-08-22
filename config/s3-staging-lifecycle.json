@@ -1,0 +1,52 @@
+{
+  "Rules": [
+    {
+      "ID": "expire-lion-silver1-staging",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "silver1/lion/_staging/"
+      },
+      "Expiration": {
+        "Days": 7
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 7
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      }
+    },
+    {
+      "ID": "expire-zone-segment-staging",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "silver2/_staging/map_zone_segment/"
+      },
+      "Expiration": {
+        "Days": 7
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 7
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      }
+    },
+    {
+      "ID": "expire-tlc-type3-staging",
+      "Status": "Enabled",
+      "Filter": {
+        "Prefix": "gold2/tlc/type3_zone_daily/_staging/"
+      },
+      "Expiration": {
+        "Days": 7
+      },
+      "NoncurrentVersionExpiration": {
+        "NoncurrentDays": 7
+      },
+      "AbortIncompleteMultipartUpload": {
+        "DaysAfterInitiation": 1
+      }
+    }
+  ]
+}

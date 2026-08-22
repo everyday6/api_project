@@ -34,8 +34,6 @@ x-airflow-env: &airflow-env
 
   AIRFLOW_UID: ${AIRFLOW_UID}
 
-  TICKETMASTER_API_KEY: ${TICKETMASTER_API_KEY}
-
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
 
   GEMINI_API_KEY: ${GEMINI_API_KEY}
@@ -51,13 +49,8 @@ x-airflow-env: &airflow-env
   # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
   AWS_REGION: ${AWS_REGION}
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
-  S3_BUCKET_DASHBOARD: ${S3_BUCKET_DASHBOARD}
-
-  RDS_HOST: ${RDS_HOST}
-  RDS_PORT: ${RDS_PORT}
-  RDS_DB: ${RDS_DB}
-  RDS_USER: ${RDS_USER}
-  RDS_PASSWORD: ${RDS_PASSWORD}
+  DYNAMODB_NAV_TABLE: ${DYNAMODB_NAV_TABLE}
+  TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-12}
 
   # src/common/dynamo.py(nav 골드 서빙 공용 클라이언트)의 기본값
   # "http://localhost:8002"는 호스트(venv)에서 직접 돌릴 때만 맞다 —
@@ -101,7 +94,7 @@ services:
   # =========================================================
   postgres:
     image: postgres:16
-    container_name: traffic-postgres
+    container_name: navigation-postgres
 
     # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
@@ -131,7 +124,7 @@ services:
   # =========================================================
   redis:
     image: redis:7
-    container_name: traffic-redis
+    container_name: navigation-redis
 
     # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
@@ -157,7 +150,7 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    container_name: traffic-airflow-init
+    container_name: navigation-airflow-init
 
     depends_on:
       postgres:
@@ -198,7 +191,7 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    container_name: traffic-airflow-apiserver
+    container_name: navigation-airflow-apiserver
 
     # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
@@ -230,7 +223,7 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    container_name: traffic-airflow-scheduler
+    container_name: navigation-airflow-scheduler
 
     # 컨테이너가 예상 못 한 이유로 죽으면(OOM 등) Docker가 자동으로 다시
     # 띄운다 — 이게 없으면 스케줄러/워커가 죽어도 아무도 모르고 파이프라인이
@@ -264,7 +257,7 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    container_name: traffic-airflow-dag-processor
+    container_name: navigation-airflow-dag-processor
 
     # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
@@ -294,7 +287,7 @@ services:
       context: .
       dockerfile: Dockerfile
 
-    container_name: traffic-airflow-worker
+    container_name: navigation-airflow-worker
 
     # 컨테이너가 예상 못 한 이유로 죽으면(OOM 등) Docker가 자동으로 다시
     # 띄운다 — 이게 없으면 스케줄러/워커가 죽어도 아무도 모르고 파이프라인이
@@ -325,19 +318,18 @@ services:
 
 
   # =========================================================
-  # Traffic Score API + Dashboard
+  # Navigation API
   #
   # Airflow 컴포넌트가 아니라 별도 서비스다 (postgres/redis/celery 불필요).
-  # src/scoring/traffic_score.py의 get_traffic_score()/get_map_data()를
-  # FastAPI로 감싸서 대시보드(dashboard/index.html)에 서빙한다.
+  # DynamoDB에 미리 계산된 segment별 값을 조회만 하는 내비게이션 FastAPI.
   # =========================================================
-  traffic-score-api:
+  navigation-api:
     <<: *airflow-image
     build:
       context: .
       dockerfile: Dockerfile
 
-    container_name: traffic-score-api
+    container_name: navigation-api
 
     # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
@@ -349,19 +341,12 @@ services:
       # x-airflow-env를 안 쓰는 별도 서비스라 여기 따로 선언해야 한다.
       AWS_REGION: ${AWS_REGION}
       S3_BUCKET_DATA: ${S3_BUCKET_DATA}
-      S3_BUCKET_DASHBOARD: ${S3_BUCKET_DASHBOARD}
-
-      RDS_HOST: ${RDS_HOST}
-      RDS_PORT: ${RDS_PORT}
-      RDS_DB: ${RDS_DB}
-      RDS_USER: ${RDS_USER}
-      RDS_PASSWORD: ${RDS_PASSWORD}
+      DYNAMODB_NAV_TABLE: ${DYNAMODB_NAV_TABLE}
 
     volumes:
       - ./src:/opt/airflow/src
       - ./data:/opt/airflow/data
       - ./config:/opt/airflow/config
-      - ./dashboard:/opt/airflow/dashboard
 
     working_dir: /opt/airflow
 
@@ -426,7 +411,7 @@ services:
   spark-master:
     image: apache/spark:4.0.4
 
-    container_name: traffic-spark-master
+    container_name: navigation-spark-master
 
     # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
@@ -519,7 +504,7 @@ services:
   # on_failure_callback(Slack 실패 알림)도 그 프로세스 안에서 도는
   # 코드라 같이 멈춘다("파이프라인이 통째로 죽었는데 알림도 안 오는"
   # 시나리오). Docker 이벤트 스트림을 구독하다가 die 이벤트를 잡아서
-  # 대신 Slack으로 알려준다(scripts/docker_crash_monitor.py 참고).
+  # 대신 Slack으로 알려준다(scripts/docker_crash_monitor.sh 참고).
   #
   # docker.sock을 마운트해야 해서(호스트 Docker 데몬에 대한 사실상
   # 전체 권한) 신뢰할 수 있는 이미지/스크립트만 올린다 — 표준 라이브러리만
@@ -527,12 +512,12 @@ services:
   # =========================================================
   crash-monitor:
     image: docker:27-cli
-    container_name: traffic-crash-monitor
+    container_name: navigation-crash-monitor
     restart: unless-stopped
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      WATCH_CONTAINERS: traffic-postgres,traffic-redis,traffic-airflow-apiserver,traffic-airflow-scheduler,traffic-airflow-dag-processor,traffic-airflow-worker,traffic-score-api,traffic-spark-master
+      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-api,navigation-spark-master
       POLL_INTERVAL_SECONDS: 30
 
     volumes:
