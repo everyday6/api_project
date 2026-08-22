@@ -78,6 +78,7 @@ x-airflow-volumes: &airflow-volumes
   - ./dags:/opt/airflow/dags
   - ./src:/opt/airflow/src
   - ./spark_jobs:/opt/airflow/spark_jobs
+  - ./scripts:/opt/airflow/scripts
   - ./data:/opt/airflow/data
   - ./logs:/opt/airflow/logs
   - ./plugins:/opt/airflow/plugins
@@ -175,7 +176,9 @@ services:
       --email ${AIRFLOW_ADMIN_EMAIL}
       || true &&
       airflow pools set downloads 16 'TLC 파일 다운로드 동시 실행 제한 (네트워크 대역폭 보호용)' &&
-      airflow pools set silver_pool 3 'TLC Silver 변환(Spark) 동시 실행 제한 (spark-master 1대 자원 보호용)'
+      airflow pools set silver_pool 3 'TLC Silver 변환(Spark) 동시 실행 제한 (spark-master 1대 자원 보호용)' &&
+      python /opt/airflow/scripts/create_dynamodb_tables.py &&
+      python /opt/airflow/scripts/seed_dynamodb_defaults.py
       "
 
 
