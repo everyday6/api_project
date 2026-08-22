@@ -10,6 +10,11 @@ fallback 단계로 넘어간다.
   2. (type1만) (segment_id, "AVG")
   3. (GLOBAL, "DEFAULT") — 배포 시점에 수동으로 심어둔 고정값
   4. 코드 상수 — 외부 호출이 전혀 없는 최후의 보루
+
+Type1(소요시간)의 segment_ids는 경로를 순서대로 나열한 것으로 간주한다.
+요청 시각은 첫 세그먼트에만 그대로 쓰고, 이후 세그먼트는 앞 세그먼트들의
+누적 소요시간만큼 시각을 이동해서 조회한다(_resolve_time_values 참고).
+Type2(길이)는 시간과 무관해 순서/중복에 영향받지 않는다.
 """
 
 from __future__ import annotations
@@ -40,6 +45,17 @@ def time_to_bucket(time_str: str) -> str:
     hour_str, minute_str = time_str.split(":")
     bucket_minute = (int(minute_str) // BUCKET_MINUTES) * BUCKET_MINUTES
     return f"{int(hour_str):02d}{bucket_minute:02d}"
+
+
+def _add_seconds(time_str: str, seconds: int) -> str:
+    """'HH:MM'에 초를 더해 다시 'HH:MM'으로 반환한다. 하루(86400초)를 넘기면
+    24시간으로 wrap한다 - 버킷 조회에는 시:분만 필요해서 날짜는 추적하지
+    않는다."""
+    hour_str, minute_str = time_str.split(":")
+    total_seconds = (int(hour_str) * 3600 + int(minute_str) * 60 + seconds) % 86400
+    new_hour, remainder_seconds = divmod(total_seconds, 3600)
+    new_minute = remainder_seconds // 60
+    return f"{new_hour:02d}:{new_minute:02d}"
 
 
 def table_for_type(type_: int) -> str:
@@ -109,30 +125,53 @@ def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) ->
 def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
     table_name = table_for_type(type_)
 
-    # Type에 따라 첫 번째 tier에서 사용할 sort key 결정
-    # Type1: 시간 버킷 (HH:MM), Type2: 고정값 "LENGTH"
     if type_ == 1:
-        first_tier_sk = time_to_bucket(time_str)
-    else:  # type_ == 2
-        first_tier_sk = LENGTH_SORT_KEY
+        return _resolve_time_values(segment_ids, table_name, time_str)
+    return _resolve_length_values(segment_ids, table_name)
 
+
+def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]:
+    """Type2(길이)는 시간과 무관해 세그먼트당 값이 하나뿐이다 - 중복
+    segment_id는 한 번만 조회해서 재사용해도 안전하다."""
     unique_ids = list(dict.fromkeys(segment_ids))
     resolved: dict[str, int] = {}
 
-    # 1단계: 정확한 값 (Type1은 버킷, Type2는 LENGTH)
-    _resolve_tier(resolved, unique_ids, table_name, first_tier_sk)
-
+    _resolve_tier(resolved, unique_ids, table_name, LENGTH_SORT_KEY)
     remaining = [sid for sid in unique_ids if sid not in resolved]
 
-    # 2단계(type1만): 세그먼트 전체 평균
-    if remaining and type_ == 1:
-        _resolve_tier(resolved, remaining, table_name, AVG_SORT_KEY)
-        remaining = [sid for sid in unique_ids if sid not in resolved]
-
-    # 3~4단계: GLOBAL#DEFAULT, 없으면 코드 상수
     if remaining:
-        default_value = _lookup_global_default(table_name, type_)
+        default_value = _lookup_global_default(table_name, 2)
         for sid in remaining:
             resolved[sid] = default_value
 
     return [resolved[sid] for sid in segment_ids]
+
+
+def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str) -> list[int]:
+    """Type1(소요시간)은 segment_ids를 경로 순서로 간주한다. 세그먼트 k의
+    조회 시각은 "요청 시각 + 세그먼트 1..k-1의 소요시간 합"이다 - 그
+    세그먼트에 실제로 도착하는 시점의 버킷을 봐야 하기 때문이다. 이 누적
+    시각은 앞 세그먼트의 조회 *결과*에 의존하므로 순서대로(순차) 처리해야
+    하고, 같은 segment_id가 경로에 두 번 나와도(루프) 등장 위치의 누적
+    시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다."""
+    values: list[int] = []
+    elapsed_seconds = 0
+
+    for sid in segment_ids:
+        lookup_time = _add_seconds(time_str, elapsed_seconds)
+        bucket = time_to_bucket(lookup_time)
+
+        resolved: dict[str, int] = {}
+        _resolve_tier(resolved, [sid], table_name, bucket)
+
+        if sid not in resolved:
+            _resolve_tier(resolved, [sid], table_name, AVG_SORT_KEY)
+
+        if sid not in resolved:
+            resolved[sid] = _lookup_global_default(table_name, 1)
+
+        value = resolved[sid]
+        values.append(value)
+        elapsed_seconds += value
+
+    return values

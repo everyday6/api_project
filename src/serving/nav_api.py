@@ -24,7 +24,16 @@ app = FastAPI(title="Segment Metrics API")
 
 
 class SegmentValuesRequest(BaseModel):
-    segment_ids: list[str] = Field(min_length=1)
+    segment_ids: list[str] = Field(
+        min_length=1,
+        description=(
+            "경로를 순서대로 나열한 세그먼트 ID 목록. type=1(소요시간)일 때는 "
+            "이 순서가 의미를 가진다 - 첫 세그먼트는 요청 시각 그대로, 이후 "
+            "세그먼트는 앞 세그먼트들의 누적 소요시간만큼 시각이 이동된 "
+            "상태로 조회된다(nav_lookup._resolve_time_values 참고). "
+            "type=2(길이)는 시간과 무관해 순서/중복에 영향받지 않는다."
+        ),
+    )
     type: Literal[1, 2]
     time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 

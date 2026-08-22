@@ -138,3 +138,55 @@ def test_resolve_never_raises_on_malformed_time():
 
     assert len(result) == 1
     assert isinstance(result[0], int)
+
+
+def test_add_seconds_advances_within_same_hour():
+    assert nav_lookup._add_seconds("12:00", 600) == "12:10"
+
+
+def test_add_seconds_wraps_past_midnight():
+    assert nav_lookup._add_seconds("23:50", 900) == "00:05"
+
+
+@mock_aws
+def test_resolve_time_values_uses_cumulative_elapsed_time_per_segment():
+    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE1)
+    from src.common.dynamodb import put_item
+
+    # 세그먼트 1: 12:00 버킷에 1800초(30분) 소요.
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE1, {"segment_id": "1", "sk": "1200", "value": 1800})
+    # 세그먼트 2: 12:00 버킷과 12:30 버킷에 서로 다른 값 -> 누적 시각이
+    # 제대로 반영되면 12:30 버킷 값(999)을 써야 한다.
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE1, {"segment_id": "2", "sk": "1200", "value": 111})
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE1, {"segment_id": "2", "sk": "1230", "value": 999})
+
+    result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
+
+    assert result == [1800, 999]
+
+
+@mock_aws
+def test_resolve_time_values_same_segment_twice_uses_different_buckets():
+    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE1)
+    from src.common.dynamodb import put_item
+
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE1, {"segment_id": "loop", "sk": "1200", "value": 1800})
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE1, {"segment_id": "loop", "sk": "1230", "value": 77})
+
+    # 같은 세그먼트가 경로에 두 번 등장 - 두 번째 등장은 첫 번째 소요시간만큼
+    # 시각이 밀려 다른 버킷(1230)을 봐야 하므로 값도 달라야 한다.
+    result = nav_lookup.resolve_segment_values(["loop", "loop"], 1, "12:00")
+
+    assert result == [1800, 77]
+
+
+@mock_aws
+def test_resolve_type2_still_dedupes_since_time_independent():
+    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE2)
+    from src.common.dynamodb import put_item
+
+    put_item(nav_lookup.DYNAMODB_TABLE_TYPE2, {"segment_id": "1", "sk": "LENGTH", "value": 500})
+
+    result = nav_lookup.resolve_segment_values(["1", "1", "1"], 2, "09:00")
+
+    assert result == [500, 500, 500]
