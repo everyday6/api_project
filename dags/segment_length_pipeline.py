@@ -45,8 +45,11 @@ def segment_length_pipeline():
         return check_new_lion_release()
 
     @task
-    def ingest(version_date: str) -> str:
-        return ingest_lion(version_date=version_date)
+    def ingest() -> str:
+        # {{ ds }}를 넘기지 않는다 - 수동 트리거(logical_date 없음)에서
+        # Jinja가 UndefinedError로 죽는다. ingest_lion()은 인자 없으면
+        # 실행 시점의 실제 날짜로 태깅한다.
+        return ingest_lion()
 
     @task
     def build_silver1(_bronze_path: str) -> str:
@@ -76,7 +79,7 @@ def segment_length_pipeline():
         return read_json_result(str(output_s3))
 
     new_release = check_new_release()
-    bronze_path = ingest(version_date="{{ ds }}")
+    bronze_path = ingest()
     bronze_path.set_upstream(new_release)
 
     silver1_path = build_silver1(bronze_path)
