@@ -31,9 +31,12 @@ def _soql_timestamp(dt: datetime) -> str:
 def _get_count(session, window_start: datetime, window_end: datetime) -> int:
     """지정 구간에 존재하는 행 수를 $select=count(*)로 가볍게 확인한다."""
 
+    # 반열림 구간 [start, end) — 끝점을 포함시키면(<=) 그 순간의 판독값이
+    # 이번 버킷과 다음 버킷 계산에 동시에 걸쳐 애매해진다(gold2._bucket_column
+    # 참고: 끝점 시각은 다음 버킷으로 내림된다).
     where = (
-        f"data_as_of > '{_soql_timestamp(window_start)}' "
-        f"AND data_as_of <= '{_soql_timestamp(window_end)}'"
+        f"data_as_of >= '{_soql_timestamp(window_start)}' "
+        f"AND data_as_of < '{_soql_timestamp(window_end)}'"
     )
     response = session.get(
         SPEED_URL, params={"$select": "count(*)", "$where": where}, timeout=30
@@ -63,9 +66,12 @@ def collect_speed_window(
     으로 이미 걸러내지만, 이 함수 자체도 방어적으로 처리한다).
     """
 
+    # 반열림 구간 [start, end) — 끝점을 포함시키면(<=) 그 순간의 판독값이
+    # 이번 버킷과 다음 버킷 계산에 동시에 걸쳐 애매해진다(gold2._bucket_column
+    # 참고: 끝점 시각은 다음 버킷으로 내림된다).
     where = (
-        f"data_as_of > '{_soql_timestamp(window_start)}' "
-        f"AND data_as_of <= '{_soql_timestamp(window_end)}'"
+        f"data_as_of >= '{_soql_timestamp(window_start)}' "
+        f"AND data_as_of < '{_soql_timestamp(window_end)}'"
     )
 
     rows = fetch_all(SPEED_URL, where=where, order="data_as_of")

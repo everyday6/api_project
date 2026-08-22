@@ -133,6 +133,55 @@ def test_to_dynamodb_items_incrementally_updates_avg(spark):
     assert by_sk3[("1", "AVG")]["count"] == 2
 
 
+@mock_aws
+def test_to_dynamodb_items_handles_legacy_avg_item_without_count(spark):
+    # 레거시 AVG 레코드: count 필드 없이 저장된 옛 버전 데이터를 시뮬레이션.
+    client = _create_test_table()
+    client.put_item(
+        TableName=TABLE_NAME,
+        Item={
+            "segment_id": {"S": "1"},
+            "sk": {"S": "AVG"},
+            "value": {"N": "42"},
+        },
+    )
+
+    df = spark.createDataFrame([{"segment_id": "1", "bucket": "1200", "time_seconds": 30.0}])
+
+    # KeyError 없이 정상 동작해야 한다.
+    items = gold2.to_dynamodb_items(df, TABLE_NAME)
+
+    by_sk = {(i["segment_id"], i["sk"]): i for i in items}
+    assert by_sk[("1", "1200")]["value"] == 30
+    # count 없던 레거시 레코드는 old_count=0으로 취급 -> new_count=1
+    assert by_sk[("1", "AVG")]["count"] == 1
+    assert by_sk[("1", "AVG")]["value"] == round(42.0 + (30.0 - 42.0) / 1)
+
+
+@mock_aws
+def test_to_dynamodb_items_folds_multiple_buckets_of_same_segment_sequentially(spark):
+    # 한 번의 호출에 같은 세그먼트의 버킷이 2개(수집 구간 경계 겹침 등으로) 동시에
+    # 들어와도, 순차적으로 접어(fold) 반영해서 AVG가 정확히 계산되고 세그먼트당
+    # AVG 항목이 딱 1개만 나와야 한다.
+    _create_test_table()
+
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0},
+        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0},
+    ])
+
+    items = gold2.to_dynamodb_items(df, TABLE_NAME)
+
+    avg_items = [i for i in items if i["segment_id"] == "1" and i["sk"] == "AVG"]
+    assert len(avg_items) == 1
+    assert avg_items[0]["value"] == 40  # (30+50)/2
+    assert avg_items[0]["count"] == 2
+
+    by_sk = {(i["segment_id"], i["sk"]): i for i in items}
+    assert by_sk[("1", "1200")]["value"] == 30
+    assert by_sk[("1", "1230")]["value"] == 50
+
+
 def test_write_to_dynamodb_calls_batch_write_and_returns_count():
     items = [{"segment_id": "1", "sk": "1200", "value": 30}]
 

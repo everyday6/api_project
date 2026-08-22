@@ -112,36 +112,53 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     if not bucket_items:
         return []
 
-    lookup_keys = (
-        [{"segment_id": item["segment_id"], "sk": item["sk"]} for item in bucket_items]
-        + [{"segment_id": item["segment_id"], "sk": AVG_SORT_KEY} for item in bucket_items]
-    )
+    lookup_keys = list({
+        (item["segment_id"], item["sk"])
+        for item in bucket_items
+    } | {
+        (item["segment_id"], AVG_SORT_KEY)
+        for item in bucket_items
+    })
+    lookup_keys = [{"segment_id": sid, "sk": sk} for sid, sk in lookup_keys]
     existing = batch_get_items(table_name, lookup_keys)
 
-    avg_items = []
+    # 세그먼트별 현재 (avg, count) 상태 — 한 배치 안에 같은 세그먼트의 버킷이
+    # 여러 개 섞여 있어도(예: 수집 구간 경계 겹침) 순차적으로 접어(fold) 반영한다.
+    running_state: dict[str, tuple[float, int]] = {}
+
+    def _current_avg_count(sid: str) -> tuple[float, int]:
+        if sid in running_state:
+            return running_state[sid]
+        old_avg_item = existing.get((sid, AVG_SORT_KEY))
+        old_avg = float(old_avg_item.get("value", 0)) if old_avg_item else 0.0
+        old_count = int(old_avg_item.get("count", 0)) if old_avg_item else 0
+        return old_avg, old_count
+
     for item in bucket_items:
         sid, sk, new_value = item["segment_id"], item["sk"], item["value"]
 
+        old_avg, old_count = _current_avg_count(sid)
         old_bucket_item = existing.get((sid, sk))
-        old_avg_item = existing.get((sid, AVG_SORT_KEY))
-
-        old_count = int(old_avg_item["count"]) if old_avg_item else 0
-        old_avg = float(old_avg_item["value"]) if old_avg_item else 0.0
 
         if old_bucket_item is None:
             new_count = min(old_count + 1, BUCKETS_PER_DAY)
             new_avg = old_avg + (new_value - old_avg) / new_count
         else:
-            old_bucket_value = float(old_bucket_item["value"])
+            old_bucket_value = float(old_bucket_item.get("value", 0))
             new_count = old_count if old_count > 0 else 1
             new_avg = old_avg + (new_value - old_bucket_value) / new_count
 
-        avg_items.append({
+        running_state[sid] = (new_avg, new_count)
+
+    avg_items = [
+        {
             "segment_id": sid,
             "sk": AVG_SORT_KEY,
-            "value": round(new_avg),
-            "count": new_count,
-        })
+            "value": round(final_avg),
+            "count": final_count,
+        }
+        for sid, (final_avg, final_count) in running_state.items()
+    ]
 
     return bucket_items + avg_items
 
