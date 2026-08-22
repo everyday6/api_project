@@ -118,6 +118,25 @@ def test_validate_chunk_files_empty_chunk_returns_empty(spark):
     assert bronze_validation._validate_chunk_files(spark, []) == []
 
 
+def test_validate_chunk_files_reraises_unexpected_system_error(spark):
+    chunk = [{
+        "filename": "system_error.parquet",
+        "taxi_type": "yellow",
+        "bronze_path": "s3://bucket/system_error.parquet",
+    }]
+
+    with patch.object(
+        bronze_validation,
+        "validate_bronze_file",
+        side_effect=RuntimeError("temporary S3 failure"),
+    ):
+        with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+            with pytest.raises(RuntimeError, match="temporary S3 failure"):
+                bronze_validation._validate_chunk_files(spark, chunk)
+
+    mock_notify.assert_not_called()
+
+
 def test_validate_chunk_files_continues_after_middle_file_fails(tmp_path, spark):
     first_path = _write_bronze_fixture(tmp_path, "first.parquet", [{
         "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),

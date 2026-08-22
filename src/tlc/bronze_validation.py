@@ -97,8 +97,9 @@ MAX_EXCLUDED_FILES_IN_MESSAGE = 40
 def _validate_chunk_files(spark, bronze_chunk: list[dict]) -> list[dict]:
     """청크(taxi_type 하나) 안 파일을 순회하며 개별 판정한다.
 
-    한 파일의 예외가 루프 밖으로 전파되지 않게 파일마다 개별 try/except로
-    감싸서, critical 실패 파일만 결과에서 제외되고 나머지는 계속 처리된다.
+    데이터 스키마의 critical 실패만 해당 파일에서 제외한다. S3/Spark/GX 등
+    예상하지 못한 실행 오류는 Airflow가 재시도하고 최종 알림을 보낼 수 있도록
+    즉시 다시 발생시킨다.
 
     파일 하나가 제외될 때마다 Slack 메시지를 바로 보내지 않는다 — 초기
     적재처럼 청크 하나에 파일이 수십 개일 수 있는 상황에서, TLC가 컬럼
@@ -133,9 +134,12 @@ def _validate_chunk_files(spark, bronze_chunk: list[dict]) -> list[dict]:
             logger.error(f"Critical 검증 실패 - {filename} : {error}")
             excluded.append({"filename": filename, "reason": str(error)})
 
-        except Exception as error:
-            logger.error(f"Bronze 파일 검증 중 오류 - {filename} : {error}")
-            excluded.append({"filename": filename, "reason": str(error)})
+        except Exception:
+            logger.exception(
+                "Bronze 파일 검증 시스템 오류 - %s; Airflow 재시도를 요청합니다",
+                filename,
+            )
+            raise
 
     if excluded:
         notify_slack_message(_build_excluded_files_message(excluded))

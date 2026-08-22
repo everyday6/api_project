@@ -84,6 +84,8 @@ def test_build_message_summarizes_spark_stack_trace():
 
     assert "RuntimeError" in message
     assert "FileNotFoundException" in message
+    assert "*핵심 내용*: Caused by: java.io.FileNotFoundException" in message
+    assert "('RuntimeError'," not in message
     assert "DataFrameReader.load" not in message
     assert "S3AFileSystem.open" not in message
     assert "로그 보기" in message
