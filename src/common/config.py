@@ -200,6 +200,9 @@ EMR_PYTHON_ENV_S3_PATH = EMR_JOBS_DIR / "python-env" / "pyspark_deps.tar.gz"
 
 SPEED_CRS = "EPSG:4326"
 
+# NYC LION 좌표계(feet 단위) — 거리 계산은 이 좌표계로 변환해서 한다.
+LION_CRS = "EPSG:2263"
+
 # 속도 링크 주변 도로 매핑 반경(feet). 도로 링크는 보통 LION 세그먼트 여러
 # 개로 쪼개져 있어(하나의 corridor가 여러 블록으로 나뉨), venue보다 좁게
 # 잡아도 충분히 겹친다 — 정성적 초안(TODO, 팀 검토 필요).
