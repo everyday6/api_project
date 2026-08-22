@@ -5,7 +5,7 @@
 # 이어서 한다.
 #
 # 필요한 사전 준비 (AWS 콘솔/GitHub, 리포지토리 관리자):
-#   1. ECR 리포지토리 생성 (예: traffic-score-airflow)
+#   1. ECR 리포지토리 생성 (예: navigation-airflow)
 #   2. GitHub Actions가 push할 수 있는 IAM 롤 생성 (OIDC 신뢰 관계:
 #      token.actions.githubusercontent.com, 이 리포지토리로 조건 제한)
 #   3. 리포지토리 Settings > Secrets에 AWS_ECR_PUSH_ROLE_ARN 등록
@@ -38,7 +38,7 @@ permissions:
 
 env:
   AWS_REGION: ap-northeast-2
-  ECR_REPOSITORY: traffic-score-airflow
+  ECR_REPOSITORY: navigation-airflow
 
 jobs:
   build-and-push:

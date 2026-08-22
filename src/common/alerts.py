@@ -91,7 +91,6 @@ def _build_message(context: dict) -> str:
     # Airflow 3.x는 execution_date 대신 logical_date를 쓴다 — 버전 차이에
     # 안전하게 둘 다 확인한다.
     run_time = context.get("logical_date") or context.get("execution_date")
-    error_summary = _summarize_exception(exception)
 
     lines = [
         ":red_circle: *Airflow 태스크 실패*",
