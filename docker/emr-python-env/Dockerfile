@@ -26,6 +26,9 @@ COPY requirements.txt .
 #   - python-dotenv : src/common/config.py의 load_dotenv() (거의 모든
 #     src.* import 시점에 실행됨)
 #   - boto3 : src/common/dynamodb.py 및 cloudpathlib의 s3 백엔드
+#   - pyarrow : spark_jobs/nav_time_job.py, spark_jobs/nav_length_job.py의
+#     pd.read_parquet()가 실제로 쓰는 파케이 엔진. pandas가 있다고 자동으로
+#     같이 오지 않는다 — 없으면 "Unable to find a usable engine" ImportError.
 # pyspark 자체는 EMR Serverless가 이미 제공하므로 여기서 빼서 아카이브
 # 크기를 줄인다(pytest, great_expectations, fastapi 등 드라이버 실행에
 # 불필요한 나머지 requirements.txt 패키지도 마찬가지 이유로 제외).
@@ -33,6 +36,7 @@ RUN python3.11 -m venv /build/environment && \
     /build/environment/bin/pip install --no-cache-dir --upgrade pip venv-pack && \
     /build/environment/bin/pip install --no-cache-dir \
         pandas==2.2.2 \
+        pyarrow==25.0.1 \
         geopandas \
         shapely \
         pyproj \
