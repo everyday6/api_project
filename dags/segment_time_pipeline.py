@@ -18,7 +18,7 @@ from src.common.alerts import notify_slack_failure
 from src.common.config import DYNAMODB_TABLE_TYPE1, EMR_JOBS_DIR, PROJECT_ROOT
 from src.common.emr_serverless import read_json_result, run_spark_job
 from src.lion.gold2 import DIM_SEGMENT_PATH
-from src.speed.bronze import collect_speed_window, has_new_speed_data
+from src.speed.bronze import collect_speed_data, has_new_speed_data
 
 default_args = {
     "retries": 3,
@@ -40,12 +40,12 @@ default_args = {
 def segment_time_pipeline():
 
     @task.short_circuit
-    def check_new_data(data_interval_start=None, data_interval_end=None) -> bool:
-        return has_new_speed_data(data_interval_start, data_interval_end)
+    def check_new_data() -> bool:
+        return has_new_speed_data()
 
     @task
-    def collect_bronze(data_interval_start=None, data_interval_end=None) -> str:
-        return collect_speed_window(data_interval_start, data_interval_end)
+    def collect_bronze() -> str:
+        return collect_speed_data()
 
     @task
     def submit_nav_time_job(speed_bronze_path: str) -> dict:
