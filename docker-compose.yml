@@ -36,8 +36,6 @@ x-airflow-env: &airflow-env
 
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
 
-  GEMINI_API_KEY: ${GEMINI_API_KEY}
-
   # local/aws 모드 스위치(src/common/config.py 참고). 여기서 명시적으로
   # 안 넘기면 컨테이너 안에서는 항상 기본값(aws)으로 떨어져서 .env에
   # APP_ENV=local을 설정해도 무시된다(실제로 겪음 — AWS_REGION이 빈
