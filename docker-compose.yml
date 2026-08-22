@@ -52,6 +52,13 @@ x-airflow-env: &airflow-env
   RDS_USER: ${RDS_USER}
   RDS_PASSWORD: ${RDS_PASSWORD}
 
+  # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
+  # nav-api 서비스와 동일한 DYNAMODB_TABLE_TYPE1/2 기본값 패턴을 공유한다.
+  EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:-}
+  EMR_JOB_ROLE_ARN: ${EMR_JOB_ROLE_ARN:-}
+  DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
+  DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
+
   PYTHONPATH: /opt/airflow
 
 # CI(GitHub Actions)가 ECR에 미리 빌드해둔 이미지를 가리키는 값.
@@ -64,6 +71,7 @@ x-airflow-image: &airflow-image
 x-airflow-volumes: &airflow-volumes
   - ./dags:/opt/airflow/dags
   - ./src:/opt/airflow/src
+  - ./spark_jobs:/opt/airflow/spark_jobs
   - ./data:/opt/airflow/data
   - ./logs:/opt/airflow/logs
   - ./plugins:/opt/airflow/plugins
