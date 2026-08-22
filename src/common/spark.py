@@ -59,13 +59,13 @@ def get_spark() -> SparkSession:
         # Bronze/Silver가 S3(s3a://)에 있어서 Spark에 Hadoop S3 커넥터가
         # 필요하다. spark-worker 이미지의 Hadoop이 3.4.1이라 정확히 맞춘
         # hadoop-aws를 쓴다(버전이 안 맞으면 클래스 충돌로 조용히 깨짐).
-        # 자격증명은 EC2 인스턴스 롤(DefaultAWSCredentialsProviderChain이
-        # 자동으로 찾음)을 쓰므로 여기 access key를 박지 않는다.
+        # 자격증명은 EC2 인스턴스 롤을 사용한다. Hadoop 3.4.x는 AWS SDK v2로
+        # 전환됐으므로 SDK v1의 com.amazonaws.* provider를 지정하면 안 된다.
         .config("spark.jars.packages", "org.apache.hadoop:hadoop-aws:3.4.1")
         .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem")
         .config(
             "spark.hadoop.fs.s3a.aws.credentials.provider",
-            "com.amazonaws.auth.DefaultAWSCredentialsProviderChain",
+            "org.apache.hadoop.fs.s3a.auth.IAMInstanceCredentialsProvider",
         )
         .config("spark.hadoop.fs.s3a.endpoint.region", AWS_REGION)
         .getOrCreate()
