@@ -40,6 +40,13 @@ x-airflow-env: &airflow-env
 
   GEMINI_API_KEY: ${GEMINI_API_KEY}
 
+  # local/aws 모드 스위치(src/common/config.py 참고). 여기서 명시적으로
+  # 안 넘기면 컨테이너 안에서는 항상 기본값(aws)으로 떨어져서 .env에
+  # APP_ENV=local을 설정해도 무시된다(실제로 겪음 — AWS_REGION이 빈
+  # 문자열이라 dynamodb 엔드포인트가 "https://dynamodb..amazonaws.com"
+  # 같은 잘못된 값으로 만들어져서 실패했다).
+  APP_ENV: ${APP_ENV:-aws}
+
   # S3(Bronze/Silver/Gold)/RDS(Gold 서빙 테이블) 접속 정보. S3는 정적 키
   # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
   AWS_REGION: ${AWS_REGION}
@@ -51,6 +58,14 @@ x-airflow-env: &airflow-env
   RDS_DB: ${RDS_DB}
   RDS_USER: ${RDS_USER}
   RDS_PASSWORD: ${RDS_PASSWORD}
+
+  # src/common/dynamo.py(nav 골드 서빙 공용 클라이언트)의 기본값
+  # "http://localhost:8002"는 호스트(venv)에서 직접 돌릴 때만 맞다 —
+  # 컨테이너 안에서는 localhost가 컨테이너 자기 자신을 가리켜서
+  # dynamodb-local에 연결이 안 된다(EndpointConnectionError로 실제로 겪음).
+  # 컨테이너 안에서는 docker-compose 서비스명 + 내부 포트(8000, 호스트에
+  # 매핑된 8002가 아님)로 접속해야 한다.
+  DYNAMO_LOCAL_ENDPOINT: http://dynamodb-local:8000
 
   # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
   # nav-api 서비스와 동일한 DYNAMODB_TABLE_TYPE1/2 기본값 패턴을 공유한다.

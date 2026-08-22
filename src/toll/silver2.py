@@ -34,11 +34,20 @@ def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
     243,237행 중 고유 segment_id는 218,373개 — 약 2.5만 건 중복). 원래
     lion/silver1.py가 이 dedup을 해줬는데 지금은 lion 도메인이 Bronze만
     있어서 이 파일에서 직접 처리한다(조용히 첫 번째 행만 남김, 기존
-    lion/silver1.py와 동일한 정책)."""
+    lion/silver1.py와 동일한 정책).
 
+    GDB 전체(24만 행 이상)를 geopandas로 읽는 게 이 파이프라인에서 제일
+    오래 걸리는 부분이라(컨테이너 안 볼륨 마운트로 읽으면 더 오래 걸림 —
+    실제로 겪음), 시작/완료를 각각 로그로 남긴다."""
+
+    logger.info(f"[toll_silver2] LION GDB 읽기 시작: {gdb_path}")
     gdf = gpd.read_file(gdb_path, layer="lion")
+    logger.info(f"[toll_silver2] LION GDB 읽기 완료: {len(gdf)}행")
+
     gdf = gdf.rename(columns={"SegmentID": "segment_id", "Street": "street"})
     gdf = gdf.drop_duplicates(subset="segment_id", keep="first")
+    logger.info(f"[toll_silver2] segment_id 중복 제거 완료: {len(gdf)}행")
+
     return gdf[["segment_id", "street", "geometry"]]
 
 
@@ -64,7 +73,11 @@ def build_lion_facility_mapping(
     facilities_path: Path = Path("config/toll_facilities.yaml"),
     out_path: Path = MAP_LION_FACILITY_PATH,
 ) -> str:
+    logger.info(f"[toll_silver2] lion_facility 매핑 시작 (facilities={facilities_path})")
+
     segments = load_lion_segments(gdb_path)
+
+    logger.info(f"[toll_silver2] {len(segments)}개 segment 대상 시설명 매칭 시작")
     result = match_lion_facilities(segments, facilities_path)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
@@ -101,9 +114,12 @@ def build_lion_cbd_mapping(
     cbd_geofence_path: Path = Path("data/bronze/toll/cbd_geofence.geojson"),
     out_path: Path = MAP_LION_CBD_PATH,
 ) -> str:
+    logger.info(f"[toll_silver2] lion_cbd 매핑 시작 (cbd_geofence={cbd_geofence_path})")
+
     segments = load_lion_segments(gdb_path)
     zone_polygon = gpd.read_file(cbd_geofence_path)
 
+    logger.info(f"[toll_silver2] {len(segments)}개 segment 대상 CBD 공간조인 시작")
     result = match_lion_cbd(segments, zone_polygon)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
