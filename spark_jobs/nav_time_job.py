@@ -9,20 +9,18 @@ parquet만 이 job에 넘긴다.
   --speed-bronze-path : 속도 Bronze parquet 경로(Airflow가 수집한 원본, 정제 전)
   --dim-segment-path   : LION Gold2 dim_segment.parquet 경로
                          (segment_id, geometry, is_routable, length_ft)
-  --as-of              : 이 실행의 기준 시각(ISO 8601) — Gold1 롤링 윈도우 계산 기준
   --dynamodb-table      : upsert할 DynamoDB 테이블명
   --output-s3           : 처리 결과({"count": N})를 JSON으로 쓸 S3 경로
 """
 
 import argparse
 import json
-from datetime import datetime
 
 import pandas as pd
 from cloudpathlib import S3Path
 from pyspark.sql import SparkSession
 
-from src.nav_time.gold1 import filter_recent_valid_speed
+from src.nav_time.gold1 import filter_valid_speed
 from src.nav_time.gold2 import compute_time_seconds, to_dynamodb_items, write_to_dynamodb
 from src.silver2.segment_speed import build_segment_speed_silver2
 from src.speed.silver1 import clean_speed_silver1
@@ -32,7 +30,6 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--speed-bronze-path", required=True)
     parser.add_argument("--dim-segment-path", required=True)
-    parser.add_argument("--as-of", required=True)
     parser.add_argument("--dynamodb-table", required=True)
     parser.add_argument("--output-s3", required=True)
     args = parser.parse_args()
@@ -46,11 +43,10 @@ def main() -> None:
         speed_silver1_df = clean_speed_silver1(bronze_df)
         silver2_df = build_segment_speed_silver2(speed_silver1_df, dim_segment_df)
 
-        as_of = datetime.fromisoformat(args.as_of)
-        gold1_df = filter_recent_valid_speed(silver2_df, as_of=as_of)
+        gold1_df = filter_valid_speed(silver2_df)
 
         bucket_df = compute_time_seconds(gold1_df, dim_segment_df[["segment_id", "length_ft"]])
-        items = to_dynamodb_items(bucket_df)
+        items = to_dynamodb_items(bucket_df, args.dynamodb_table)
         count = write_to_dynamodb(items, args.dynamodb_table)
     finally:
         spark.stop()

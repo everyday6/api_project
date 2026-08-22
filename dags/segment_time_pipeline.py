@@ -48,7 +48,7 @@ def segment_time_pipeline():
         return collect_speed_window(data_interval_start, data_interval_end)
 
     @task
-    def submit_nav_time_job(speed_bronze_path: str, logical_date=None) -> dict:
+    def submit_nav_time_job(speed_bronze_path: str) -> dict:
         run_id = uuid.uuid4().hex
         output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_{run_id}.json"
 
@@ -58,7 +58,6 @@ def segment_time_pipeline():
             entry_point_args=[
                 "--speed-bronze-path", speed_bronze_path,
                 "--dim-segment-path", str(DIM_SEGMENT_PATH),
-                "--as-of", logical_date.isoformat(),
                 "--dynamodb-table", DYNAMODB_TABLE_TYPE1,
                 "--output-s3", str(output_s3),
             ],
