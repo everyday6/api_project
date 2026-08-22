@@ -1,16 +1,49 @@
-# 다리/터널 시설 목록 — LION의 Street 컬럼에서 이 패턴을 포함하는
-# segment를 그 시설로 분류한다(대소문자 무시, 부분 일치).
-# facility_key는 config/toll_rates.yaml의 road 아래 키와 반드시 일치해야 한다.
+# 다리/터널 시설 목록(뉴욕 전역, MTA 9개 + Port Authority 6개 = 15개) —
+# LION의 Street 컬럼에서 이 패턴을 포함하는 segment를 그 시설로 분류한다
+# (대소문자 무시, 부분 일치). facility_key는 config/toll_rates.yaml의
+# road 아래 키와 반드시 일치해야 한다.
+#
+# 패턴은 전부 실제 LION GDB(ogrinfo)로 대조 검증했다 — 특히 아래는
+# "다리 이름을 포함하지만 다리가 아닌" 도로가 섞여 있어 패턴을 좁혔다:
+# - WHITESTONE: "WHITESTONE EXPRESSWAY"(비과금 고속도로)가 섞여있어
+#   "WHITESTONE BRIDGE"로 한정
+# - THROGS NECK: "THROGS NECK BOULEVARD/EXPRESSWAY"(비과금)가 섞여있어
+#   "THROGS NECK BR"(BRIDGE/BRDG/BRG 접근로까지 포함, 대로/고속도로는 제외)
+# - CROSS BAY: "CROSS BAY BOULEVARD/PARKWAY"(비과금)가 섞여있어
+#   "CROSS BAY VET"(실제 다리 세그먼트인 VET MEM/VETERANS MEMORIAL만)
+# - GOETHALS/OUTERBRIDGE/BAYONNE: 같은 이름의 무관한 AVENUE/COURT가
+#   있어 BRIDGE/CROSSING/BR까지 포함해서 좁힘
 
+# --- MTA Bridges and Tunnels (9개) ---
 verrazzano_narrows:
   street_contains: "VERRAZZANO"
 queens_midtown_tunnel:
   street_contains: "QUEENS MIDTOWN TUNNEL"
 hugh_l_carey_tunnel:
   street_contains: "HUGH L CAREY"
+robert_f_kennedy_bridge:
+  street_contains: "ROBERT F KENNEDY"
+whitestone_bridge:
+  street_contains: "WHITESTONE BRIDGE"
+throgs_neck_bridge:
+  street_contains: "THROGS NECK BR"
+henry_hudson_bridge:
+  street_contains: "HENRY HUDSON BR"
+marine_parkway_bridge:
+  street_contains: "MARINE PARKWAY"
+cross_bay_bridge:
+  street_contains: "CROSS BAY VET"
+
+# --- Port Authority (6개) ---
 lincoln_tunnel:
   street_contains: "LINCOLN TUNNEL"
 holland_tunnel:
   street_contains: "HOLLAND TUNNEL"
 george_washington_bridge:
   street_contains: "GEORGE WASHINGTON BR"
+bayonne_bridge:
+  street_contains: "BAYONNE BR"
+goethals_bridge:
+  street_contains: "GOETHALS BRIDGE"
+outerbridge_crossing:
+  street_contains: "OUTERBRIDGE CROSSING"

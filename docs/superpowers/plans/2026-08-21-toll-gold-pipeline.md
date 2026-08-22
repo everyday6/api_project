@@ -355,13 +355,18 @@ touch src/toll/__init__.py tests/toll/__init__.py
 - [ ] **Step 2: config/toll_rates.yaml 작성**
 
 ```yaml
-# 택시 전용 통행료 요금표 — 사람이 직접 관리한다(자동 크롤링 없음).
+# 택시 전용 통행료 요금표(뉴욕 전역) — 사람이 직접 관리한다(자동 크롤링 없음).
 # 공식 요금 페이지가 바뀌면 dags/toll_rate_monitor.py가 Slack으로 알려주고,
 # 그때 이 파일을 직접 고친 뒤 dags/toll_bronze_pipeline.py를 수동 트리거한다.
 #
-# TODO(팀 검토 필요): 아래 금액은 2026-08 기준 조사값이다. 실제 반영 전
-# mta.info/fares-tolls/tolls/congestion-relief-zone, panynj.gov 요금표에서
-# 재확인할 것.
+# 2026-01-04 인상분 기준으로 검색 확인한 값. 택시 전용 할인 요금이 따로
+# 없어서 전부 승용차(E-ZPass) 요금을 그대로 쓴다. Port Authority는 피크/
+# 오프피크 요금이 다른데(예: GWB 피크 $16.79 / 오프피크 $14.79), 이번
+# 설계에서 도로 통행료는 시간대 무관으로 단순화하기로 했으므로(Global
+# Constraints 참고) 피크 요금 하나만 쓴다.
+#
+# TODO(팀 검토 필요): 반영 전 mta.info/fares-tolls/tolls,
+# panynj.gov/bridges-tunnels 공식 요금표에서 최신 금액 재확인할 것.
 
 congestion:
   # 택시/그린캡: zone(60번가 이남) 통과 트립마다 정액, 시간대 무관, 하루 상한 없음.
@@ -370,42 +375,97 @@ congestion:
 road:
   # facility_key는 config/toll_facilities.yaml의 키와 일치해야 한다.
   # 택시 전용 요금이 별도로 없으면 passenger(E-ZPass 승용차) 요금을 그대로 쓴다.
+
+  # --- MTA Bridges and Tunnels (2026-01 인상 후 E-ZPass 기준) ---
   verrazzano_narrows:
-    passenger: 10.67
+    passenger: 7.46
   queens_midtown_tunnel:
-    passenger: 6.94
+    passenger: 7.46
   hugh_l_carey_tunnel:
-    passenger: 6.94
+    passenger: 7.46
+  robert_f_kennedy_bridge:
+    passenger: 7.46
+  whitestone_bridge:
+    passenger: 7.46
+  throgs_neck_bridge:
+    passenger: 7.46
+  henry_hudson_bridge:
+    passenger: 3.42
+  marine_parkway_bridge:
+    passenger: 2.80
+  cross_bay_bridge:
+    passenger: 2.80
+
+  # --- Port Authority (2026-01 인상 후, 6개 시설 전부 동일 요금, 피크 기준) ---
   lincoln_tunnel:
-    passenger: 17.00
+    passenger: 16.79
   holland_tunnel:
-    passenger: 17.00
+    passenger: 16.79
   george_washington_bridge:
-    passenger: 17.00
+    passenger: 16.79
+  bayonne_bridge:
+    passenger: 16.79
+  goethals_bridge:
+    passenger: 16.79
+  outerbridge_crossing:
+    passenger: 16.79
 ```
 
 - [ ] **Step 3: config/toll_facilities.yaml 작성**
 
 ```yaml
-# 다리/터널 시설 목록 — LION의 Street 컬럼에서 이 패턴을 포함하는
-# segment를 그 시설로 분류한다(대소문자 무시, 부분 일치).
-# facility_key는 config/toll_rates.yaml의 road 아래 키와 반드시 일치해야 한다.
+# 다리/터널 시설 목록(뉴욕 전역, MTA 9개 + Port Authority 6개 = 15개) —
+# LION의 Street 컬럼에서 이 패턴을 포함하는 segment를 그 시설로 분류한다
+# (대소문자 무시, 부분 일치). facility_key는 config/toll_rates.yaml의
+# road 아래 키와 반드시 일치해야 한다.
+#
+# 패턴은 전부 실제 LION GDB(ogrinfo)로 대조 검증했다 — 특히 아래는
+# "다리 이름을 포함하지만 다리가 아닌" 도로가 섞여 있어 패턴을 좁혔다:
+# - WHITESTONE: "WHITESTONE EXPRESSWAY"(비과금 고속도로)가 섞여있어
+#   "WHITESTONE BRIDGE"로 한정
+# - THROGS NECK: "THROGS NECK BOULEVARD/EXPRESSWAY"(비과금)가 섞여있어
+#   "THROGS NECK BR"(BRIDGE/BRDG/BRG 접근로까지 포함, 대로/고속도로는 제외)
+# - CROSS BAY: "CROSS BAY BOULEVARD/PARKWAY"(비과금)가 섞여있어
+#   "CROSS BAY VET"(실제 다리 세그먼트인 VET MEM/VETERANS MEMORIAL만)
+# - GOETHALS/OUTERBRIDGE/BAYONNE: 같은 이름의 무관한 AVENUE/COURT가
+#   있어 BRIDGE/CROSSING/BR까지 포함해서 좁힘
 
+# --- MTA Bridges and Tunnels (9개) ---
 verrazzano_narrows:
   street_contains: "VERRAZZANO"
 queens_midtown_tunnel:
   street_contains: "QUEENS MIDTOWN TUNNEL"
 hugh_l_carey_tunnel:
   street_contains: "HUGH L CAREY"
+robert_f_kennedy_bridge:
+  street_contains: "ROBERT F KENNEDY"
+whitestone_bridge:
+  street_contains: "WHITESTONE BRIDGE"
+throgs_neck_bridge:
+  street_contains: "THROGS NECK BR"
+henry_hudson_bridge:
+  street_contains: "HENRY HUDSON BR"
+marine_parkway_bridge:
+  street_contains: "MARINE PARKWAY"
+cross_bay_bridge:
+  street_contains: "CROSS BAY VET"
+
+# --- Port Authority (6개) ---
 lincoln_tunnel:
   street_contains: "LINCOLN TUNNEL"
 holland_tunnel:
   street_contains: "HOLLAND TUNNEL"
 george_washington_bridge:
   street_contains: "GEORGE WASHINGTON BR"
+bayonne_bridge:
+  street_contains: "BAYONNE BR"
+goethals_bridge:
+  street_contains: "GOETHALS BRIDGE"
+outerbridge_crossing:
+  street_contains: "OUTERBRIDGE CROSSING"
 ```
 
-> **실행 중 발견한 이슈**: 실제 LION 데이터로 검증해보니 GW 브리지는 "GEO WASHINGTON BR"이 아니라 "GEORGE WASHINGTON BRIDGE"(full word)로 들어있다. 위 패턴은 이미 수정된 버전이다 — 나머지 5개(verrazzano/queens_midtown_tunnel/hugh_l_carey_tunnel/lincoln_tunnel/holland_tunnel)는 `ogrinfo`로 실제 LION GDB에 대조 확인해서 문제없음을 확인했다.
+> **실행 중 발견한 이슈**: 처음엔 대표 예시로 6개 시설만 넣었는데, 실제로는 MTA 9개+Port Authority 6개(총 15개) 전부 있어야 한다는 걸 지적받고 전체로 확장했다. GW 브리지는 "GEO WASHINGTON BR"이 아니라 "GEORGE WASHINGTON BRIDGE"(full word)로 들어있던 것도 수정. 15개 패턴 전부 `ogrinfo`로 실제 LION GDB 대조 확인 + 헷갈리는 케이스(같은 이름의 비과금 도로/무관한 거리)까지 자동화된 매칭 테스트로 검증했다.
 
 - [ ] **Step 4: 실패하는 테스트 작성**
 
