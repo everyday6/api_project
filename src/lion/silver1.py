@@ -18,11 +18,15 @@ CSV로 평탄화한 뒤 그 CSV를 읽는다.
 
 from __future__ import annotations
 
+import re
+import shutil
 import subprocess
 import tempfile
 from pathlib import Path
+from uuid import uuid4
 
 import pandas as pd
+from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
@@ -32,6 +36,8 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
 LION_BRONZE_ROOT = BRONZE_DIR / "lion"
 DIM_SEGMENT_BASE_PATH = SILVER1_DIR / "dim_segment.parquet"
+DIM_SEGMENT_STAGING_ROOT = SILVER1_DIR / "_staging" / "dim_segment"
+RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 LION_COLUMNS = [
     "SegmentID", "Street", "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir",
@@ -42,6 +48,19 @@ LION_COLUMNS = [
 VALID_BOROUGH_CODES = ["1", "2", "3", "4", "5"]
 MIN_EXPECTED_ROWS = 100_000
 MAX_EXPECTED_ROWS = 300_000
+
+
+def _as_path(value):
+    if isinstance(value, (Path, S3Path)):
+        return value
+    text = str(value)
+    return S3Path(text) if text.startswith("s3://") else Path(text)
+
+
+def _staging_run_path(run_id: str, staging_root=DIM_SEGMENT_STAGING_ROOT):
+    if not RUN_ID_PATTERN.fullmatch(run_id):
+        raise ValueError(f"잘못된 LION Silver1 staging run_id입니다: {run_id}")
+    return staging_root / f"run_id={run_id}"
 
 
 def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
@@ -157,6 +176,44 @@ def build_dim_segment_base(
     return str(dim_segment_path)
 
 
+def build_dim_segment_staged(
+    bronze_version_path: str,
+    staging_root=DIM_SEGMENT_STAGING_ROOT,
+) -> dict:
+    """지정된 Bronze 스냅샷을 정제해 실행별 임시 경로에 저장한다."""
+
+    version_dir = _as_path(bronze_version_path)
+    if not (version_dir / "_metadata.txt").exists():
+        raise FileNotFoundError(f"완료되지 않은 LION Bronze 스냅샷입니다: {version_dir}")
+
+    gdb_path = _find_gdb(version_dir)
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="lion_silver1_", dir=TMP_DIR) as tmp:
+        work_dir = Path(tmp)
+        local_gdb_path = _stage_gdb_locally(gdb_path, work_dir)
+        tmp_csv = _gdb_to_flat_csv(local_gdb_path, work_dir / "lion_flat.csv")
+        raw_df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
+
+    dim_segment = _clean_lion_dataframe(raw_df)
+    run_id = uuid4().hex
+    run_path = _staging_run_path(run_id, staging_root)
+    stage_path = run_path / "dim_segment.parquet"
+    stage_path.parent.mkdir(parents=True, exist_ok=True)
+    dim_segment.to_parquet(str(stage_path), index=False)
+
+    logger.info(
+        "[lion_silver] staging 저장 완료: rows=%s source=%s path=%s",
+        len(dim_segment),
+        version_dir,
+        stage_path,
+    )
+    return {
+        "run_id": run_id,
+        "stage_path": str(stage_path),
+        "source_version": str(version_dir),
+    }
+
+
 def validate_dim_segment_base(path: str) -> str:
     df = pd.read_parquet(path)
 
@@ -172,6 +229,64 @@ def validate_dim_segment_base(path: str) -> str:
 
     logger.info(f"[lion_silver] dim_segment(Silver1) 검증 통과 ({n}행) -> {path}")
     return path
+
+
+def validate_staged_dim_segment(
+    stage_result: dict,
+    staging_root=DIM_SEGMENT_STAGING_ROOT,
+) -> dict:
+    """임시 산출물의 경로와 데이터 품질을 검증한다."""
+
+    expected_path = (
+        _staging_run_path(stage_result["run_id"], staging_root)
+        / "dim_segment.parquet"
+    )
+    if stage_result.get("stage_path") != str(expected_path):
+        raise ValueError("예상하지 못한 LION Silver1 staging 경로입니다")
+    validate_dim_segment_base(str(expected_path))
+    return stage_result
+
+
+def publish_dim_segment(
+    validated_stage: dict,
+    output_path=DIM_SEGMENT_BASE_PATH,
+    staging_root=DIM_SEGMENT_STAGING_ROOT,
+) -> dict:
+    """검증을 통과한 임시 산출물만 Silver1 운영 경로에 반영한다."""
+
+    stage_path = (
+        _staging_run_path(validated_stage["run_id"], staging_root)
+        / "dim_segment.parquet"
+    )
+    if validated_stage.get("stage_path") != str(stage_path):
+        raise ValueError("예상하지 못한 LION Silver1 staging 경로입니다")
+
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    if isinstance(stage_path, Path):
+        shutil.copy2(stage_path, output_path)
+    else:
+        stage_path.copy(output_path)
+    if not output_path.exists():
+        raise RuntimeError(f"LION Silver1 운영 경로 반영 실패: {output_path}")
+
+    logger.info("[lion_silver] 운영 경로 반영 완료: %s", output_path)
+    return {**validated_stage, "output_path": str(output_path)}
+
+
+def cleanup_dim_segment_staging(
+    published_result: dict,
+    staging_root=DIM_SEGMENT_STAGING_ROOT,
+) -> None:
+    """승격이 완료된 실행의 임시 폴더를 정리한다."""
+
+    run_path = _staging_run_path(published_result["run_id"], staging_root)
+    if not run_path.exists():
+        return
+    if isinstance(run_path, Path):
+        shutil.rmtree(run_path)
+    else:
+        run_path.rmtree()
+    logger.info("[lion_silver] staging 정리 완료: %s", run_path)
 
 
 if __name__ == "__main__":

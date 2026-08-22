@@ -13,6 +13,11 @@ load_dotenv()
 BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data"
 TAXI_TYPES = ["yellow", "green", "fhv", "fhvhv"]
 
+# NYC DOT 실시간 도로 속도 데이터(Socrata API)
+DATASETS = {
+    "speed": "https://data.cityofnewyork.us/resource/i4gi-tjb9.json",
+}
+
 # 매일 다음 공개 후보 1개월과 최근 완료 3개월을 확인한다.
 TLC_PUBLISH_LAG_MONTHS = 2
 RECENT_MONTHS_WINDOW = 4
