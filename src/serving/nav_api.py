@@ -23,6 +23,11 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
 app = FastAPI(title="Segment Metrics API")
 
 
+@app.get("/health")
+def health() -> dict[str, str]:
+    return {"status": "ok"}
+
+
 class SegmentValuesRequest(BaseModel):
     segment_ids: list[str] = Field(
         min_length=1,
