@@ -607,7 +607,14 @@ git commit -m "feat: 통행료 요금표/시설목록/CBD 폴리곤 Bronze 업�
 
 ---
 
-### Task 3: 요금표 변경 감지 + 월간 알람 DAG
+### Task 3: 요금표 월간 확인 알림 DAG
+
+> **실행 중 발견한 이슈로 설계 변경**: 원래 계획은 페이지 내용을 해시로
+> 비교해서 자동으로 "바뀐 것 같다"를 판단하는 것이었다. 실제로 curl/
+> Python `requests`로 mta.info를 가져와보니 브라우저 User-Agent를 완전히
+> 채워도 전부 **403 Access Denied**(WAF 봇 차단)가 나서 애초에 코드로
+> 가져올 방법이 없었다. 그래서 자동 변경 감지를 포기하고, 매달 무조건
+> "직접 확인하라"는 알림만 보내는 것으로 단순화했다(사용자 승인받음).
 
 **Files:**
 - Create: `src/toll/rate_monitor.py`
@@ -616,50 +623,26 @@ git commit -m "feat: 통행료 요금표/시설목록/CBD 폴리곤 Bronze 업�
 
 **Interfaces:**
 - Consumes: `src.common.alerts.notify_slack_message`
-- Produces: `src.toll.rate_monitor.{RATE_PAGE_URLS, check_pages_changed}` (dags/toll_rate_monitor.py가 매달 이 함수를 호출)
+- Produces: `src.toll.rate_monitor.{RATE_PAGE_URLS, build_reminder_message}` (dags/toll_rate_monitor.py가 매달 이 함수를 호출)
 
 - [ ] **Step 1: 실패하는 테스트 작성**
 
 `tests/toll/test_rate_monitor.py`:
 ```python
-from unittest.mock import patch
-
-from src.toll.rate_monitor import check_pages_changed
+from src.toll.rate_monitor import build_reminder_message
 
 
-def test_check_pages_changed_detects_no_change_on_first_run(tmp_path):
-    state_path = tmp_path / "last_hash.json"
+def test_build_reminder_message_includes_all_urls():
+    message = build_reminder_message(urls=["https://example.com/a", "https://example.com/b"])
 
-    with patch("src.toll.rate_monitor._fetch_page_text", return_value="rate table content v1"):
-        changed = check_pages_changed(urls=["https://example.com/tolls"], state_path=state_path)
-
-    # 첫 실행은 "이전 상태"가 없어서 비교 대상이 없으므로 변경 없음으로 처리.
-    assert changed == []
-    assert state_path.exists()
+    assert "https://example.com/a" in message
+    assert "https://example.com/b" in message
 
 
-def test_check_pages_changed_detects_change(tmp_path):
-    state_path = tmp_path / "last_hash.json"
-    url = "https://example.com/tolls"
+def test_build_reminder_message_mentions_config_file():
+    message = build_reminder_message(urls=["https://example.com/a"])
 
-    with patch("src.toll.rate_monitor._fetch_page_text", return_value="rate table content v1"):
-        check_pages_changed(urls=[url], state_path=state_path)
-
-    with patch("src.toll.rate_monitor._fetch_page_text", return_value="rate table content v2 (changed!)"):
-        changed = check_pages_changed(urls=[url], state_path=state_path)
-
-    assert changed == [url]
-
-
-def test_check_pages_changed_no_change_when_content_same(tmp_path):
-    state_path = tmp_path / "last_hash.json"
-    url = "https://example.com/tolls"
-
-    with patch("src.toll.rate_monitor._fetch_page_text", return_value="same content"):
-        check_pages_changed(urls=[url], state_path=state_path)
-        changed = check_pages_changed(urls=[url], state_path=state_path)
-
-    assert changed == []
+    assert "toll_rates.yaml" in message
 ```
 
 - [ ] **Step 2: 테스트 실패 확인**
@@ -671,73 +654,41 @@ Expected: FAIL with `ModuleNotFoundError: No module named 'src.toll.rate_monitor
 
 ```python
 """
-통행료 공식 요금 페이지 변경 감지
+통행료 요금표 월간 확인 알림
 
-값을 자동으로 파싱/반영하지 않는다(docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md
-참고 — 요금 페이지는 구조가 안정된 API가 아니라 사람이 확인해야 하는
-웹페이지라, 잘못 파싱해도 조용히 틀린 값이 들어갈 위험이 있다). 이
-모듈은 페이지 텍스트의 해시값만 이전 실행과 비교해서 "바뀐 것 같다"만
-판단하고, 실제 값 반영은 사람이 config/toll_rates.yaml을 직접 고치게 한다.
+원래는 공식 요금 페이지 내용을 가져와 해시로 비교해서 "바뀐 것 같다"를
+자동 판단하려 했으나, 실제로 해보니 mta.info가 봇 차단(WAF)이 걸려있어서
+requests/curl 어떤 방식(브라우저 User-Agent 포함)으로도 페이지를 가져올
+수 없다(403 Access Denied). 그래서 자동 변경 감지는 포기하고, 매달
+무조건 "직접 확인하라"는 알림만 보낸다 — 확인/판단/config/toll_rates.yaml
+수정은 항상 사람이 한다.
 """
 
 from __future__ import annotations
 
-import hashlib
-import json
-from pathlib import Path
-
-import requests
-
-from src.common.logger import get_logger
-
-logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_rate_monitor")
-
-# TODO(팀 검토 필요): 실제 모니터링할 공식 요금 페이지 URL로 채울 것.
 RATE_PAGE_URLS = [
     "https://www.mta.info/fares-tolls/tolls/vehicle-types",
     "https://www.mta.info/fares-tolls/tolls/congestion-relief-zone",
+    "https://www.panynj.gov/bridges-tunnels/en/e-zpass.html",
 ]
 
 
-def _fetch_page_text(url: str) -> str:
-    resp = requests.get(url, timeout=30)
-    resp.raise_for_status()
-    return resp.text
+def build_reminder_message(urls: list[str] = RATE_PAGE_URLS) -> str:
+    """매달 보낼 Slack 알림 메시지를 만든다."""
 
-
-def _hash(text: str) -> str:
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()
-
-
-def check_pages_changed(urls: list[str] = RATE_PAGE_URLS, state_path: Path = Path("data/tmp/toll_rate_hashes.json")) -> list[str]:
-    """각 url의 페이지 내용을 해시로 이전 실행과 비교한다.
-    처음 보는 url이면(이전 기록 없음) 비교 대상이 없으므로 변경 없음으로
-    취급하고 해시만 기록한다. 반환값은 실제로 바뀐 url 목록."""
-
-    state_path.parent.mkdir(parents=True, exist_ok=True)
-    previous: dict[str, str] = {}
-    if state_path.exists():
-        previous = json.loads(state_path.read_text())
-
-    changed: list[str] = []
-    current: dict[str, str] = dict(previous)
-
-    for url in urls:
-        new_hash = _hash(_fetch_page_text(url))
-        old_hash = previous.get(url)
-        if old_hash is not None and old_hash != new_hash:
-            changed.append(url)
-            logger.warning(f"[toll_rate_monitor] 페이지 변경 감지: {url}")
-        current[url] = new_hash
-
-    state_path.write_text(json.dumps(current))
-    return changed
+    urls_text = "\n".join(f"- {url}" for url in urls)
+    return (
+        ":bell: 통행료 요금표 월간 확인 알림\n"
+        f"{urls_text}\n"
+        "위 페이지들을 직접 확인해서 config/toll_rates.yaml과 다르면 고친 뒤 "
+        "toll_bronze_pipeline DAG를 수동 트리거하세요."
+    )
 ```
 
 - [ ] **Step 4: 테스트 통과 확인**
 
 Run: `pytest tests/toll/test_rate_monitor.py -v`
-Expected: 3개 테스트 전부 PASS
+Expected: 2개 테스트 전부 PASS
 
 - [ ] **Step 5: dags/toll_rate_monitor.py 작성**
 
@@ -745,10 +696,11 @@ Expected: 3개 테스트 전부 PASS
 """
 DAG: toll_rate_monitor
 
-통행료 공식 요금 페이지가 바뀌었는지 매달 확인하고, 바뀌었으면 Slack으로
-알린다. 값을 자동으로 반영하지 않는다 — 알림을 받은 사람이
-config/toll_rates.yaml을 직접 확인/수정한 뒤 toll_bronze_pipeline DAG를
-수동 트리거해야 한다(src/toll/rate_monitor.py 모듈 docstring 참고).
+통행료 요금표를 매달 확인하라고 사람에게 알려주기만 하는 DAG. mta.info가
+봇 차단(WAF)이 걸려있어서 페이지 내용을 코드로 가져와 비교하는 자동 변경
+감지는 불가능하다고 확인했다(src/toll/rate_monitor.py 모듈 docstring
+참고) — 그래서 매달 무조건 Slack 알림을 보내고, 실제 확인/판단/
+config/toll_rates.yaml 수정은 항상 사람이 한다.
 """
 
 from datetime import timedelta
@@ -767,7 +719,7 @@ default_args = {
 
 @dag(
     dag_id="toll_rate_monitor",
-    description="통행료 공식 요금 페이지 변경 감지 (월 1회)",
+    description="통행료 요금표 월간 확인 알림 (자동 변경 감지 아님 — mta.info 봇 차단)",
     schedule="0 9 1 * *",  # 매달 1일 오전 9시
     start_date=pendulum.datetime(2026, 8, 1),
     catchup=False,
@@ -777,19 +729,13 @@ default_args = {
 )
 def toll_rate_monitor():
 
-    @task(task_id="check_and_alert")
-    def check_and_alert():
-        from src.toll.rate_monitor import check_pages_changed
+    @task(task_id="send_reminder")
+    def send_reminder():
+        from src.toll.rate_monitor import build_reminder_message
 
-        changed = check_pages_changed()
-        if changed:
-            urls_text = "\n".join(f"- {url}" for url in changed)
-            notify_slack_message(
-                f":warning: 통행료 요금 페이지 변경 감지\n{urls_text}\n"
-                f"config/toll_rates.yaml 확인 후 toll_bronze_pipeline DAG를 수동 트리거하세요."
-            )
+        notify_slack_message(build_reminder_message())
 
-    check_and_alert()
+    send_reminder()
 
 
 toll_rate_monitor()
@@ -799,7 +745,7 @@ toll_rate_monitor()
 
 ```bash
 git add src/toll/rate_monitor.py tests/toll/test_rate_monitor.py dags/toll_rate_monitor.py
-git commit -m "feat: 통행료 요금 페이지 변경 감지 + 월간 Slack 알람 DAG 추가"
+git commit -m "feat: 통행료 요금표 월간 확인 알림 DAG 추가"
 ```
 
 ---
