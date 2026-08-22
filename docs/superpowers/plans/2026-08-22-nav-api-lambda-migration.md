@@ -403,7 +403,13 @@ IAM 콘솔 → 역할 → 역할 생성:
 
 ---
 
-### Task 6: Lambda 함수 생성 (컨테이너 이미지)
+### Task 6: Lambda 함수 생성 (컨테이너 이미지) ✅ 완료 (2026-08-22)
+
+**결정된 값:**
+```
+FUNCTION_ARN = arn:aws:lambda:ap-northeast-2:181252290322:function:nav-api
+```
+콘솔 테스트 탭에서 `/health` 이벤트로 200 확인함.
 
 **Files:** 없음 (콘솔)
 
@@ -465,7 +471,12 @@ Lambda 콘솔 → 함수 → "함수 생성":
 
 ---
 
-### Task 7: API Gateway HTTP API 생성 + Lambda 연동
+### Task 7: API Gateway HTTP API 생성 + Lambda 연동 ✅ 완료 (2026-08-22)
+
+**결정된 값:**
+```
+API_URL = https://gv37o51ey6.execute-api.ap-northeast-2.amazonaws.com
+```
 
 **Files:** 없음 (콘솔)
 
@@ -488,7 +499,9 @@ API 상세 화면에서 "호출 URL"(`https://xxxxxxxx.execute-api.ap-northeast-
 
 ---
 
-### Task 8: 검증
+### Task 8: 검증 ✅ 완료 (2026-08-22)
+
+`curl`로 `/health`(200, `{"status":"ok"}`)와 `/segments/values`(존재하지 않는 세그먼트 → fallback 체인 타고 `{"values":[300]}` 반환) 둘 다 확인함 — "무조건 응답" 동작 검증됨.
 
 **Files:** 없음 (로컬에서 `curl`)
 
