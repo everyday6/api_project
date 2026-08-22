@@ -36,11 +36,36 @@ x-airflow-env: &airflow-env
 
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
 
-  # S3와 DynamoDB는 정적 키 없이 EC2 인스턴스의 IAM Role로 인증한다.
+  GEMINI_API_KEY: ${GEMINI_API_KEY}
+
+  # local/aws 모드 스위치(src/common/config.py 참고). 여기서 명시적으로
+  # 안 넘기면 컨테이너 안에서는 항상 기본값(aws)으로 떨어져서 .env에
+  # APP_ENV=local을 설정해도 무시된다(실제로 겪음 — AWS_REGION이 빈
+  # 문자열이라 dynamodb 엔드포인트가 "https://dynamodb..amazonaws.com"
+  # 같은 잘못된 값으로 만들어져서 실패했다).
+  APP_ENV: ${APP_ENV:-aws}
+
+  # S3(Bronze/Silver/Gold)/RDS(Gold 서빙 테이블) 접속 정보. S3는 정적 키
+  # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
   AWS_REGION: ${AWS_REGION}
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
   DYNAMODB_NAV_TABLE: ${DYNAMODB_NAV_TABLE}
   TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-12}
+
+  # src/common/dynamo.py(nav 골드 서빙 공용 클라이언트)의 기본값
+  # "http://localhost:8002"는 호스트(venv)에서 직접 돌릴 때만 맞다 —
+  # 컨테이너 안에서는 localhost가 컨테이너 자기 자신을 가리켜서
+  # dynamodb-local에 연결이 안 된다(EndpointConnectionError로 실제로 겪음).
+  # 컨테이너 안에서는 docker-compose 서비스명 + 내부 포트(8000, 호스트에
+  # 매핑된 8002가 아님)로 접속해야 한다.
+  DYNAMO_LOCAL_ENDPOINT: http://dynamodb-local:8000
+
+  # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
+  # nav-api 서비스와 동일한 DYNAMODB_TABLE_TYPE1/2 기본값 패턴을 공유한다.
+  EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:-}
+  EMR_JOB_ROLE_ARN: ${EMR_JOB_ROLE_ARN:-}
+  DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
+  DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
 
   PYTHONPATH: /opt/airflow
 
@@ -54,6 +79,7 @@ x-airflow-image: &airflow-image
 x-airflow-volumes: &airflow-volumes
   - ./dags:/opt/airflow/dags
   - ./src:/opt/airflow/src
+  - ./spark_jobs:/opt/airflow/spark_jobs
   - ./data:/opt/airflow/data
   - ./logs:/opt/airflow/logs
   - ./plugins:/opt/airflow/plugins
@@ -338,6 +364,48 @@ services:
 
 
   # =========================================================
+  # Segment Metrics API
+  #
+  # 내비게이션이 쓰는 세그먼트 지표(시간/길이) 조회 API. DynamoDB만 보고
+  # 응답하므로 postgres/redis/celery 불필요.
+  # =========================================================
+  nav-api:
+    <<: *airflow-image
+    build:
+      context: .
+      dockerfile: Dockerfile
+
+    container_name: traffic-nav-api
+
+    restart: unless-stopped
+
+    environment:
+      PYTHONPATH: /opt/airflow
+      APP_ENV: ${APP_ENV:-aws}
+      AWS_REGION: ${AWS_REGION}
+      DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
+      DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
+
+    volumes:
+      - ./src:/opt/airflow/src
+
+    working_dir: /opt/airflow
+
+    ports:
+      - "8001:8001"
+
+    entrypoint: []
+    command: >
+      uvicorn src.serving.nav_api:app --host 0.0.0.0 --port 8001
+
+    depends_on:
+      - dynamodb-local
+
+    networks:
+      - airflow-network
+
+
+  # =========================================================
   # Spark Master
   # =========================================================
   spark-master:
@@ -404,6 +472,28 @@ services:
 
     networks:
       - spark-network
+
+
+  # =========================================================
+  # DynamoDB Local
+  # nav 골드 데이터셋(segment_id x type 조회) 서빙용. APP_ENV=local이면
+  # 여기 붙고, aws면 실 DynamoDB에 붙는다(src/common/dynamo.py 참고).
+  # -inMemory: 로컬 개발/테스트 DB라 재시작 시 초기화돼도 상관없음
+  # (rds-local의 postgres_data 볼륨과 다르게 영속화 안 함).
+  # =========================================================
+  dynamodb-local:
+    image: amazon/dynamodb-local:2.5.4
+    container_name: traffic-dynamodb-local
+    restart: unless-stopped
+
+    command: >
+      -jar DynamoDBLocal.jar -inMemory -sharedDb
+
+    ports:
+      - "8002:8000"
+
+    networks:
+      - airflow-network
 
 
   # =========================================================

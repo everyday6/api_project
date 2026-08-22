@@ -1,0 +1,55 @@
+# 택시 전용 통행료 요금표(뉴욕 전역) — 사람이 직접 관리한다(자동 크롤링 없음).
+# 공식 요금 페이지가 바뀌면 dags/toll_rate_monitor.py가 Slack으로 알려주고,
+# 그때 이 파일을 직접 고친 뒤 dags/toll_bronze_pipeline.py를 수동 트리거한다.
+#
+# 2026-01-04 인상분 기준으로 검색 확인한 값. 택시 전용 할인 요금이 따로
+# 없어서 전부 승용차(E-ZPass) 요금을 그대로 쓴다. Port Authority는 피크/
+# 오프피크 요금이 다른데(예: GWB 피크 $16.79 / 오프피크 $14.79), 이번
+# 설계에서 도로 통행료는 시간대 무관으로 단순화하기로 했으므로(Global
+# Constraints 참고) 피크 요금 하나만 쓴다 — 나중에 시간대별 요금이
+# 필요해지면 그때 SK에 시간 슬롯을 추가하면 된다.
+#
+# TODO(팀 검토 필요): 반영 전 mta.info/fares-tolls/tolls,
+# panynj.gov/bridges-tunnels 공식 요금표에서 최신 금액 재확인할 것.
+
+congestion:
+  # 택시/그린캡: zone(60번가 이남) 통과 트립마다 정액, 시간대 무관, 하루 상한 없음.
+  taxi_flat_rate: 0.75
+
+road:
+  # facility_key는 config/toll_facilities.yaml의 키와 일치해야 한다.
+  # 택시 전용 요금이 별도로 없으면 passenger(E-ZPass 승용차) 요금을 그대로 쓴다.
+
+  # --- MTA Bridges and Tunnels (2026-01 인상 후 E-ZPass 기준) ---
+  verrazzano_narrows:
+    passenger: 7.46
+  queens_midtown_tunnel:
+    passenger: 7.46
+  hugh_l_carey_tunnel:
+    passenger: 7.46
+  robert_f_kennedy_bridge:
+    passenger: 7.46
+  whitestone_bridge:
+    passenger: 7.46
+  throgs_neck_bridge:
+    passenger: 7.46
+  henry_hudson_bridge:
+    passenger: 3.42
+  marine_parkway_bridge:
+    passenger: 2.80
+  cross_bay_bridge:
+    passenger: 2.80
+
+  # --- Port Authority (2026-01 인상 후, 6개 시설 전부 동일 요금, 피크 기준) ---
+  lincoln_tunnel:
+    passenger: 16.79
+  holland_tunnel:
+    passenger: 16.79
+  george_washington_bridge:
+    passenger: 16.79
+  bayonne_bridge:
+    passenger: 16.79
+  goethals_bridge:
+    passenger: 16.79
+  outerbridge_crossing:
+    passenger: 16.79
