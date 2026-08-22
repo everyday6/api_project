@@ -83,11 +83,10 @@ jobs:
     # nav-api 서빙 API는 ECS/ALB 대신 Lambda + API Gateway로 돈다(ALB가
     # 조직 SCP로 막혀 있었다 — docs/superpowers/plans/2026-08-22-nav-api-lambda-migration.md).
     # 같은 ECR 리포지토리에 lambda- 접두사 태그로 별도 이미지를 올린다.
-    # amd64 Lambda 이미지라 amd64 러너에서 네이티브로 빌드한다 — arm64
-    # 러너(build-and-push job과 달리 여긴 Graviton EC2 제약이 없다)에서
-    # --platform linux/amd64로 크로스 빌드하면 GitHub 호스팅 러너엔 QEMU가
-    # 기본 설치돼 있지 않아 실패한다.
-    runs-on: ubuntu-latest
+    # Lambda 함수 자체를 arm64(Graviton)로 만들 것이므로 arm64 러너에서
+    # 네이티브로 빌드한다 — 크로스 컴파일/QEMU가 필요 없다. x86_64보다
+    # 비용도 ~20% 저렴하다.
+    runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@v4
 
@@ -106,7 +105,7 @@ jobs:
           REGISTRY: ${{ steps.ecr-login.outputs.registry }}
         run: |
           IMAGE="$REGISTRY/$ECR_REPOSITORY"
-          docker build --platform linux/amd64 -f docker/lambda/Dockerfile \
+          docker build --platform linux/arm64 -f docker/lambda/Dockerfile \
             -t "$IMAGE:lambda-${{ github.sha }}" -t "$IMAGE:lambda-latest" .
           docker push "$IMAGE:lambda-${{ github.sha }}"
           docker push "$IMAGE:lambda-latest"
