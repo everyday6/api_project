@@ -17,7 +17,7 @@ import yaml
 
 from src.common import dynamo
 from src.common.logger import get_logger
-from src.toll.silver2 import MAP_CBD_ZONE_SEGMENT_PATH, MAP_TOLL_FACILITY_SEGMENT_PATH
+from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
 
@@ -86,12 +86,12 @@ def write_gold_items(items: list[dict]) -> None:
 
 def build_and_write(
     rate_table_path: Path = Path("data/bronze/toll/toll_rates.yaml"),
-    zone_map_path: Path = MAP_CBD_ZONE_SEGMENT_PATH,
-    facility_map_path: Path = MAP_TOLL_FACILITY_SEGMENT_PATH,
+    lion_cbd_map_path: Path = MAP_LION_CBD_PATH,
+    lion_facility_map_path: Path = MAP_LION_FACILITY_PATH,
 ) -> int:
     rate_table = load_rate_table(rate_table_path)
-    zone_map = pd.read_parquet(str(zone_map_path))
-    facility_map = pd.read_parquet(str(facility_map_path))
+    zone_map = pd.read_parquet(str(lion_cbd_map_path))
+    facility_map = pd.read_parquet(str(lion_facility_map_path))
 
     items = build_gold_items(rate_table, zone_map, facility_map)
     write_gold_items(items)

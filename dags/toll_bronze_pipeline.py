@@ -7,7 +7,7 @@ config/toll_rates.yaml을 고친 뒤에만 값이 바뀌므로 cron 스케줄이
 알림을 보내면, 그걸 본 사람이 파일을 고치고 이 DAG를 수동으로 실행한다.
 
 이 DAG가 끝나면 Asset("toll_bronze_updated")을 내보내서
-toll_gold_pipeline이 자동으로 이어서 돈다.
+toll_silver_gold_pipeline이 자동으로 이어서 돈다.
 """
 
 from datetime import timedelta

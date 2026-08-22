@@ -6,8 +6,9 @@ geometry)를 직접 뽑아 쓴다 — lion 도메인은 현재 Bronze까지만 �
 Silver1/Gold2가 없으므로(다른 브랜치에서 재구축 예정), 이 매핑에 필요한
 최소한(street 이름, geometry)만 이 파일에서 직접 GDB로부터 읽는다.
 
-시설 매칭(다리/터널)은 street 이름 부분일치, zone 매칭(혼잡통행료 대상)은
-공간조인이라 둘 다 "여러 소스를 구조적으로 연결"하는 Silver2 성격이다.
+매핑 이름은 조인하는 두 주체를 그대로 딴다: lion_facility(LION x 다리/터널
+시설명 부분일치), lion_cbd(LION x CBD Geofence 공간조인). 둘 다 "여러
+소스를 구조적으로 연결"하는 Silver2 성격이다.
 """
 
 from __future__ import annotations
@@ -23,7 +24,7 @@ from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_silver2")
 
-MAP_TOLL_FACILITY_SEGMENT_PATH = SILVER2_DIR / "map_toll_facility_segment.parquet"
+MAP_LION_FACILITY_PATH = SILVER2_DIR / "map_lion_facility.parquet"
 
 
 def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
@@ -41,7 +42,7 @@ def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
     return gdf[["segment_id", "street", "geometry"]]
 
 
-def match_toll_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> pd.DataFrame:
+def match_lion_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> pd.DataFrame:
     """segments의 street 컬럼이 facilities_path에 정의된 시설명 패턴을
     포함하면 그 시설로 매칭한다. 매칭 안 되는 segment는 결과에서 빠진다
     (통행료 대상 아님)."""
@@ -58,25 +59,25 @@ def match_toll_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> 
     return pd.DataFrame(rows, columns=["segment_id", "facility_key"])
 
 
-def build_map_toll_facility_segment(
+def build_lion_facility_mapping(
     gdb_path: Path,
     facilities_path: Path = Path("config/toll_facilities.yaml"),
-    out_path: Path = MAP_TOLL_FACILITY_SEGMENT_PATH,
+    out_path: Path = MAP_LION_FACILITY_PATH,
 ) -> str:
     segments = load_lion_segments(gdb_path)
-    result = match_toll_facilities(segments, facilities_path)
+    result = match_lion_facilities(segments, facilities_path)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(str(out_path), index=False)
 
-    logger.info(f"[toll_silver2] 시설 매핑 {len(result)}행 저장 -> {out_path}")
+    logger.info(f"[toll_silver2] lion_facility 매핑 {len(result)}행 저장 -> {out_path}")
     return str(out_path)
 
 
-MAP_CBD_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_cbd_zone_segment.parquet"
+MAP_LION_CBD_PATH = SILVER2_DIR / "map_lion_cbd.parquet"
 
 
-def match_cbd_zone(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -> pd.DataFrame:
+def match_lion_cbd(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -> pd.DataFrame:
     """segments 중 CBD(Congestion Relief Zone) 폴리곤과 교차하는(경계에
     걸친 것 포함) segment_id만 반환한다. intersects를 쓰는 이유: zone
     "안"으로 완전히 들어간 segment뿐 아니라 zone 경계를 지나는 진입
@@ -95,18 +96,18 @@ def match_cbd_zone(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -
     return joined[["segment_id"]].drop_duplicates().reset_index(drop=True)
 
 
-def build_map_cbd_zone_segment(
+def build_lion_cbd_mapping(
     gdb_path: Path,
     cbd_geofence_path: Path = Path("data/bronze/toll/cbd_geofence.geojson"),
-    out_path: Path = MAP_CBD_ZONE_SEGMENT_PATH,
+    out_path: Path = MAP_LION_CBD_PATH,
 ) -> str:
     segments = load_lion_segments(gdb_path)
     zone_polygon = gpd.read_file(cbd_geofence_path)
 
-    result = match_cbd_zone(segments, zone_polygon)
+    result = match_lion_cbd(segments, zone_polygon)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(str(out_path), index=False)
 
-    logger.info(f"[toll_silver2] CBD zone 매핑 {len(result)}행 저장 -> {out_path}")
+    logger.info(f"[toll_silver2] lion_cbd 매핑 {len(result)}행 저장 -> {out_path}")
     return str(out_path)
