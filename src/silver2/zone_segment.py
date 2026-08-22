@@ -19,7 +19,7 @@ from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
 
-LION_SEGMENT_PATH = SILVER1_DIR / "lion" / "dim_segment.parquet"
+LION_SEGMENT_PATH = SILVER1_DIR / "dim_segment.parquet"
 TAXI_ZONE_SHAPEFILE = (
     SILVER1_DIR / "taxi_zone" / "shapefile" / "taxi_zones" / "taxi_zones.shp"
 )
