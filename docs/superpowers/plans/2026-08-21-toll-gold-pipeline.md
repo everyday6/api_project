@@ -772,7 +772,7 @@ git commit -m "feat: 통행료 요금표 월간 확인 알림 DAG 추가"
 
 **Interfaces:**
 - Consumes: `src.toll.bronze.BRONZE_ROOT`(경로 규칙), LION Bronze GDB(`data/bronze/lion/version_date=*/lion/lion.gdb`)
-- Produces: `src.toll.silver2.{MAP_TOLL_FACILITY_SEGMENT_PATH, load_lion_segments, match_toll_facilities, build_map_toll_facility_segment}` (Task 6이 이 매핑을 읽음)
+- Produces: `src.toll.silver2.{MAP_LION_FACILITY_PATH, load_lion_segments, match_lion_facilities, build_lion_facility_mapping}` (Task 6이 이 매핑을 읽음)
 
 - [x] **Step 1: 실패하는 테스트 작성**
 
@@ -783,10 +783,10 @@ import pandas as pd
 import yaml
 from shapely.geometry import LineString
 
-from src.toll.silver2 import match_toll_facilities
+from src.toll.silver2 import match_lion_facilities
 
 
-def test_match_toll_facilities_matches_by_street_substring(tmp_path):
+def test_match_lion_facilities_matches_by_street_substring(tmp_path):
     segments = gpd.GeoDataFrame({
         "segment_id": ["S1", "S2", "S3"],
         "street": ["LINCOLN TUNNEL", "5 AVENUE", "QUEENS MIDTOWN TUNNEL APPROACH"],
@@ -799,7 +799,7 @@ def test_match_toll_facilities_matches_by_street_substring(tmp_path):
         "queens_midtown_tunnel": {"street_contains": "QUEENS MIDTOWN TUNNEL"},
     }))
 
-    result = match_toll_facilities(segments, facilities_path)
+    result = match_lion_facilities(segments, facilities_path)
 
     assert set(result["segment_id"]) == {"S1", "S3"}
     row_s1 = result[result["segment_id"] == "S1"].iloc[0]
@@ -808,7 +808,7 @@ def test_match_toll_facilities_matches_by_street_substring(tmp_path):
     assert row_s3["facility_key"] == "queens_midtown_tunnel"
 
 
-def test_match_toll_facilities_excludes_non_matching_segments(tmp_path):
+def test_match_lion_facilities_excludes_non_matching_segments(tmp_path):
     segments = gpd.GeoDataFrame({
         "segment_id": ["S1"],
         "street": ["5 AVENUE"],
@@ -818,7 +818,7 @@ def test_match_toll_facilities_excludes_non_matching_segments(tmp_path):
     facilities_path = tmp_path / "toll_facilities.yaml"
     facilities_path.write_text(yaml.dump({"lincoln_tunnel": {"street_contains": "LINCOLN TUNNEL"}}))
 
-    result = match_toll_facilities(segments, facilities_path)
+    result = match_lion_facilities(segments, facilities_path)
 
     assert result.empty
 ```
@@ -856,7 +856,7 @@ from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_silver2")
 
-MAP_TOLL_FACILITY_SEGMENT_PATH = SILVER2_DIR / "map_toll_facility_segment.parquet"
+MAP_LION_FACILITY_PATH = SILVER2_DIR / "map_toll_facility_segment.parquet"
 
 
 def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
@@ -874,7 +874,7 @@ def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
     return gdf[["segment_id", "street", "geometry"]]
 
 
-def match_toll_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> pd.DataFrame:
+def match_lion_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> pd.DataFrame:
     """segments의 street 컬럼이 facilities_path에 정의된 시설명 패턴을
     포함하면 그 시설로 매칭한다. 매칭 안 되는 segment는 결과에서 빠진다
     (통행료 대상 아님)."""
@@ -891,13 +891,13 @@ def match_toll_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> 
     return pd.DataFrame(rows, columns=["segment_id", "facility_key"])
 
 
-def build_map_toll_facility_segment(
+def build_lion_facility_mapping(
     gdb_path: Path,
     facilities_path: Path = Path("config/toll_facilities.yaml"),
-    out_path: Path = MAP_TOLL_FACILITY_SEGMENT_PATH,
+    out_path: Path = MAP_LION_FACILITY_PATH,
 ) -> str:
     segments = load_lion_segments(gdb_path)
-    result = match_toll_facilities(segments, facilities_path)
+    result = match_lion_facilities(segments, facilities_path)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(str(out_path), index=False)
@@ -927,7 +927,7 @@ git commit -m "feat: LION segment 추출 + 다리/터널 시설명 매칭(Silver
 - Modify: `tests/toll/test_silver2.py` (테스트 추가)
 
 **Interfaces:**
-- Produces: `src.toll.silver2.{MAP_CBD_ZONE_SEGMENT_PATH, match_cbd_zone, build_map_cbd_zone_segment}` (Task 6이 이 매핑을 읽음)
+- Produces: `src.toll.silver2.{MAP_LION_CBD_PATH, match_lion_cbd, build_lion_cbd_mapping}` (Task 6이 이 매핑을 읽음)
 
 - [x] **Step 1: 실패하는 테스트 추가**
 
@@ -935,10 +935,10 @@ git commit -m "feat: LION segment 추출 + 다리/터널 시설명 매칭(Silver
 ```python
 from shapely.geometry import Polygon
 
-from src.toll.silver2 import match_cbd_zone
+from src.toll.silver2 import match_lion_cbd
 
 
-def test_match_cbd_zone_keeps_segments_inside_polygon():
+def test_match_lion_cbd_keeps_segments_inside_polygon():
     zone_polygon = gpd.GeoDataFrame(
         {"geometry": [Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])]}
     )
@@ -950,12 +950,12 @@ def test_match_cbd_zone_keeps_segments_inside_polygon():
         ],
     })
 
-    result = match_cbd_zone(segments, zone_polygon)
+    result = match_lion_cbd(segments, zone_polygon)
 
     assert list(result["segment_id"]) == ["INSIDE"]
 
 
-def test_match_cbd_zone_keeps_segments_touching_boundary():
+def test_match_lion_cbd_keeps_segments_touching_boundary():
     zone_polygon = gpd.GeoDataFrame(
         {"geometry": [Polygon([(0, 0), (10, 0), (10, 10), (0, 10)])]}
     )
@@ -965,12 +965,12 @@ def test_match_cbd_zone_keeps_segments_touching_boundary():
         "geometry": [LineString([(10, 5), (15, 5)])],
     })
 
-    result = match_cbd_zone(segments, zone_polygon)
+    result = match_lion_cbd(segments, zone_polygon)
 
     assert list(result["segment_id"]) == ["BOUNDARY"]
 
 
-def test_match_cbd_zone_reprojects_when_crs_differs():
+def test_match_lion_cbd_reprojects_when_crs_differs():
     # CBD Geofence는 위경도(EPSG:4326)로 오고 LION segment는 EPSG:2263(피트)다.
     # 좌표계가 다르면 좌표값 범위 자체가 완전히 달라서(-180~180 vs 수십만 단위)
     # 재투영 없이 조인하면 실제로 안 겹치는 걸로 나온다(실제로 겪은 버그).
@@ -986,27 +986,27 @@ def test_match_cbd_zone_reprojects_when_crs_differs():
         crs="EPSG:4326",
     ).to_crs("EPSG:2263")
 
-    result = match_cbd_zone(segments, zone_polygon)
+    result = match_lion_cbd(segments, zone_polygon)
 
     assert list(result["segment_id"]) == ["INSIDE"]
 ```
 
-> **실행 중 발견한 버그**: 위 테스트 중 처음 두 개(`crs=None`인 단순 GeoDataFrame)만으로는 안 잡히는 버그가 있었다 — 실제 LION(EPSG:2263)과 CBD Geofence(EPSG:4326)로 돌려보니 `gpd.sjoin`이 좌표계 불일치를 경고만 띄우고 **조용히 0건**을 반환했다(에러가 안 나서 더 위험). `test_match_cbd_zone_reprojects_when_crs_differs`로 이 케이스를 재현/고정했고, 아래 `match_cbd_zone` 구현에 CRS 재투영 로직을 추가해서 해결했다.
+> **실행 중 발견한 버그**: 위 테스트 중 처음 두 개(`crs=None`인 단순 GeoDataFrame)만으로는 안 잡히는 버그가 있었다 — 실제 LION(EPSG:2263)과 CBD Geofence(EPSG:4326)로 돌려보니 `gpd.sjoin`이 좌표계 불일치를 경고만 띄우고 **조용히 0건**을 반환했다(에러가 안 나서 더 위험). `test_match_lion_cbd_reprojects_when_crs_differs`로 이 케이스를 재현/고정했고, 아래 `match_lion_cbd` 구현에 CRS 재투영 로직을 추가해서 해결했다.
 
 - [x] **Step 2: 테스트 실패 확인**
 
 Run: `pytest tests/toll/test_silver2.py -v -k cbd_zone`
-Expected: FAIL with `ImportError: cannot import name 'match_cbd_zone'`
+Expected: FAIL with `ImportError: cannot import name 'match_lion_cbd'`
 
 - [x] **Step 3: src/toll/silver2.py에 함수 추가**
 
 `src/toll/silver2.py` 끝에 추가(import문은 파일 상단에 이미 있는 `gpd`/`pd`/`Path`/`SILVER2_DIR`/`logger` 재사용):
 
 ```python
-MAP_CBD_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_cbd_zone_segment.parquet"
+MAP_LION_CBD_PATH = SILVER2_DIR / "map_cbd_zone_segment.parquet"
 
 
-def match_cbd_zone(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -> pd.DataFrame:
+def match_lion_cbd(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -> pd.DataFrame:
     """segments 중 CBD(Congestion Relief Zone) 폴리곤과 교차하는(경계에
     걸친 것 포함) segment_id만 반환한다. intersects를 쓰는 이유: zone
     "안"으로 완전히 들어간 segment뿐 아니라 zone 경계를 지나는 진입
@@ -1025,15 +1025,15 @@ def match_cbd_zone(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -
     return joined[["segment_id"]].drop_duplicates().reset_index(drop=True)
 
 
-def build_map_cbd_zone_segment(
+def build_lion_cbd_mapping(
     gdb_path: Path,
     cbd_geofence_path: Path = Path("data/bronze/toll/cbd_geofence.geojson"),
-    out_path: Path = MAP_CBD_ZONE_SEGMENT_PATH,
+    out_path: Path = MAP_LION_CBD_PATH,
 ) -> str:
     segments = load_lion_segments(gdb_path)
     zone_polygon = gpd.read_file(cbd_geofence_path)
 
-    result = match_cbd_zone(segments, zone_polygon)
+    result = match_lion_cbd(segments, zone_polygon)
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     result.to_parquet(str(out_path), index=False)
@@ -1063,7 +1063,7 @@ git commit -m "feat: CBD Geofence 폴리곤 x LION segment 공간 매칭(Silver2
 - Test: `tests/toll/test_gold.py`
 
 **Interfaces:**
-- Consumes: `src.toll.silver2.{MAP_TOLL_FACILITY_SEGMENT_PATH, MAP_CBD_ZONE_SEGMENT_PATH}`, `src.common.dynamo.{batch_write_items, get_value}`
+- Consumes: `src.toll.silver2.{MAP_LION_FACILITY_PATH, MAP_LION_CBD_PATH}`, `src.common.dynamo.{batch_write_items, get_value}`
 - Produces: `src.toll.gold.{TYPE_CONGESTION, TYPE_ROAD_TOLL, load_rate_table, build_gold_items, write_gold_items, get_toll_value}` (서빙 API가 `get_toll_value`를 호출)
 
 - [x] **Step 1: 실패하는 테스트 작성**
@@ -1159,7 +1159,7 @@ import yaml
 
 from src.common import dynamo
 from src.common.logger import get_logger
-from src.toll.silver2 import MAP_CBD_ZONE_SEGMENT_PATH, MAP_TOLL_FACILITY_SEGMENT_PATH
+from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
 
@@ -1228,8 +1228,8 @@ def write_gold_items(items: list[dict]) -> None:
 
 def build_and_write(
     rate_table_path: Path = Path("data/bronze/toll/toll_rates.yaml"),
-    zone_map_path: Path = MAP_CBD_ZONE_SEGMENT_PATH,
-    facility_map_path: Path = MAP_TOLL_FACILITY_SEGMENT_PATH,
+    zone_map_path: Path = MAP_LION_CBD_PATH,
+    facility_map_path: Path = MAP_LION_FACILITY_PATH,
 ) -> int:
     rate_table = load_rate_table(rate_table_path)
     zone_map = pd.read_parquet(str(zone_map_path))
@@ -1299,10 +1299,10 @@ git commit -m "feat: 통행료 Gold 계산 + DynamoDB 적재 + 서빙 조회 함
 
 **Files:**
 - Create: `dags/toll_bronze_pipeline.py`
-- Create: `dags/toll_gold_pipeline.py`
+- Create: `dags/toll_silver_gold_pipeline.py`
 
 **Interfaces:**
-- Consumes: `src.toll.bronze.{upload_rates, upload_facilities, upload_cbd_geofence}`, `src.toll.silver2.{build_map_toll_facility_segment, build_map_cbd_zone_segment}`, `src.toll.gold.build_and_write`
+- Consumes: `src.toll.bronze.{upload_rates, upload_facilities, upload_cbd_geofence}`, `src.toll.silver2.{build_lion_facility_mapping, build_lion_cbd_mapping}`, `src.toll.gold.build_and_write`
 
 - [x] **Step 1: dags/toll_bronze_pipeline.py 작성**
 
@@ -1317,7 +1317,7 @@ config/toll_rates.yaml을 고친 뒤에만 값이 바뀌므로 cron 스케줄이
 실행한다.
 
 이 DAG가 끝나면 Asset("toll_bronze_updated")을 내보내서
-toll_gold_pipeline이 자동으로 이어서 돈다.
+toll_silver_gold_pipeline이 자동으로 이어서 돈다.
 """
 
 from datetime import timedelta
@@ -1371,11 +1371,11 @@ def toll_bronze_pipeline():
 toll_bronze_pipeline()
 ```
 
-- [x] **Step 2: dags/toll_gold_pipeline.py 작성**
+- [x] **Step 2: dags/toll_silver_gold_pipeline.py 작성**
 
 ```python
 """
-DAG: toll_gold_pipeline
+DAG: toll_silver_gold_pipeline
 
 toll_bronze_pipeline이 요금표/시설목록/CBD 폴리곤을 갱신할 때마다
 (Asset("toll_bronze_updated") 트리거) Silver2 매핑을 다시 만들고 Gold
@@ -1399,7 +1399,7 @@ default_args = {
 
 
 @dag(
-    dag_id="toll_gold_pipeline",
+    dag_id="toll_silver_gold_pipeline",
     description="통행료 Silver2 매핑 + Gold 계산 (toll_bronze_pipeline Asset 트리거)",
     schedule=[Asset("toll_bronze_updated")],
     start_date=pendulum.datetime(2026, 8, 1),
@@ -1408,31 +1408,31 @@ default_args = {
     default_args=default_args,
     tags=["toll", "asset-triggered"],
 )
-def toll_gold_pipeline():
+def toll_silver_gold_pipeline():
 
     @task(task_id="build_facility_mapping")
     def build_facility_mapping():
         from pathlib import Path
 
         from src.common.config import BRONZE_DIR
-        from src.toll.silver2 import build_map_toll_facility_segment
+        from src.toll.silver2 import build_lion_facility_mapping
 
         gdb_candidates = sorted((BRONZE_DIR / "lion").glob("version_date=*/lion/lion.gdb"))
         if not gdb_candidates:
             raise FileNotFoundError("LION Bronze GDB를 찾을 수 없습니다 — lion_pipeline DAG를 먼저 실행하세요.")
-        return build_map_toll_facility_segment(gdb_path=Path(gdb_candidates[-1]))
+        return build_lion_facility_mapping(gdb_path=Path(gdb_candidates[-1]))
 
     @task(task_id="build_zone_mapping")
     def build_zone_mapping():
         from pathlib import Path
 
         from src.common.config import BRONZE_DIR
-        from src.toll.silver2 import build_map_cbd_zone_segment
+        from src.toll.silver2 import build_lion_cbd_mapping
 
         gdb_candidates = sorted((BRONZE_DIR / "lion").glob("version_date=*/lion/lion.gdb"))
         if not gdb_candidates:
             raise FileNotFoundError("LION Bronze GDB를 찾을 수 없습니다 — lion_pipeline DAG를 먼저 실행하세요.")
-        return build_map_cbd_zone_segment(gdb_path=Path(gdb_candidates[-1]))
+        return build_lion_cbd_mapping(gdb_path=Path(gdb_candidates[-1]))
 
     @task(task_id="build_and_write_gold")
     def build_and_write_gold(facility_map_path: str, zone_map_path: str):
@@ -1450,7 +1450,7 @@ def toll_gold_pipeline():
     build_and_write_gold(facility_map, zone_map)
 
 
-toll_gold_pipeline()
+toll_silver_gold_pipeline()
 ```
 
 - [x] **Step 3: 두 DAG 모두 smoke import 확인**
@@ -1458,7 +1458,7 @@ toll_gold_pipeline()
 ```bash
 python -c "
 import dags.toll_bronze_pipeline
-import dags.toll_gold_pipeline
+import dags.toll_silver_gold_pipeline
 print('OK')
 "
 ```
@@ -1467,7 +1467,7 @@ Expected: `OK` 출력, ImportError 없음. (Airflow가 로컬에 없으면 `dock
 - [x] **Step 4: 커밋**
 
 ```bash
-git add dags/toll_bronze_pipeline.py dags/toll_gold_pipeline.py
+git add dags/toll_bronze_pipeline.py dags/toll_silver_gold_pipeline.py
 git commit -m "feat: 통행료 Bronze DAG + Asset 트리거 Gold DAG 연결"
 ```
 
@@ -1476,7 +1476,15 @@ git commit -m "feat: 통행료 Bronze DAG + Asset 트리거 Gold DAG 연결"
 ## 완료 후 확인 사항
 
 - [x] `docker compose up -d dynamodb-local` 후 `docker compose exec airflow-scheduler airflow dags trigger toll_bronze_pipeline`로 전체 파이프라인이 끝까지 도는지 수동 확인
-  — **막힘**: DAG는 정상 등록되고(`airflow dags list-import-errors` 클린) 트리거도 큐에 들어가지만, 스케줄러가 태스크를 워커에 할당을 안 해서 `queued` 상태에서 안 넘어감. Celery 워커 자체는 정상(연결됨, active task 0개). 워커 로그 확인 결과 2026-08-21 오전 이후 이 로컬 환경에서 `construction_pipeline` 등 기존 스케줄된 DAG도 전혀 실행되지 않고 있었음 — **이 플랜과 무관한, 이 로컬 Airflow 환경의 기존 스케줄러 이슈**로 판단. scheduler/worker 재시작으로도 해결 안 됨. 별도로 조사 필요.
-  — 대신 Bronze/Silver2/Gold 각 함수는 Task 2~6에서 실제 데이터로 개별 검증 완료(문서 내 각 태스크의 "실행 중 발견한 이슈" 참고), DAG 파일 자체는 Python import + Airflow 파싱 레벨까지 검증함.
+  — ~~막힘: ... 별도로 조사 필요~~ **(정정, 원인 확인/해결됨)**: 처음엔 "스케줄러가 고장났다"로 오판했으나 실제 원인은 두 가지였다. (1) Airflow 메타데이터 DB에 이미 지운 도메인(`construction_pipeline` 등)의 실행 기록이 총 2,249건 orphan으로 남아있었음 — `airflow dags delete -y <dag_id>`로 정리(진짜 부채였음, 우리 nav-domain-cleanup 때 DB 정리를 안 해서 생김). (2) 새로 만든 DAG가 **기본적으로 paused 상태**였는데, DAG가 DB에 등록되기 전에 `unpause`를 시도해서 무효였던 걸 "환경 이슈"로 착각함. DAG 등록 후 다시 `airflow dags unpause`하니 정상적으로 전체 파이프라인이 끝까지 성공했다.
+  — Bronze/Silver2/Gold 각 함수는 Task 2~6에서 실제 데이터로 개별 검증 완료(문서 내 각 태스크의 "실행 중 발견한 이슈" 참고), 이제 DAG 트리거를 통한 end-to-end 실행도 확인됨.
 - [x] `python -c "from src.toll.gold import get_toll_value; print(get_toll_value('아는_다리_세그먼트_id', 5))"`로 실제 값이 나오는지 확인 (Task 6에서 완료 — Lincoln Tunnel segment $16.79, CBD zone segment $0.75)
 - [x] Task 2의 CBD Geofence URL, 요금표 금액 두 TODO를 실제 값으로 교체했는지 확인 (완료)
+
+## 사후 리팩터: 이름 정리 (2026-08-22)
+
+DAG 이름과 실제 하는 일이 안 맞는다는 지적으로 아래처럼 이름을 바꿨다:
+- `dags/toll_gold_pipeline.py` → `dags/toll_silver_gold_pipeline.py`(`dag_id`도 동일하게 변경) — 이 DAG가 실제로는 Silver2 매핑 + Gold 계산을 둘 다 하는데 "gold"만 붙어있어서 헷갈림
+- 매핑 관련 이름에 조인하는 두 주체를 명시: `MAP_TOLL_FACILITY_SEGMENT_PATH`→`MAP_LION_FACILITY_PATH`, `MAP_CBD_ZONE_SEGMENT_PATH`→`MAP_LION_CBD_PATH`, `match_toll_facilities`→`match_lion_facilities`, `build_map_toll_facility_segment`→`build_lion_facility_mapping`, `match_cbd_zone`→`match_lion_cbd`, `build_map_cbd_zone_segment`→`build_lion_cbd_mapping`
+
+이 문서의 위 태스크 본문 코드 블록들은 전부 새 이름으로 갱신했다.
