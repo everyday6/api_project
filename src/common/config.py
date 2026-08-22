@@ -295,6 +295,11 @@ if APP_ENV == "local":
 else:
     EMR_JOBS_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/emr-jobs")
 
+# EMR Serverless job이 spark.archives로 실어가는 패키징된 파이썬 venv
+# (pandas/geopandas/shapely/pyproj 등 서드파티 의존성). requirements.txt가
+# 바뀌면 scripts/package_emr_dependencies.sh로 다시 만들어 올려야 한다.
+EMR_PYTHON_ENV_S3_PATH = EMR_JOBS_DIR / "python-env" / "pyspark_deps.tar.gz"
+
 # ==========================
 # 속도(speed) - LION 매핑 설정
 # ==========================

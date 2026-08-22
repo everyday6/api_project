@@ -6,6 +6,15 @@ Airflow worker 프로세스 안에서 SparkSession을 직접 여는 대신, 변�
 src/ 전체를 zip으로 묶어 --py-files로 넘겨서, 잡 스크립트가 src.tlc.* 등
 기존 순수 변환 함수를 그대로 import해서 쓸 수 있게 한다 — 변환 로직을
 spark_jobs 쪽에 복제하지 않기 위함이다.
+
+우리 Spark job(nav_length_job.py, nav_time_job.py 등)은 pandas/geopandas/
+shapely/pyproj/cloudpathlib 같은 서드파티 라이브러리도 쓰는데, EMR
+Serverless 기본 이미지에는 이게 없다. --py-files는 순수 파이썬 코드만
+배포하고 패키지를 설치해주지 않으므로, venv-pack으로 미리 패키징해둔
+파이썬 환경(scripts/package_emr_dependencies.sh로 빌드/업로드)을
+spark.archives로 같이 실어서 드라이버/executor가 그 환경의 python을
+쓰게 한다(AWS 공식 권장 방식). 자세한 배경은
+.superpowers/sdd/final-review-c3-report.md 참고.
 """
 
 from __future__ import annotations
@@ -24,6 +33,7 @@ from src.common.config import (
     EMR_APPLICATION_ID,
     EMR_JOB_ROLE_ARN,
     EMR_JOBS_DIR,
+    EMR_PYTHON_ENV_S3_PATH,
     PROJECT_ROOT,
     TMP_DIR,
 )
@@ -103,7 +113,12 @@ def run_spark_job(
             "sparkSubmit": {
                 "entryPoint": entry_point_s3,
                 "entryPointArguments": entry_point_args,
-                "sparkSubmitParameters": f"--py-files {src_bundle_s3}",
+                "sparkSubmitParameters": (
+                    f"--py-files {src_bundle_s3} "
+                    f"--conf spark.archives={EMR_PYTHON_ENV_S3_PATH}#environment "
+                    f"--conf spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python "
+                    f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python"
+                ),
             }
         },
     )
