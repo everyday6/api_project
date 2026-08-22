@@ -1,25 +1,27 @@
 """
 DAG: segment_length_pipeline (type2 — 길이)
 
-LION 도로망에서 세그먼트별 길이를 뽑아 DynamoDB(SegmentMetricsType2)에
-upsert한다. 6개월 주기(LION 정식 릴리즈 주기)로 스케줄하되, 매번 확인해서
-신규 릴리즈가 없으면 나머지 태스크를 건너뛴다(설계 문서 8절).
+LION 세그먼트 길이를 DynamoDB(SegmentMetricsType2)에 upsert한다.
 
-LION 파싱(ogr2ogr)은 GDAL CLI 의존이라 Airflow worker에서 돌리고, 순수
-필터/포맷 연산(Gold1/Gold2)만 EMR Serverless Spark job으로 제출한다.
+LION 원본 다운로드/정제(Silver1 dim_segment)는 lion_pipeline이 담당한다 -
+예전엔 이 파이프라인도 독자적으로 같은 LION zip을 받아 같은
+dim_segment.parquet를 만들었는데(중복), 이제 lion_pipeline이 Silver1을
+발행할 때 emit하는 lion_dim_segment_ready Asset에 반응해서 is_routable
+계산(Gold2)과 DynamoDB 반영만 한다.
+
+LION 파싱은 이제 필요 없어 GDAL 의존이 사라졌고, Gold2/EMR 제출만 남는다.
 """
 
 import uuid
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag, task
+from airflow.sdk import Asset
 
 from src.common.alerts import notify_slack_failure
 from src.common.config import DYNAMODB_TABLE_TYPE2, EMR_JOBS_DIR, PROJECT_ROOT
 from src.common.emr_serverless import read_json_result, run_spark_job
-from src.lion.bronze import check_new_lion_release, ingest_lion
 from src.lion.gold2 import build_dim_segment, validate_dim_segment
-from src.lion.silver1 import build_dim_segment_base, validate_dim_segment_base
 
 default_args = {
     "retries": 3,
@@ -29,8 +31,8 @@ default_args = {
 
 @dag(
     dag_id="segment_length_pipeline",
-    description="type2(길이) — LION 세그먼트 길이를 DynamoDB에 upsert",
-    schedule="0 5 1 1,7 *",  # 1월/7월 1일 새벽 5시 (LION 반년 릴리즈 주기에 맞춤)
+    description="type2(길이) — LION 세그먼트 길이를 DynamoDB에 upsert (lion_pipeline Asset 트리거)",
+    schedule=Asset("lion_dim_segment_ready"),
     start_date=datetime(2026, 1, 1),
     catchup=False,
     max_active_runs=1,
@@ -40,24 +42,8 @@ default_args = {
 )
 def segment_length_pipeline():
 
-    @task.short_circuit
-    def check_new_release() -> bool:
-        return check_new_lion_release()
-
     @task
-    def ingest() -> str:
-        # {{ ds }}를 넘기지 않는다 - 수동 트리거(logical_date 없음)에서
-        # Jinja가 UndefinedError로 죽는다. ingest_lion()은 인자 없으면
-        # 실행 시점의 실제 날짜로 태깅한다.
-        return ingest_lion()
-
-    @task
-    def build_silver1(_bronze_path: str) -> str:
-        path = build_dim_segment_base()
-        return validate_dim_segment_base(path)
-
-    @task
-    def build_gold2_lion(_silver1_path: str) -> str:
+    def build_gold2_lion() -> str:
         path = build_dim_segment()
         return validate_dim_segment(path)
 
@@ -78,12 +64,7 @@ def segment_length_pipeline():
 
         return read_json_result(str(output_s3))
 
-    new_release = check_new_release()
-    bronze_path = ingest()
-    bronze_path.set_upstream(new_release)
-
-    silver1_path = build_silver1(bronze_path)
-    gold2_lion_path = build_gold2_lion(silver1_path)
+    gold2_lion_path = build_gold2_lion()
     submit_nav_length_job(gold2_lion_path)
 
 
