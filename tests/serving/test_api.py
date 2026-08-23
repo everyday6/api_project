@@ -52,7 +52,7 @@ def test_dynamodb_resource_uses_short_operational_timeouts(monkeypatch):
         calls.append((service_name, kwargs))
         return expected_resource
 
-    monkeypatch.setattr(api, "DYNAMODB_NAV_TABLE", "navigation-values")
+    monkeypatch.setattr(api, "DYNAMODB_TABLE_TYPE3", "navigation-values")
     monkeypatch.setattr(api.boto3, "resource", fake_resource)
 
     assert api.get_dynamodb_resource() is expected_resource
