@@ -1,4 +1,4 @@
-"""Taxi Zone Bronze를 검증해 S3 Silver1 참조 데이터로 승격한다."""
+"""Taxi Zone Bronze(Shapefile)를 검증해 S3 Silver1 참조 데이터로 승격한다."""
 
 from __future__ import annotations
 
@@ -8,7 +8,7 @@ import subprocess
 import tempfile
 from pathlib import Path
 
-import pandas as pd
+from airflow.exceptions import AirflowSkipException
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
@@ -40,23 +40,6 @@ def _stage_shapefile_locally(shapefile_path, work_dir: Path) -> Path:
     return local_shapefile
 
 
-def validate_taxi_zone_lookup(path) -> str:
-    """lookup의 필수 컬럼, LocationID 유일성, 행 수를 검증한다."""
-
-    frame = pd.read_parquet(str(path))
-    required = {"LocationID", "Borough", "Zone", "service_zone"}
-    missing = required - set(frame.columns)
-    if missing:
-        raise ValueError(f"필수 컬럼 없음: {missing}")
-    if frame["LocationID"].isna().any():
-        raise ValueError("LocationID NULL 발생")
-    if not frame["LocationID"].is_unique:
-        raise ValueError("LocationID 중복 발생")
-    if not 250 <= len(frame) <= 280:
-        raise ValueError(f"행 수가 예상 범위(250~280) 밖입니다: {len(frame)}")
-    return str(path)
-
-
 def validate_taxi_zone_shapefile(shapefile_dir) -> str:
     """Shapefile을 실제로 열어 feature 수를 검증한다."""
 
@@ -81,27 +64,33 @@ def validate_taxi_zone_shapefile(shapefile_dir) -> str:
     return str(shapefile_dir)
 
 
-def build(bronze_root=BRONZE_ROOT, silver1_root=SILVER1_ROOT) -> str:
-    """검증을 통과한 lookup과 Shapefile 원본을 Silver1에 복사한다."""
+def build(shapefile_result: dict, bronze_root=BRONZE_ROOT, silver1_root=SILVER1_ROOT) -> str:
+    """검증을 통과한 Shapefile 원본을 Silver1에 복사한다.
 
-    lookup_path = bronze_root / "lookup" / "taxi_zone_lookup.parquet"
+    shapefile_result는 ingest_taxi_zone_shapefile의 반환값(XCom)이다.
+    원본이 안 바뀌었으면(changed=False) Silver1을 다시 만들 필요도,
+    Asset("taxi_zone_silver1_updated")를 emit할 필요도 없다 — 스킵해서
+    zone_segment_pipeline이 매달 헛돌지 않게 한다.
+    """
+
+    if not shapefile_result.get("changed", True):
+        raise AirflowSkipException(
+            "Taxi Zone 원본이 안 바뀌어 Silver1 재생성을 건너뜁니다"
+        )
+
     shapefile_dir = bronze_root / "shapefile"
-    validate_taxi_zone_lookup(lookup_path)
     validate_taxi_zone_shapefile(shapefile_dir)
 
     silver1_root.mkdir(parents=True, exist_ok=True)
-    silver_lookup = silver1_root / "taxi_zone_lookup.parquet"
     silver_shapes = silver1_root / "shapefile"
 
-    if isinstance(lookup_path, Path):
-        shutil.copy2(lookup_path, silver_lookup)
+    if isinstance(shapefile_dir, Path):
         shutil.copytree(shapefile_dir, silver_shapes, dirs_exist_ok=True)
     else:
-        lookup_path.copy(silver_lookup)
         shapefile_dir.copytree(silver_shapes)
 
     expected_shape = silver_shapes / "taxi_zones" / "taxi_zones.shp"
-    if not silver_lookup.exists() or not expected_shape.exists():
+    if not expected_shape.exists():
         raise RuntimeError(f"Taxi Zone Silver1 저장 검증 실패: {silver1_root}")
 
     logger.info("Taxi Zone Silver1 저장 완료: %s", silver1_root)
