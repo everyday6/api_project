@@ -23,7 +23,7 @@ from src.common.dynamodb import get_table
 from src.common.logger import get_logger
 from src.common.downloader import get_recent_service_months
 from src.common.spark import to_spark_path
-from src.silver2.zone_segment import current_mapping_version
+from src.silver2.zone_segment import MAP_ZONE_SEGMENT_VERSION_PATH, current_mapping_version
 from src.tlc.emr import run_tlc_emr_operation
 from src.tlc.gold2 import (
     TYPE3_META_SEGMENT_ID,
@@ -276,6 +276,12 @@ def publish_type3_rolling_values(publish_plan: dict) -> dict:
             "publish_plan": publish_plan,
             "daily_root": str(TYPE3_DAILY_ROOT),
             "mapping_path": str(MAP_ZONE_SEGMENT_PATH),
+            # EMR Serverless 컨테이너는 Airflow와 별개 환경이라 S3_BUCKET_DATA
+            # 같은 .env 값이 안 넘어간다 - EMR 쪽에서 current_mapping_version()을
+            # 인자 없이 부르면 SILVER2_DIR가 버킷명 없이(None) 잘못 계산돼서
+            # "s3://None/..." 경로로 타임아웃난다(실제로 겪은 장애). Airflow
+            # 쪽에서 이미 올바르게 계산된 경로를 문자열로 그대로 넘긴다.
+            "mapping_version_path": str(MAP_ZONE_SEGMENT_VERSION_PATH),
             "table_name": DYNAMODB_TABLE_TYPE3,
             "rolling_weeks": TLC_TYPE3_ROLLING_WEEKS,
             "mapping_version": publish_plan.get("mapping_version"),
