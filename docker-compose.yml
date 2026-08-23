@@ -48,7 +48,7 @@ x-airflow-env: &airflow-env
   AWS_REGION: ${AWS_REGION}
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
   DYNAMODB_NAV_TABLE: ${DYNAMODB_NAV_TABLE}
-  TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-12}
+  TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-8}
 
   # src/common/dynamo.py(nav 골드 서빙 공용 클라이언트)의 기본값
   # "http://localhost:8002"는 호스트(venv)에서 직접 돌릴 때만 맞다 —
