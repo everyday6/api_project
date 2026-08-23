@@ -14,13 +14,13 @@ Validate
     ↓
 Bronze
     ↓
-Validate (Great Expectations)
+Validate (Great Expectations, EMR Serverless)
     ↓
-Silver1
+Silver1 (EMR Serverless)
     ↓
-Zone 날짜별 Type 3 (S3 Gold2)
+Zone 날짜별 Type 3 (EMR Serverless → S3 Gold2)
     ↓
-Zone 최근 12주 요일별 평균 → Segment 매핑 → DynamoDB
+Zone 최근 12주 요일별 평균 → Segment 매핑 → DynamoDB (EMR Serverless)
 
 신규 파일이 없는 날은 각 단계가 빈 목록에 대해 실행되어
 아무 일도 하지 않고 정상 종료된다.

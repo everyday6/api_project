@@ -1519,3 +1519,19 @@ cron)이 Asset을 하나도 안 내보내서, `toll_silver_gold_pipeline`은 요
 `schedule`을 `Asset("toll_bronze_updated") | Asset("lion_bronze_updated")`로
 변경(리스트로 넘기면 AND로 해석돼서 둘 다 갱신돼야 트리거되므로 반드시
 `|` 연산자로 OR을 명시해야 함 — 실제로 확인).
+
+## 사후 리팩터: type=4/5 통합 (2026-08-23)
+
+혼잡통행료(type=4)와 도로통행료(type=5)를 원래 별개 타입으로 저장했는데,
+한 segment가 CBD zone 안이면서 동시에 다리/터널 시설이기도 한 경우(zone
+진입 지점의 다리 segment 등) 두 조건이 서로 독립이라 실제로 겹칠 수
+있다는 게 확인됐다 — 이 경우 클라이언트가 "이 segment를 지나는 데 드는
+통행료 총액"을 알려면 매번 type 4/5를 둘 다 조회해서 더해야 했다.
+
+"택시가 이 segment를 지나는 데 드는 통행료 총액"이 실제로 필요한 값이므로
+`build_gold_items`에서 미리 합산해 `TYPE_TOLL=4` 하나로 합쳤다(`TYPE_ROAD_TOLL=5`
+제거) — nav-gold 전체 설계(시간=1/길이=2/수요=3/통행료=4)의 4타입 구성과도
+맞다. `get_toll_value(segment_id)`도 `toll_type` 인자를 없앴다.
+
+실제 데이터로 세 케이스 다 확인: zone만 걸린 segment(0.75), 시설만 걸린
+segment(7.46), 둘 다 겹치는 segment(0.75+16.79=17.54, 합산 정확히 확인).
