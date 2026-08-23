@@ -72,12 +72,6 @@ RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 # 때문이다(자세한 배경은 docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md).
 DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
 
-# APP_ENV=local이면 docker-compose의 dynamodb-local(호스트 포트 8002)에
-# 붙는다. 컨테이너 안에서 도는 스크립트/DAG는 LOCAL_RDS_HOST와 동일한
-# 이유로 서비스명("dynamodb-local")을 써야 하므로 환경변수로 덮어쓸 수
-# 있게 둔다.
-DYNAMO_LOCAL_ENDPOINT = os.getenv("DYNAMO_LOCAL_ENDPOINT", "http://localhost:8002")
-
 # ==========================
 # EMR Serverless (Spark 잡 실행) 설정
 # ==========================
@@ -148,13 +142,6 @@ DYNAMODB_TABLE_TYPE1 = os.getenv("DYNAMODB_TABLE_TYPE1", "SegmentMetricsType1")
 DYNAMODB_TABLE_TYPE2 = os.getenv("DYNAMODB_TABLE_TYPE2", "SegmentMetricsType2")
 DYNAMODB_TABLE_TYPE3 = os.getenv("DYNAMODB_TABLE_TYPE3", "SegmentMetricsType3")
 DYNAMODB_TABLE_TYPE4 = os.getenv("DYNAMODB_TABLE_TYPE4", "SegmentMetricsType4")
-
-# APP_ENV=local이면 dynamodb-local 컨테이너를 가리킨다. aws(EC2)에서는 빈 값으로
-# 둬서 boto3가 기본 리전 엔드포인트를 쓰게 한다(다른 AWS 자격증명 설정과 동일한
-# 패턴 — 여기서 없다고 에러내지 않는다, 실제 클라이언트 생성 시점에서만 확인).
-DYNAMODB_ENDPOINT_URL = (
-    "http://dynamodb-local:8000" if APP_ENV == "local" else None
-)
 
 # Fallback 체인(설계 문서 7절)에서 쓰는 예약 키.
 # GLOBAL_PARTITION_KEY: 실제 segment_id가 아닌 예약된 PK — 배포 시점에 수동으로
