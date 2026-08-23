@@ -215,3 +215,25 @@ def test_resolve_time_values_circuit_breaker_bounds_dynamodb_calls():
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 10
     assert mock_batch.call_count < 3 * len(segment_ids)
+
+
+def test_resolve_time_values_opens_circuit_when_time_budget_exceeded():
+    # 호출이 전부 성공해도(장애 아님) 세그먼트가 많아 순차 호출이 쌓이면
+    # 응답이 Lambda 타임아웃을 넘길 수 있다(실측 확인됨). 남은 시간이
+    # 얼마 안 되면 성공/실패와 무관하게 회로를 열어 남은 세그먼트는
+    # DynamoDB를 더 안 건드리고 코드 상수로 채워야 한다.
+    def fake_batch_get_items(table_name, keys):
+        return {
+            (key["segment_id"], key["sk"]): {"value": 111}
+            for key in keys
+            if key["segment_id"] in ("1", "2") and key["sk"] == "1200"
+        }
+
+    with patch.object(nav_lookup, "batch_get_items", side_effect=fake_batch_get_items) as mock_batch, \
+         patch.object(nav_lookup.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 100.0]):
+        result = nav_lookup.resolve_segment_values(["1", "2", "3", "4"], 1, "12:00")
+
+    assert result == [111, 111, nav_lookup._HARDCODED_DEFAULTS[1], nav_lookup._HARDCODED_DEFAULTS[1]]
+    # 세그먼트 "3"에서 예산 초과가 감지된 시점 이후로는(그 세그먼트 포함)
+    # DynamoDB를 더 안 건드려야 한다 - "1", "2"만 실제 조회됨.
+    assert mock_batch.call_count == 2

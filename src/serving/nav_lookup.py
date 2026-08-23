@@ -19,6 +19,8 @@ Type2(길이)는 시간과 무관해 순서/중복에 영향받지 않는다.
 
 from __future__ import annotations
 
+import time
+
 from src.common.config import (
     AVG_SORT_KEY,
     BUCKET_MINUTES,
@@ -45,6 +47,16 @@ _HARDCODED_DEFAULTS = {1: 45, 2: 300}
 # 호출 자체가 실패하면 남은 세그먼트는 DynamoDB를 더 안 건드리고 곧바로
 # 코드 상수로 채운다.
 _CIRCUIT_BREAKER_THRESHOLD = 3
+
+# 실패가 아니라 "다 성공은 하는데 순차 호출이 너무 많이 쌓이는" 경우를 막는
+# 시간 예산. 세그먼트 500개(허용 상한)로 실측했을 때 Lambda 타임아웃(10초)
+# 을 실제로 넘겨서 500 Internal Server Error가 나는 걸 확인했다 - 실패
+# 기반 circuit breaker만으로는 이 경우(호출은 다 성공하지만 느림)를 못
+# 막는다. 남은 시간이 얼마 안 되면 성공/실패와 무관하게 회로를 열어 남은
+# 세그먼트를 코드 상수로 채운다 - 정확도보다 "무조건 응답"이 우선이다.
+# TODO(팀 검토 필요): Lambda 타임아웃(10초)보다 충분히 낮게 잡은 정성적 값 -
+# Lambda 콘솔에서 타임아웃을 바꾸면 이 값도 같이 검토해야 한다.
+_TIME_BUDGET_SECONDS = 7.0
 
 
 def time_to_bucket(time_str: str) -> str:
@@ -177,6 +189,7 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
     consecutive_failures = 0
     circuit_open = False
     cached_default: int | None = None
+    start_time = time.monotonic()
 
     def get_default() -> int:
         nonlocal cached_default
@@ -185,6 +198,13 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
         return cached_default
 
     for sid in segment_ids:
+        if not circuit_open and time.monotonic() - start_time >= _TIME_BUDGET_SECONDS:
+            circuit_open = True
+            logger.warning(
+                f"시간 예산({_TIME_BUDGET_SECONDS}초) 초과 -> circuit open, "
+                f"남은 세그먼트는 코드 상수로 응답: table={table_name}"
+            )
+
         if circuit_open:
             value = _HARDCODED_DEFAULTS[1]
             values.append(value)
