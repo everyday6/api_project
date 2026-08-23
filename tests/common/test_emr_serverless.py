@@ -58,6 +58,34 @@ def test_run_spark_job_packages_python_env_via_spark_archives(tmp_script):
     assert "spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python" in spark_submit_parameters
 
 
+def test_run_spark_job_caps_worker_resources(tmp_script):
+    """dynamic allocation을 켜둔 채 executor 상한을 안 주면 Spark가 데이터량을
+    보고 자체적으로 executor를 늘려서, 여러 파이프라인 잡이 겹칠 때 계정의
+    동시 사용 vCPU 쿼터를 넘겨버린다(ServiceQuotaExceededException으로 실제
+    겪음 - segment_time_pipeline의 submit_nav_time_job이 이걸로 죽었었다).
+    잡마다 작은 고정 리소스로 상한을 걸어 이 상황을 막는다."""
+    mock_client = MagicMock()
+    mock_client.start_job_run.return_value = {"jobRunId": "run-1"}
+    mock_client.get_job_run.return_value = {"jobRun": {"state": "SUCCESS"}}
+
+    with patch.object(emr_serverless, "_upload_src_bundle", return_value="s3://bucket/src.zip"), \
+         patch.object(emr_serverless, "_upload_script", return_value="s3://bucket/job.py"), \
+         patch.object(emr_serverless.boto3, "client", return_value=mock_client), \
+         patch.object(emr_serverless.time, "sleep"):
+
+        emr_serverless.run_spark_job("test-job", tmp_script, ["--foo", "bar"])
+
+    call_kwargs = mock_client.start_job_run.call_args.kwargs
+    spark_submit_parameters = call_kwargs["jobDriver"]["sparkSubmit"]["sparkSubmitParameters"]
+
+    assert "spark.dynamicAllocation.enabled=false" in spark_submit_parameters
+    assert "spark.executor.instances=2" in spark_submit_parameters
+    assert "spark.executor.cores=1" in spark_submit_parameters
+    assert "spark.executor.memory=2g" in spark_submit_parameters
+    assert "spark.driver.cores=1" in spark_submit_parameters
+    assert "spark.driver.memory=2g" in spark_submit_parameters
+
+
 def test_run_spark_job_raises_on_failure(tmp_script):
     mock_client = MagicMock()
     mock_client.start_job_run.return_value = {"jobRunId": "run-1"}

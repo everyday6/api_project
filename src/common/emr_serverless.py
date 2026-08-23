@@ -123,7 +123,19 @@ def run_spark_job(
                     # (cloudpathlib 등)가 패키징한 venv 없이 실행돼 죽는다.
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_DRIVER_PYTHON=./environment/bin/python "
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python "
-                    f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python"
+                    f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python "
+                    # dynamic allocation을 켜둔 채 상한을 안 주면 Spark가
+                    # 데이터량 보고 알아서 executor를 늘리는데, 여러 파이프라인
+                    # 잡이 겹칠 때 계정의 동시 사용 vCPU 쿼터를 넘겨서
+                    # ServiceQuotaExceededException으로 죽는다(실제로 겪음).
+                    # 우리 잡들(nav_time/nav_length/tlc_pipeline)은 데이터량이
+                    # 작아 이 정도 고정 리소스로 충분하다.
+                    f"--conf spark.dynamicAllocation.enabled=false "
+                    f"--conf spark.executor.instances=2 "
+                    f"--conf spark.executor.cores=1 "
+                    f"--conf spark.executor.memory=2g "
+                    f"--conf spark.driver.cores=1 "
+                    f"--conf spark.driver.memory=2g"
                 ),
             }
         },
