@@ -7,7 +7,7 @@ Gold2 — type1(시간) 최종 산출물 계산 + DynamoDB 포맷/upsert
 나눠 세그먼트별 통행시간(초)을 구한다. 세그먼트 전체 평균(AVG)은 세그먼트당
 버킷을 한 번에 하나씩만 계산하는 구조에 맞춰, 이번 실행에서 바뀐 버킷 하나
 만큼만 증분 갱신한다(설계 문서 7절). DynamoDB에는 버킷 값과 AVG를 모두
-upsert한다.
+upsert한다 — 버킷 값에는 원본 데이터 날짜(collected_date)도 함께 저장한다.
 
 단위: SPEED는 mph, length_ft는 feet. 시간(초) = (길이_ft / 5280) / 속도_mph * 3600.
 """
@@ -102,6 +102,10 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
 
 def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     """버킷별 값 + 세그먼트별 평균(AVG, 증분 갱신)을 DynamoDB 항목 리스트로 변환한다.
+
+    bucket_df는 compute_time_seconds의 반환값이어야 한다 — segment_id/bucket/
+    time_seconds뿐 아니라 collected_date(DateType) 컬럼도 필수다. 버킷 항목에는
+    collected_date를 ISO 날짜 문자열로 실어 보내고, AVG 항목에는 붙이지 않는다.
 
     AVG는 세그먼트의 (최대 BUCKETS_PER_DAY개) 버킷 전체 평균이어야 하는데,
     이번 실행은 세그먼트당 버킷을 하나만 계산한다. 48개를 매번 다 읽는 대신,
