@@ -102,13 +102,6 @@ def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     return dim_segment
 
 
-def _latest_bronze_version(bronze_root: Path = LION_BRONZE_ROOT) -> Path:
-    versions = sorted(bronze_root.glob("version_date=*"))
-    if not versions:
-        raise FileNotFoundError(f"LION bronze 데이터가 없습니다: {bronze_root}")
-    return versions[-1]
-
-
 def _find_gdb(version_dir: Path) -> Path:
     gdbs = list(version_dir.rglob("*.gdb"))
     if not gdbs:
@@ -145,35 +138,6 @@ def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
         raise RuntimeError(f"ogr2ogr 변환 실패: {result.stderr}")
 
     return out_path
-
-
-def build_dim_segment_base(
-    bronze_root: Path = LION_BRONZE_ROOT,
-    silver1_root: Path = SILVER1_DIR,
-) -> str:
-    """LION 최신 bronze 스냅샷을 읽어 dim_segment Silver1(기본 컬럼) 테이블을 만든다."""
-
-    version_dir = _latest_bronze_version(bronze_root)
-    gdb_path = _find_gdb(version_dir)
-    logger.info(f"[lion_silver] 입력 bronze: {gdb_path}")
-
-    TMP_DIR.mkdir(parents=True, exist_ok=True)
-    with tempfile.TemporaryDirectory(prefix="lion_silver1_", dir=TMP_DIR) as tmp:
-        work_dir = Path(tmp)
-        local_gdb_path = _stage_gdb_locally(gdb_path, work_dir)
-        tmp_csv = work_dir / "lion_flat.csv"
-        _gdb_to_flat_csv(local_gdb_path, tmp_csv)
-
-        raw_df = pd.read_csv(tmp_csv, dtype=str, keep_default_na=False)
-
-    dim_segment = _clean_lion_dataframe(raw_df)
-
-    dim_segment_path = silver1_root / "dim_segment.parquet"
-    silver1_root.mkdir(parents=True, exist_ok=True)
-    dim_segment.to_parquet(str(dim_segment_path), index=False)
-
-    logger.info(f"[lion_silver] dim_segment(Silver1) {len(dim_segment)}행 저장 -> {dim_segment_path}")
-    return str(dim_segment_path)
 
 
 def build_dim_segment_staged(
@@ -287,8 +251,3 @@ def cleanup_dim_segment_staging(
     else:
         run_path.rmtree()
     logger.info("[lion_silver] staging 정리 완료: %s", run_path)
-
-
-if __name__ == "__main__":
-    out = build_dim_segment_base()
-    validate_dim_segment_base(out)
