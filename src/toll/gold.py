@@ -25,11 +25,10 @@ import yaml
 from src.common import dynamodb
 from src.common.config import NAV_GOLD_TABLE
 from src.common.logger import get_logger
+from src.toll.serving import TYPE_TOLL, get_toll_value  # noqa: F401 (하위 호환 재수출)
 from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
-
-TYPE_TOLL = 4
 
 
 def load_rate_table(path: Path = Path("data/bronze/toll/toll_rates.yaml")) -> dict:
@@ -111,13 +110,6 @@ def build_and_write(
     items = build_gold_items(rate_table, zone_map, facility_map)
     write_gold_items(items)
     return len(items)
-
-
-def get_toll_value(segment_id: str) -> float:
-    """서빙 조회 함수. 시설/zone에 해당 안 하는 segment는 0을 반환한다
-    (무결점 응답 원칙 — null/에러 없음)."""
-
-    return dynamodb.get_value(NAV_GOLD_TABLE, segment_id, f"TYPE#{TYPE_TOLL}", default=0)
 
 
 if __name__ == "__main__":

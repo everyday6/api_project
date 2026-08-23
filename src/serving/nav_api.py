@@ -19,7 +19,7 @@ from pydantic import BaseModel, Field
 from src.common.logger import get_logger
 from src.serving.api import get_type3_values
 from src.serving.nav_lookup import resolve_segment_values
-from src.toll.gold import get_toll_value
+from src.toll.serving import get_toll_value
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
 
