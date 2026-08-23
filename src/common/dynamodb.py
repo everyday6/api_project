@@ -23,7 +23,7 @@ from decimal import Decimal
 import boto3
 from botocore.exceptions import ClientError
 
-from src.common.config import AWS_REGION, DYNAMODB_ENDPOINT_URL
+from src.common.config import AWS_REGION
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="dynamodb")
@@ -66,16 +66,8 @@ def _decimals_to_floats(value):
 
 
 def get_dynamodb_resource():
-    """DynamoDB 리소스를 반환한다.
-
-    APP_ENV=local이면 DYNAMODB_ENDPOINT_URL(dynamodb-local 컨테이너)을 쓰고,
-    아니면 기본 AWS 엔드포인트를 쓴다.
-    """
-    kwargs = {"region_name": AWS_REGION}
-    if DYNAMODB_ENDPOINT_URL:
-        kwargs["endpoint_url"] = DYNAMODB_ENDPOINT_URL
-
-    return boto3.resource("dynamodb", **kwargs)
+    """DynamoDB 리소스를 반환한다."""
+    return boto3.resource("dynamodb", region_name=AWS_REGION)
 
 
 def get_table(table_name: str):

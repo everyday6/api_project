@@ -49,14 +49,6 @@ x-airflow-env: &airflow-env
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
   TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-8}
 
-  # src/common/dynamo.py(nav 골드 서빙 공용 클라이언트)의 기본값
-  # "http://localhost:8002"는 호스트(venv)에서 직접 돌릴 때만 맞다 —
-  # 컨테이너 안에서는 localhost가 컨테이너 자기 자신을 가리켜서
-  # dynamodb-local에 연결이 안 된다(EndpointConnectionError로 실제로 겪음).
-  # 컨테이너 안에서는 docker-compose 서비스명 + 내부 포트(8000, 호스트에
-  # 매핑된 8002가 아님)로 접속해야 한다.
-  DYNAMO_LOCAL_ENDPOINT: http://dynamodb-local:8000
-
   # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
   # 4개 타입 전부 같은 DYNAMODB_TABLE_TYPEn 이름/기본값 패턴을 공유한다.
   EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:-}
@@ -389,28 +381,6 @@ services:
 
 
   # =========================================================
-  # DynamoDB Local
-  # nav 골드 데이터셋(segment_id x type 조회) 서빙용. APP_ENV=local이면
-  # 여기 붙고, aws면 실 DynamoDB에 붙는다(src/common/dynamo.py 참고).
-  # -inMemory: 로컬 개발/테스트 DB라 재시작 시 초기화돼도 상관없음
-  # (rds-local의 postgres_data 볼륨과 다르게 영속화 안 함).
-  # =========================================================
-  dynamodb-local:
-    image: amazon/dynamodb-local:2.5.4
-    container_name: traffic-dynamodb-local
-    restart: unless-stopped
-
-    command: >
-      -jar DynamoDBLocal.jar -inMemory -sharedDb
-
-    ports:
-      - "8002:8000"
-
-    networks:
-      - airflow-network
-
-
-  # =========================================================
   # 컨테이너 크래시 감시
   #
   # restart 정책은 "죽으면 다시 살리기"만 할 뿐, 죽었다는 사실 자체는
@@ -431,7 +401,7 @@ services:
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master,traffic-dynamodb-local
+      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master
       POLL_INTERVAL_SECONDS: 30
 
     volumes:
