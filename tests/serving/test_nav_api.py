@@ -1,4 +1,4 @@
-from unittest.mock import call, patch
+from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
@@ -100,8 +100,8 @@ def test_navigation_values_type3_combines_date_and_time_into_datetime():
     mock_type3.assert_called_once_with(["1", "2"], datetime(2026, 8, 23, 14, 30))
 
 
-def test_navigation_values_type4_dispatches_to_get_toll_value_per_segment():
-    with patch("src.serving.nav_api.get_toll_value", side_effect=[2.75, 0.0]) as mock_toll:
+def test_navigation_values_type4_dispatches_to_get_toll_values_as_batch():
+    with patch("src.serving.nav_api.get_toll_values", return_value=[2.75, 0.0]) as mock_toll:
         response = client.post(
             "/api/navigation/values",
             json={"segment_ids": ["1", "2"], "type": 4, "date": "2026-08-23", "time": "12:00"},
@@ -109,7 +109,7 @@ def test_navigation_values_type4_dispatches_to_get_toll_value_per_segment():
 
     assert response.status_code == 200
     assert response.json() == {"value": [2.75, 0.0]}
-    assert mock_toll.call_args_list == [call("1"), call("2")]
+    mock_toll.assert_called_once_with(["1", "2"])
 
 
 def test_navigation_values_rejects_type5():
