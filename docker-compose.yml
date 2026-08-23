@@ -319,52 +319,6 @@ services:
 
 
   # =========================================================
-  # Navigation API
-  #
-  # Airflow 컴포넌트가 아니라 별도 서비스다 (postgres/redis/celery 불필요).
-  # DynamoDB에 미리 계산된 segment별 값을 조회만 하는 내비게이션 FastAPI.
-  # =========================================================
-  navigation-api:
-    <<: *airflow-image
-    build:
-      context: .
-      dockerfile: Dockerfile
-
-    container_name: navigation-api
-
-    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
-    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
-    restart: unless-stopped
-
-    environment:
-      PYTHONPATH: /opt/airflow
-
-      # x-airflow-env를 안 쓰는 별도 서비스라 여기 따로 선언해야 한다.
-      AWS_REGION: ${AWS_REGION}
-      S3_BUCKET_DATA: ${S3_BUCKET_DATA}
-      DYNAMODB_NAV_TABLE: ${DYNAMODB_NAV_TABLE}
-
-    volumes:
-      - ./src:/opt/airflow/src
-      - ./data:/opt/airflow/data
-      - ./config:/opt/airflow/config
-
-    working_dir: /opt/airflow
-
-    ports:
-      - "8000:8000"
-
-    # apache/airflow 베이스 이미지의 기본 entrypoint(/entrypoint)가 명령을
-    # airflow CLI 인자로 해석해버려서, 이 서비스는 그걸 우회해야 uvicorn이 뜬다.
-    entrypoint: []
-    command: >
-      uvicorn src.serving.api:app --host 0.0.0.0 --port 8000
-
-    networks:
-      - airflow-network
-
-
-  # =========================================================
   # Spark Master
   # =========================================================
   spark-master:
@@ -476,7 +430,7 @@ services:
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-api,navigation-spark-master,traffic-dynamodb-local
+      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master,traffic-dynamodb-local
       POLL_INTERVAL_SECONDS: 30
 
     volumes:
