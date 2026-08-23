@@ -23,6 +23,10 @@ import pandas as pd
 from src.common.config import BRONZE_DIR, DATASETS
 from src.common.logger import get_logger
 from src.common.socrata import fetch_all, make_session
+from src.lion.bronze import BRONZE_ROOT as LION_BRONZE_ROOT
+from src.lion.gold2 import DIM_SEGMENT_PATH
+from src.silver2.segment_speed_match import match_links_to_segments
+from src.speed import synthetic
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_bronze")
 
@@ -93,6 +97,41 @@ def has_new_speed_data(bronze_root=BRONZE_ROOT) -> bool:
     return count > 0
 
 
+def _find_latest_lion_gdb(lion_bronze_root=LION_BRONZE_ROOT):
+    version_dirs = sorted(
+        p for p in lion_bronze_root.glob("version_date=*") if (p / "_metadata.txt").exists()
+    )
+    if not version_dirs:
+        raise FileNotFoundError(f"{lion_bronze_root}에 완료된 LION Bronze 스냅샷이 없습니다")
+
+    gdbs = list(version_dirs[-1].rglob("*.gdb"))
+    if not gdbs:
+        raise FileNotFoundError(f"{version_dirs[-1]} 안에 .gdb가 없습니다")
+    return gdbs[0]
+
+
+def _synthesize_uncovered_segments(links_df: pd.DataFrame, data_as_of: str) -> pd.DataFrame:
+    """실제 속도 피드(고정 125개 link)가 커버 안 하는 LION routable
+    세그먼트에 대해 synthetic speed row를 만든다(src/speed/synthetic.py
+    참고) - routable 세그먼트의 92% 이상이 실제 피드와 매칭되는 link가
+    근처에 없다."""
+
+    if not DIM_SEGMENT_PATH.exists():
+        logger.warning("[speed_bronze] dim_segment 없음 - synthetic 보강 스킵")
+        return pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+
+    dim_segment = pd.read_parquet(str(DIM_SEGMENT_PATH))
+    routable = dim_segment[dim_segment["is_routable"]]
+
+    matched = match_links_to_segments(links_df, routable)
+    covered_ids = set(matched["segment_id"])
+    uncovered_ids = set(routable["segment_id"]) - covered_ids
+
+    posted_speed = synthetic.load_posted_speed(_find_latest_lion_gdb())
+
+    return synthetic.build_synthetic_rows(routable, uncovered_ids, posted_speed, data_as_of)
+
+
 def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
     """마커보다 새로운 속도 판독값을 전부 받아 Bronze에 parquet으로 저장하고,
     저장에 성공한 경우에만 마커를 이번 배치의 최댓값(data_as_of)으로
@@ -112,6 +151,11 @@ def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
 
     df = pd.DataFrame(rows)
     max_data_as_of = str(df["data_as_of"].max())
+
+    links_df = df.drop_duplicates("link_id")[["link_id", "link_points"]]
+    synthetic_df = _synthesize_uncovered_segments(links_df, max_data_as_of)
+    if not synthetic_df.empty:
+        df = pd.concat([df, synthetic_df], ignore_index=True)
 
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / f"batch_end={max_data_as_of.replace(':', '')}.parquet"
