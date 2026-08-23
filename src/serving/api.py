@@ -17,7 +17,7 @@ from pydantic import Field, RootModel, field_validator
 
 from src.common.config import (
     AWS_REGION,
-    DYNAMODB_NAV_TABLE,
+    DYNAMODB_TABLE_TYPE3,
     TLC_TYPE3_DOW_NAMES,
     TLC_TYPE3_ID,
 )
@@ -99,8 +99,8 @@ def build_sort_key(type_id: int, requested_at: datetime) -> str:
 
 @lru_cache(maxsize=1)
 def get_dynamodb_resource():
-    if not DYNAMODB_NAV_TABLE:
-        raise RuntimeError("DYNAMODB_NAV_TABLE 환경변수가 필요합니다")
+    if not DYNAMODB_TABLE_TYPE3:
+        raise RuntimeError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
     return boto3.resource(
         "dynamodb",
         region_name=AWS_REGION,
@@ -169,12 +169,12 @@ def get_type3_values(
     """DynamoDB를 조회하고 입력 segment 순서대로 숫자 값을 반환한다."""
 
     sk = build_sort_key(TYPE3_ID, requested_at)
-    resolved_table = table_name or DYNAMODB_NAV_TABLE
+    resolved_table = table_name or DYNAMODB_TABLE_TYPE3
     found: dict[str, float] = {}
 
     try:
         if not resolved_table:
-            raise RuntimeError("DYNAMODB_NAV_TABLE 환경변수가 필요합니다")
+            raise RuntimeError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
         resource = dynamodb or get_dynamodb_resource()
         unique_segments = _unique_in_order(segment_ids)
         for offset in range(0, len(unique_segments), DYNAMODB_BATCH_SIZE):
@@ -206,7 +206,7 @@ def get_type3_values(
 def health() -> dict:
     return {
         "status": "ok",
-        "dynamodb_table_configured": bool(DYNAMODB_NAV_TABLE),
+        "dynamodb_table_configured": bool(DYNAMODB_TABLE_TYPE3),
     }
 
 

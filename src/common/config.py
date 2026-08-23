@@ -38,7 +38,6 @@ APP_ENV = os.getenv("APP_ENV", "aws")
 # AWS에서는 정적 키 대신 EC2 IAM Role로 인증한다.
 AWS_REGION = os.getenv("AWS_REGION")
 S3_BUCKET_DATA = os.getenv("S3_BUCKET_DATA")
-DYNAMODB_NAV_TABLE = os.getenv("DYNAMODB_NAV_TABLE")
 
 if APP_ENV == "local":
     BRONZE_DIR = PROJECT_ROOT / "data" / "bronze"
@@ -78,12 +77,6 @@ DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
 # 이유로 서비스명("dynamodb-local")을 써야 하므로 환경변수로 덮어쓸 수
 # 있게 둔다.
 DYNAMO_LOCAL_ENDPOINT = os.getenv("DYNAMO_LOCAL_ENDPOINT", "http://localhost:8002")
-
-# type4(혼잡통행료)/type5(도로통행료)가 같이 쓰는 toll 전용 테이블.
-# 나머지 세 테이블(TYPE1/TYPE2/NAV_TABLE)과 설정 방식을 통일하기 위해
-# env var로 바꾸되, 기존 하드코딩 값을 기본값으로 유지해 기존 배포에
-# 영향 없게 한다.
-NAV_GOLD_TABLE = os.getenv("NAV_GOLD_TABLE", "nav_gold_values")
 
 # ==========================
 # EMR Serverless (Spark 잡 실행) 설정
@@ -148,9 +141,13 @@ HOTSPOT_INVERSE_DISTANCE_EPSILON_FT = 1.0
 # 타입별로 완전히 분리된 테이블을 쓴다(팀원이 타입별로 독립 개발하기 때문 —
 # 접두사 컨벤션이 아니라 물리적으로 다른 테이블). 자세한 설계 근거는
 # docs/superpowers/specs/2026-08-21-segment-metrics-api-design.md 6절 참고.
+# type3(DYNAMODB_NAV_TABLE)/type4(NAV_GOLD_TABLE)도 원래 각자 다른 이름의
+# env var를 썼는데, 이 네 줄로 이름/기본값 패턴을 통일했다.
 
 DYNAMODB_TABLE_TYPE1 = os.getenv("DYNAMODB_TABLE_TYPE1", "SegmentMetricsType1")
 DYNAMODB_TABLE_TYPE2 = os.getenv("DYNAMODB_TABLE_TYPE2", "SegmentMetricsType2")
+DYNAMODB_TABLE_TYPE3 = os.getenv("DYNAMODB_TABLE_TYPE3", "SegmentMetricsType3")
+DYNAMODB_TABLE_TYPE4 = os.getenv("DYNAMODB_TABLE_TYPE4", "SegmentMetricsType4")
 
 # APP_ENV=local이면 dynamodb-local 컨테이너를 가리킨다. aws(EC2)에서는 빈 값으로
 # 둬서 boto3가 기본 리전 엔드포인트를 쓰게 한다(다른 AWS 자격증명 설정과 동일한

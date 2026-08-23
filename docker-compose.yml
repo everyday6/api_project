@@ -47,7 +47,6 @@ x-airflow-env: &airflow-env
   # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
   AWS_REGION: ${AWS_REGION}
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
-  DYNAMODB_NAV_TABLE: ${DYNAMODB_NAV_TABLE}
   TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-8}
 
   # src/common/dynamo.py(nav 골드 서빙 공용 클라이언트)의 기본값
@@ -59,12 +58,13 @@ x-airflow-env: &airflow-env
   DYNAMO_LOCAL_ENDPOINT: http://dynamodb-local:8000
 
   # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
-  # nav-api 서비스와 동일한 DYNAMODB_TABLE_TYPE1/2 기본값 패턴을 공유한다.
+  # 4개 타입 전부 같은 DYNAMODB_TABLE_TYPEn 이름/기본값 패턴을 공유한다.
   EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:-}
   EMR_JOB_ROLE_ARN: ${EMR_JOB_ROLE_ARN:-}
   DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
   DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
-  NAV_GOLD_TABLE: ${NAV_GOLD_TABLE:-nav_gold_values}
+  DYNAMODB_TABLE_TYPE3: ${DYNAMODB_TABLE_TYPE3:-SegmentMetricsType3}
+  DYNAMODB_TABLE_TYPE4: ${DYNAMODB_TABLE_TYPE4:-SegmentMetricsType4}
 
   PYTHONPATH: /opt/airflow
 

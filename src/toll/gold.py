@@ -23,15 +23,16 @@ import pandas as pd
 import yaml
 
 from src.common import dynamodb
-from src.common.config import NAV_GOLD_TABLE
+from src.common.config import DYNAMODB_TABLE_TYPE4
 from src.common.logger import get_logger
+from src.toll.bronze import BRONZE_ROOT
 from src.toll.serving import TYPE_TOLL, get_toll_value  # noqa: F401 (하위 호환 재수출)
 from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
 
 
-def load_rate_table(path: Path = Path("data/bronze/toll/toll_rates.yaml")) -> dict:
+def load_rate_table(path: Path = BRONZE_ROOT / "toll_rates.yaml") -> dict:
     return yaml.safe_load(Path(path).read_text())
 
 
@@ -93,13 +94,13 @@ def write_gold_items(items: list[dict]) -> None:
     # 원칙이지만, 이 파이프라인은 처음부터 그렇게 짜여 있었고 여기서 빼면
     # 배포 순서(scripts/create_dynamodb_tables.py를 먼저 돌려야 함)에
     # 새로 의존하게 되어 그대로 유지한다. idempotent라 반복 호출해도 안전.
-    dynamodb.ensure_table(NAV_GOLD_TABLE)
-    dynamodb.batch_write_items(NAV_GOLD_TABLE, items)
+    dynamodb.ensure_table(DYNAMODB_TABLE_TYPE4)
+    dynamodb.batch_write_items(DYNAMODB_TABLE_TYPE4, items)
     logger.info(f"[toll_gold] DynamoDB에 {len(items)}개 아이템 적재 완료")
 
 
 def build_and_write(
-    rate_table_path: Path = Path("data/bronze/toll/toll_rates.yaml"),
+    rate_table_path: Path = BRONZE_ROOT / "toll_rates.yaml",
     lion_cbd_map_path: Path = MAP_LION_CBD_PATH,
     lion_facility_map_path: Path = MAP_LION_FACILITY_PATH,
 ) -> int:

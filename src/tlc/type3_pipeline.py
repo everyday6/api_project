@@ -12,7 +12,7 @@ from airflow.decorators import task
 from airflow.exceptions import AirflowSkipException
 
 from src.common.config import (
-    DYNAMODB_NAV_TABLE,
+    DYNAMODB_TABLE_TYPE3,
     GOLD2_DIR,
     SILVER1_DIR,
     SILVER2_DIR,
@@ -195,14 +195,14 @@ def cleanup_type3_staging(published_result: dict) -> None:
 def check_type3_publish_needed(_published_result=None) -> dict:
     """S3 최신 N주와 DynamoDB 메타데이터를 비교해 적재 여부를 판단한다."""
 
-    if not DYNAMODB_NAV_TABLE:
-        raise ValueError("DYNAMODB_NAV_TABLE 환경변수가 필요합니다")
+    if not DYNAMODB_TABLE_TYPE3:
+        raise ValueError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
 
     _, window_start, window_end = select_latest_date_partitions(
         TYPE3_DAILY_ROOT.glob("date=*"),
         TLC_TYPE3_ROLLING_WEEKS * 7,
     )
-    table = get_table(DYNAMODB_NAV_TABLE)
+    table = get_table(DYNAMODB_TABLE_TYPE3)
     response = table.get_item(
         Key={"segment_id": TYPE3_META_SEGMENT_ID, "sk": TYPE3_META_SK},
         ConsistentRead=True,
@@ -230,8 +230,8 @@ def check_type3_publish_needed(_published_result=None) -> dict:
 def publish_type3_rolling_values(publish_plan: dict) -> dict:
     """EMR에서 최근 N주 평균을 계산하고 DynamoDB에 적재한다."""
 
-    if not DYNAMODB_NAV_TABLE:
-        raise ValueError("DYNAMODB_NAV_TABLE 환경변수가 필요합니다")
+    if not DYNAMODB_TABLE_TYPE3:
+        raise ValueError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
 
     daily_path = publish_plan["daily_path"]
     if daily_path != str(TYPE3_DAILY_ROOT):
@@ -243,7 +243,7 @@ def publish_type3_rolling_values(publish_plan: dict) -> dict:
             "publish_plan": publish_plan,
             "daily_root": str(TYPE3_DAILY_ROOT),
             "mapping_path": str(MAP_ZONE_SEGMENT_PATH),
-            "table_name": DYNAMODB_NAV_TABLE,
+            "table_name": DYNAMODB_TABLE_TYPE3,
             "rolling_weeks": TLC_TYPE3_ROLLING_WEEKS,
         },
     )
