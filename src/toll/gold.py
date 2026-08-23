@@ -25,13 +25,14 @@ import yaml
 from src.common import dynamodb
 from src.common.config import NAV_GOLD_TABLE
 from src.common.logger import get_logger
+from src.toll.bronze import BRONZE_ROOT
 from src.toll.serving import TYPE_TOLL, get_toll_value  # noqa: F401 (하위 호환 재수출)
 from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
 
 
-def load_rate_table(path: Path = Path("data/bronze/toll/toll_rates.yaml")) -> dict:
+def load_rate_table(path: Path = BRONZE_ROOT / "toll_rates.yaml") -> dict:
     return yaml.safe_load(Path(path).read_text())
 
 
@@ -99,7 +100,7 @@ def write_gold_items(items: list[dict]) -> None:
 
 
 def build_and_write(
-    rate_table_path: Path = Path("data/bronze/toll/toll_rates.yaml"),
+    rate_table_path: Path = BRONZE_ROOT / "toll_rates.yaml",
     lion_cbd_map_path: Path = MAP_LION_CBD_PATH,
     lion_facility_map_path: Path = MAP_LION_FACILITY_PATH,
 ) -> int:
