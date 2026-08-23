@@ -5,5 +5,6 @@ RUN pip install --no-cache-dir -r requirements-lambda.txt
 
 COPY src/common ${LAMBDA_TASK_ROOT}/src/common
 COPY src/serving ${LAMBDA_TASK_ROOT}/src/serving
+COPY src/toll ${LAMBDA_TASK_ROOT}/src/toll
 
 CMD ["src.serving.lambda_handler.handler"]
