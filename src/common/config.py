@@ -7,7 +7,12 @@ from cloudpathlib import S3Path
 from dotenv import load_dotenv
 
 
-load_dotenv()
+# find_dotenv()의 스택 프레임 추적 방식은 PySpark executor의 worker
+# 프로세스처럼 콜스택이 얕은 곳에서 이 모듈이 import되면 AssertionError로
+# 죽는다(EMR Serverless에서 foreachPartition 안에서 src.common.dynamodb를
+# import할 때 실제로 발생). .env 경로를 직접 넘겨 find_dotenv() 호출 자체를
+# 피한다. 파일이 없으면 조용히 넘어간다(예: EMR 컨테이너에는 .env가 없음).
+load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # TLC 원본 데이터
 BASE_URL = "https://d37ci6vzurychx.cloudfront.net/trip-data"
