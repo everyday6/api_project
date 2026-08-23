@@ -3,7 +3,16 @@ from unittest.mock import MagicMock, patch
 
 import pandas as pd
 
-from src.speed import bronze
+from src.speed import bronze, synthetic
+
+
+def _synthetic_row(link_id="9001"):
+    return {
+        "id": link_id, "speed": "22.00", "travel_time": "10", "status": "0",
+        "data_as_of": "2026-08-21T12:05:00.000", "link_id": link_id, "link_points": "40.0,-73.0",
+        "encoded_poly_line": "", "encoded_poly_line_lvls": "", "owner": "NYC-DOT",
+        "transcom_id": link_id, "borough": "Manhattan", "link_name": "TEST ST",
+    }
 
 
 def test_has_new_speed_data_true_when_count_positive(tmp_path):
@@ -48,11 +57,13 @@ def test_has_new_speed_data_queries_since_marker(tmp_path):
 
 def test_collect_speed_data_saves_parquet_and_writes_marker(tmp_path):
     rows = [
-        {"link_id": "1", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"},
-        {"link_id": "2", "speed": "20.0", "data_as_of": "2026-08-21T12:10:00.000"},
+        {"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"},
+        {"link_id": "2", "link_points": "40.1,-73.1", "speed": "20.0", "data_as_of": "2026-08-21T12:10:00.000"},
     ]
+    empty_synthetic = pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
 
-    with patch.object(bronze, "fetch_all", return_value=rows):
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=empty_synthetic):
         path = bronze.collect_speed_data(bronze_root=tmp_path)
 
     saved = pd.read_parquet(path)
@@ -96,9 +107,11 @@ def test_collect_speed_data_without_marker_uses_recent_bootstrap_not_epoch(tmp_p
 
 
 def test_collect_speed_data_does_not_advance_marker_past_last_written_value(tmp_path):
-    rows = [{"link_id": "1", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"}]
+    rows = [{"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"}]
+    empty_synthetic = pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
 
-    with patch.object(bronze, "fetch_all", return_value=rows):
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=empty_synthetic):
         bronze.collect_speed_data(bronze_root=tmp_path)
 
     assert bronze._read_marker(tmp_path) == "2026-08-21T12:05:00.000"
@@ -108,3 +121,55 @@ def test_collect_speed_data_does_not_advance_marker_past_last_written_value(tmp_
 
     assert second_path == ""
     assert bronze._read_marker(tmp_path) == "2026-08-21T12:05:00.000"
+
+
+def test_collect_speed_data_appends_synthetic_rows(tmp_path):
+    rows = [{"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"}]
+    synthetic_df = pd.DataFrame([_synthetic_row()], columns=synthetic.SPEED_COLUMNS)
+
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=synthetic_df):
+        path = bronze.collect_speed_data(bronze_root=tmp_path)
+
+    saved = pd.read_parquet(path)
+    assert len(saved) == 2
+    assert "9001" in set(saved["link_id"])
+
+
+def test_collect_speed_data_marker_unaffected_by_synthetic_rows(tmp_path):
+    rows = [{"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"}]
+    synthetic_df = pd.DataFrame([_synthetic_row()], columns=synthetic.SPEED_COLUMNS)
+
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=synthetic_df):
+        bronze.collect_speed_data(bronze_root=tmp_path)
+
+    assert bronze._read_marker(tmp_path) == "2026-08-21T12:05:00.000"
+
+
+def test_collect_speed_data_handles_no_synthetic_rows(tmp_path):
+    rows = [{"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"}]
+    empty_synthetic = pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=empty_synthetic):
+        path = bronze.collect_speed_data(bronze_root=tmp_path)
+
+    saved = pd.read_parquet(path)
+    assert len(saved) == 1
+
+
+def test_collect_speed_data_passes_distinct_links_to_synthesizer(tmp_path):
+    rows = [
+        {"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"},
+        {"link_id": "1", "link_points": "40.0,-73.0", "speed": "36.0", "data_as_of": "2026-08-21T12:10:00.000"},
+    ]
+    empty_synthetic = pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=empty_synthetic) as mock_synth:
+        bronze.collect_speed_data(bronze_root=tmp_path)
+
+    links_arg = mock_synth.call_args.args[0]
+    assert len(links_arg) == 1
+    assert mock_synth.call_args.args[1] == "2026-08-21T12:10:00.000"
