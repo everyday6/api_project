@@ -21,6 +21,7 @@ import yaml
 
 from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
+from src.toll.bronze import BRONZE_ROOT
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_silver2")
 
@@ -70,7 +71,7 @@ def match_lion_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> 
 
 def build_lion_facility_mapping(
     gdb_path: Path,
-    facilities_path: Path = Path("data/bronze/toll/toll_facilities.yaml"),
+    facilities_path: Path = BRONZE_ROOT / "toll_facilities.yaml",
     out_path: Path = MAP_LION_FACILITY_PATH,
 ) -> str:
     logger.info(f"[toll_silver2] lion_facility 매핑 시작 (facilities={facilities_path})")
@@ -111,7 +112,7 @@ def match_lion_cbd(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -
 
 def build_lion_cbd_mapping(
     gdb_path: Path,
-    cbd_geofence_path: Path = Path("data/bronze/toll/cbd_geofence.geojson"),
+    cbd_geofence_path: Path = BRONZE_ROOT / "cbd_geofence.geojson",
     out_path: Path = MAP_LION_CBD_PATH,
 ) -> str:
     logger.info(f"[toll_silver2] lion_cbd 매핑 시작 (cbd_geofence={cbd_geofence_path})")
