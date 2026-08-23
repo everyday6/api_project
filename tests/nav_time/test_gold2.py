@@ -130,7 +130,9 @@ def test_to_dynamodb_items_incrementally_updates_avg(spark):
     _create_test_table()
 
     # 1) 빈 테이블 -> 세그먼트 1의 버킷 1200에 30 upsert -> AVG=30, count=1
-    df1 = spark.createDataFrame([{"segment_id": "1", "bucket": "1200", "time_seconds": 30.0}])
+    df1 = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": date(2026, 8, 21)},
+    ])
     items1 = gold2.to_dynamodb_items(df1, TABLE_NAME)
     gold2.write_to_dynamodb(items1, TABLE_NAME)
 
@@ -140,7 +142,9 @@ def test_to_dynamodb_items_incrementally_updates_avg(spark):
     assert by_sk1[("1", "AVG")]["count"] == 1
 
     # 2) 새 버킷 1230에 50 upsert -> AVG=(30+50)/2=40, count=2
-    df2 = spark.createDataFrame([{"segment_id": "1", "bucket": "1230", "time_seconds": 50.0}])
+    df2 = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0, "collected_date": date(2026, 8, 21)},
+    ])
     items2 = gold2.to_dynamodb_items(df2, TABLE_NAME)
     gold2.write_to_dynamodb(items2, TABLE_NAME)
 
@@ -150,7 +154,9 @@ def test_to_dynamodb_items_incrementally_updates_avg(spark):
     assert by_sk2[("1", "AVG")]["count"] == 2
 
     # 3) 기존 버킷 1200을 60으로 교체 -> AVG=(60+50)/2=55, count는 그대로 2
-    df3 = spark.createDataFrame([{"segment_id": "1", "bucket": "1200", "time_seconds": 60.0}])
+    df3 = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 60.0, "collected_date": date(2026, 8, 21)},
+    ])
     items3 = gold2.to_dynamodb_items(df3, TABLE_NAME)
     gold2.write_to_dynamodb(items3, TABLE_NAME)
 
@@ -173,7 +179,9 @@ def test_to_dynamodb_items_handles_legacy_avg_item_without_count(spark):
         },
     )
 
-    df = spark.createDataFrame([{"segment_id": "1", "bucket": "1200", "time_seconds": 30.0}])
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": date(2026, 8, 21)},
+    ])
 
     # KeyError 없이 정상 동작해야 한다.
     items = gold2.to_dynamodb_items(df, TABLE_NAME)
@@ -209,7 +217,9 @@ def test_to_dynamodb_items_resets_legacy_avg_when_bucket_already_exists(spark):
         },
     )
 
-    df = spark.createDataFrame([{"segment_id": "1", "bucket": "1200", "time_seconds": 30.0}])
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": date(2026, 8, 21)},
+    ])
     items = gold2.to_dynamodb_items(df, TABLE_NAME)
 
     by_sk = {(i["segment_id"], i["sk"]): i for i in items}
@@ -226,8 +236,8 @@ def test_to_dynamodb_items_folds_multiple_buckets_of_same_segment_sequentially(s
     _create_test_table()
 
     df = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0},
-        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0},
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": date(2026, 8, 21)},
+        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0, "collected_date": date(2026, 8, 21)},
     ])
 
     items = gold2.to_dynamodb_items(df, TABLE_NAME)
@@ -240,6 +250,34 @@ def test_to_dynamodb_items_folds_multiple_buckets_of_same_segment_sequentially(s
     by_sk = {(i["segment_id"], i["sk"]): i for i in items}
     assert by_sk[("1", "1200")]["value"] == 30
     assert by_sk[("1", "1230")]["value"] == 50
+
+
+@mock_aws
+def test_to_dynamodb_items_includes_collected_date_in_bucket_items(spark):
+    _create_test_table()
+
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": date(2026, 8, 21)},
+    ])
+
+    items = gold2.to_dynamodb_items(df, TABLE_NAME)
+
+    by_sk = {(i["segment_id"], i["sk"]): i for i in items}
+    assert by_sk[("1", "1200")]["collected_date"] == "2026-08-21"
+
+
+@mock_aws
+def test_to_dynamodb_items_avg_item_has_no_collected_date(spark):
+    _create_test_table()
+
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": date(2026, 8, 21)},
+    ])
+
+    items = gold2.to_dynamodb_items(df, TABLE_NAME)
+
+    by_sk = {(i["segment_id"], i["sk"]): i for i in items}
+    assert "collected_date" not in by_sk[("1", "AVG")]
 
 
 def test_write_to_dynamodb_calls_batch_write_and_returns_count():

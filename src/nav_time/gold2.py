@@ -118,7 +118,12 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     rows = bucket_df.collect()
 
     bucket_items = [
-        {"segment_id": row["segment_id"], "sk": row["bucket"], "value": round(row["time_seconds"])}
+        {
+            "segment_id": row["segment_id"],
+            "sk": row["bucket"],
+            "value": round(row["time_seconds"]),
+            "collected_date": row["collected_date"].isoformat(),
+        }
         for row in rows
     ]
 
