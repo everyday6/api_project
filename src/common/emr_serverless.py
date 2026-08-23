@@ -116,6 +116,12 @@ def run_spark_job(
                 "sparkSubmitParameters": (
                     f"--py-files {src_bundle_s3} "
                     f"--conf spark.archives={EMR_PYTHON_ENV_S3_PATH}#environment "
+                    # entryPoint 스크립트(드라이버)를 실제로 실행하는 인터프리터는
+                    # PYSPARK_DRIVER_PYTHON이 정하고, PYSPARK_PYTHON은 executor에서
+                    # UDF 등을 돌릴 때만 쓰인다 - 이걸 안 주면 드라이버가 기본
+                    # 시스템 python으로 뜨는 바람에 entryPoint의 최상위 import
+                    # (cloudpathlib 등)가 패키징한 venv 없이 실행돼 죽는다.
+                    f"--conf spark.emr-serverless.driverEnv.PYSPARK_DRIVER_PYTHON=./environment/bin/python "
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python "
                     f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python"
                 ),

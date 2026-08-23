@@ -53,6 +53,7 @@ def test_run_spark_job_packages_python_env_via_spark_archives(tmp_script):
     spark_submit_parameters = call_kwargs["jobDriver"]["sparkSubmit"]["sparkSubmitParameters"]
 
     assert f"spark.archives={emr_serverless.EMR_PYTHON_ENV_S3_PATH}#environment" in spark_submit_parameters
+    assert "spark.emr-serverless.driverEnv.PYSPARK_DRIVER_PYTHON=./environment/bin/python" in spark_submit_parameters
     assert "spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python" in spark_submit_parameters
     assert "spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python" in spark_submit_parameters
 
