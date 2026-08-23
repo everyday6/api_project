@@ -19,6 +19,7 @@ from pydantic import BaseModel, Field
 from src.common.logger import get_logger
 from src.serving.api import get_type3_values
 from src.serving.nav_lookup import resolve_segment_values
+from src.toll.gold import get_toll_value
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
 
@@ -56,7 +57,7 @@ class SegmentValuesResponse(BaseModel):
 
 class NavigationValuesRequest(BaseModel):
     segment_ids: list[str] = Field(min_length=1, max_length=500)
-    type: Literal[1, 2, 3]
+    type: Literal[1, 2, 3, 4]
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
@@ -71,6 +72,8 @@ def _resolve_navigation_values(
     if type_ == 3:
         requested_at = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
         return get_type3_values(segment_ids, requested_at)
+    if type_ == 4:
+        return [get_toll_value(segment_id) for segment_id in segment_ids]
     return [float(v) for v in resolve_segment_values(segment_ids, type_, time)]
 
 
