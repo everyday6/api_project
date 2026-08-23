@@ -2,7 +2,7 @@
 
 **Goal:** 각 팀이 따로 만든 세그먼트 지표 서빙 API(type1/2는 우리 Lambda, type3는 팀원 EC2 서비스)를 하나의 엔드포인트로 통합한다. 내비게이션 엔진이 경로를 계산할 때, 타입 하나만 알면 항상 일관된 형식으로 값을 조회할 수 있어야 한다. type4(통행료, 혼잡+도로 합산)는 팀원이 별도로 구현·배포할 예정이라 이 설계/작업 범위에 포함하지 않는다.
 
-**Architecture:** 기존 `src/serving/nav_api.py`(현재 Lambda로 배포된 FastAPI 앱)를 확장해서 새 엔드포인트 `POST /api/navigation/values`를 추가한다. `type` 값으로 내부 분기해서 각 팀이 이미 만들어둔 조회 로직을 그대로 재사용한다 — 새로 재작성하지 않는다. EC2에서 uvicorn으로 돌던 팀원의 `src/serving/api.py`(`navigation-api` 서비스)는 이 작업 완료 후 폐기 대상이다 — "무조건 응답" 원칙(EC2 단일 인스턴스 장애 시에도 응답)을 지키려면 서빙은 전부 Lambda여야 한다.
+**Architecture:** 기존 `src/serving/nav_api.py`(현재 Lambda로 배포된 FastAPI 앱)를 확장해서 새 엔드포인트 `POST /api/navigation/values`를 추가한다. `type` 값으로 내부 분기해서 각 팀이 이미 만들어둔 조회 로직을 그대로 재사용한다 — 새로 재작성하지 않는다. EC2에서 uvicorn으로 돌던 팀원의 `src/serving/api.py`(`navigation-api` 서비스)는 팀원 확인 완료 — 이 작업에서 함께 제거한다(docker-compose에서 서비스 정의 삭제). "무조건 응답" 원칙(EC2 단일 인스턴스 장애 시에도 응답)을 지키려면 서빙은 전부 Lambda여야 한다.
 
 **Tech Stack:** 기존 FastAPI(`nav_api.py`) + Mangum + Lambda, 기존 DynamoDB 조회 함수 재사용(`nav_lookup.py`, `serving/api.py`의 `get_type3_values`)
 
@@ -51,8 +51,11 @@ POST /api/navigation/values
 
 혼잡통행료+도로통행료를 합산해서 하나의 값으로 반환하는 로직은 팀원이 별도로 구현하고 배포한다. 그 작업이 끝나면 이 파일의 dispatch에 `type=4` 분기를 추가하고 `type` Literal에 `4`를 더하는 것으로 통합하면 된다 — 지금은 손대지 않는다.
 
+## 이 작업에 포함되는 정리
+
+- EC2 docker-compose에서 `navigation-api` 서비스 정의 제거(팀원 확인 완료). 관련 `WATCH_CONTAINERS` 등록도 같이 정리.
+
 ## 알려진 리스크 / 후속 과제 (이 설계 범위 밖)
 
-- EC2의 `navigation-api`(uvicorn) 서비스를 언제/어떻게 내릴지는 팀원과 조율이 필요하다 — 이 설계에서는 폐기 "대상"이라고만 명시하고, 실제 제거는 별도 작업으로 다룬다.
 - type3용 `DYNAMODB_NAV_TABLE` 테이블 생성은 팀원 담당 — 이 설계는 테이블이 없어도 안전하게 fallback되는 것까지만 보장한다.
 - type4(통행료) 통합은 팀원 작업 완료 후 별도로 진행한다.
