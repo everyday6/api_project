@@ -21,6 +21,7 @@ from __future__ import annotations
 from decimal import Decimal
 
 import boto3
+from botocore.config import Config
 from botocore.exceptions import ClientError
 
 from src.common.config import AWS_REGION
@@ -66,8 +67,15 @@ def _decimals_to_floats(value):
 
 
 def get_dynamodb_resource():
-    """DynamoDB 리소스를 반환한다."""
-    return boto3.resource("dynamodb", region_name=AWS_REGION)
+    """DynamoDB 리소스를 반환한다.
+
+    기본 재시도 설정(legacy)은 스로틀링(RequestLimitExceeded 등)을 만나면
+    금방 포기한다. Type 3 롤링 값 적재처럼 executor 여러 개가 동시에
+    BatchWriteItem을 몰아치는 경우 순간적으로 계정/테이블 처리량 한도를
+    넘기기 쉬운데, adaptive 모드로 재시도 횟수를 늘려 자동 백오프 후
+    재시도하게 한다."""
+    config = Config(retries={"mode": "adaptive", "max_attempts": 15})
+    return boto3.resource("dynamodb", region_name=AWS_REGION, config=config)
 
 
 def get_table(table_name: str):
