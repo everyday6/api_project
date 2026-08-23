@@ -32,6 +32,11 @@ x-airflow-env: &airflow-env
   # Airflow 3.x: 컴포넌트 간 인증용 공유 시크릿 (모든 컴포넌트 동일 값 필요)
   AIRFLOW__API_AUTH__JWT_SECRET: ${AIRFLOW__API_AUTH__JWT_SECRET}
 
+  # Slack 실패 알림의 "로그 보기" 링크 등 Airflow가 만드는 UI 링크의 기준
+  # 주소. 안 넣으면 기본값(localhost 등)으로 만들어져서 Slack에서 클릭한
+  # 사람 본인 PC로 열려버린다 — 외부에서 실제로 열 수 있는 주소를 넣어야 함.
+  AIRFLOW__API__BASE_URL: ${AIRFLOW_API_BASE_URL}
+
   AIRFLOW_UID: ${AIRFLOW_UID}
 
   SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
