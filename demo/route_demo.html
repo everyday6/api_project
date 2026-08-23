@@ -1,0 +1,339 @@
+<!doctype html>
+<html lang="ko">
+<head>
+<meta charset="UTF-8">
+<title>nav-gold 경로 선택 데모</title>
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<style>
+  :root {
+    --bg: #0f1420;
+    --panel: #161d2e;
+    --panel-2: #1c2438;
+    --border: #2a3450;
+    --text: #e8ecf5;
+    --muted: #8b95ac;
+    --accent: #4f8cff;
+    --win: #35d07f;
+    --win-bg: rgba(53, 208, 127, 0.12);
+    --toll: #ffb454;
+    --demand: #ff6b9d;
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Pretendard, sans-serif;
+    padding: 32px 24px 64px;
+  }
+  .wrap { max-width: 1180px; margin: 0 auto; }
+
+  header { margin-bottom: 28px; }
+  .badge {
+    display: inline-block;
+    font-size: 12px;
+    font-weight: 600;
+    padding: 3px 10px;
+    border-radius: 999px;
+    background: rgba(255, 180, 84, 0.15);
+    color: var(--toll);
+    border: 1px solid rgba(255, 180, 84, 0.35);
+    margin-bottom: 10px;
+  }
+  h1 { font-size: 26px; margin: 0 0 8px; }
+  .sub { color: var(--muted); font-size: 14px; line-height: 1.6; max-width: 780px; }
+  .odbar {
+    margin-top: 18px;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 14px 18px;
+    font-size: 14px;
+  }
+  .odbar .pt { font-weight: 700; }
+  .odbar .arrow { color: var(--accent); font-size: 18px; }
+  .odbar .meta { margin-left: auto; color: var(--muted); font-size: 12.5px; }
+
+  .flow {
+    display: flex;
+    gap: 10px;
+    align-items: center;
+    flex-wrap: wrap;
+    margin: 22px 0 8px;
+    font-size: 13px;
+    color: var(--muted);
+  }
+  .flow .step {
+    background: var(--panel-2);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: 6px 12px;
+  }
+  .flow .arrow2 { color: var(--accent); }
+
+  section h2 {
+    font-size: 15px;
+    text-transform: uppercase;
+    letter-spacing: 0.06em;
+    color: var(--muted);
+    margin: 32px 0 14px;
+  }
+
+  .chart {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 20px 22px;
+  }
+  .barrow {
+    display: grid;
+    grid-template-columns: 64px 1fr 90px;
+    align-items: center;
+    gap: 12px;
+    padding: 7px 0;
+  }
+  .barrow .label { font-size: 13px; color: var(--muted); }
+  .barrow .label.win { color: var(--win); font-weight: 700; }
+  .bartrack {
+    background: var(--panel-2);
+    border-radius: 6px;
+    height: 18px;
+    overflow: hidden;
+    position: relative;
+  }
+  .barfill {
+    height: 100%;
+    border-radius: 6px;
+    background: linear-gradient(90deg, var(--accent), #7fb0ff);
+    transition: width .6s ease;
+  }
+  .barfill.win { background: linear-gradient(90deg, var(--win), #7ff0b0); }
+  .barrow .val { font-size: 13px; text-align: right; font-variant-numeric: tabular-nums; }
+
+  .grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+    gap: 14px;
+  }
+  .card {
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 12px;
+    padding: 16px 18px;
+    position: relative;
+  }
+  .card.win {
+    border-color: var(--win);
+    background: var(--win-bg);
+  }
+  .card .top {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 10px;
+  }
+  .card .rid { font-weight: 700; font-size: 14px; }
+  .card .crown {
+    font-size: 11px;
+    font-weight: 700;
+    color: var(--win);
+    background: rgba(53, 208, 127, 0.15);
+    border: 1px solid rgba(53, 208, 127, 0.4);
+    padding: 2px 8px;
+    border-radius: 999px;
+  }
+  .path {
+    font-size: 12px;
+    color: var(--muted);
+    line-height: 1.5;
+    margin-bottom: 12px;
+    min-height: 36px;
+  }
+  .path b { color: var(--text); font-weight: 500; }
+  .metrics {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 8px;
+  }
+  .metric {
+    background: var(--panel-2);
+    border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .metric .mlabel {
+    font-size: 10.5px;
+    color: var(--muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    margin-bottom: 3px;
+  }
+  .metric .mval {
+    font-size: 15px;
+    font-weight: 700;
+    font-variant-numeric: tabular-nums;
+  }
+  .metric.time .mval { color: var(--accent); }
+  .metric.toll .mval { color: var(--toll); }
+  .metric.demand .mval { color: var(--demand); }
+
+  footer {
+    margin-top: 40px;
+    font-size: 12px;
+    color: var(--muted);
+    border-top: 1px solid var(--border);
+    padding-top: 16px;
+  }
+  code {
+    background: var(--panel-2);
+    border-radius: 4px;
+    padding: 1px 5px;
+    font-size: 11.5px;
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+  <header>
+    <div class="badge">⚠ 모의 데이터 — 라이브 API 연결 전 UI 검증용</div>
+    <h1>nav-gold: 경로 하나를 고르기까지</h1>
+    <div class="sub">
+      A → B 사이에 후보 경로 10개가 있다고 하자. 내비게이션 앱은 각 경로(segment_id 순서 목록)를
+      우리 서빙 API에 던져 segment별 값(시간·거리·통행료·수요)을 받고, 클라이언트에서
+      경로별 총합을 계산해 최적 경로를 고른다 — 이 페이지는 그 과정을 그대로 재현한다.
+    </div>
+
+    <div class="odbar">
+      <span class="pt">📍 42nd St &amp; Broadway, Manhattan</span>
+      <span class="arrow">→</span>
+      <span class="pt">📍 LaGuardia Airport, Queens</span>
+      <span class="meta">segment_id는 실제 LION 도로망 데이터에서 가져옴 · 조회 시각 12:00</span>
+    </div>
+
+    <div class="flow">
+      <div class="step">10개 후보 경로 (segment_id 리스트)</div>
+      <span class="arrow2">→</span>
+      <div class="step">경로당 <code>POST /api/navigation/values</code> × 4타입</div>
+      <span class="arrow2">→</span>
+      <div class="step">클라이언트가 경로별 합산</div>
+      <span class="arrow2">→</span>
+      <div class="step">최단 시간 경로 선택</div>
+    </div>
+  </header>
+
+  <section>
+    <h2>총 소요시간 비교 (10개 경로)</h2>
+    <div class="chart" id="chart"></div>
+  </section>
+
+  <section>
+    <h2>경로별 상세</h2>
+    <div class="grid" id="grid"></div>
+  </section>
+
+  <footer>
+    타입 매핑 — 1: 소요시간(초) · 2: 길이(ft) · 3: 택시 수요(구간 평균) · 4: 통행료(달러, 혼잡+도로 합산).
+    지금은 <code>ROUTES</code> 배열에 내장된 값을 쓰고 있고, 실제 서비스 연결 시
+    <code>fetchRouteMetrics()</code> 안의 mock 조회만 <code>fetch('/api/navigation/values', ...)</code> 호출로
+    바꾸면 된다(요청/응답 스키마는 이미 실제 API와 동일하게 맞춰둠).
+  </footer>
+
+</div>
+
+<script>
+// 실제 LION 도로망에서 뽑은 segment로 구성한 10개 후보 경로.
+// 각 segment의 time_sec/demand/toll은 실제 API가 연결되기 전까지 쓰는 모의값이고,
+// length_ft는 실제 로컬 파이프라인 산출값이다.
+const ROUTES = [{"id": 1, "segments": [{"segment_id": "0066045", "street": "VARICK STREET", "length_ft": 392, "time_sec": 18, "demand": 13, "toll": 0}, {"segment_id": "0157198", "street": "UTOPIA PARKWAY", "length_ft": 129, "time_sec": 6, "demand": 7, "toll": 0}, {"segment_id": "0128529", "street": "HOWARD AVENUE", "length_ft": 133, "time_sec": 5, "demand": 38, "toll": 0}, {"segment_id": "0148086", "street": "HOLLIS COURT BOULEVARD", "length_ft": 70, "time_sec": 3, "demand": 41, "toll": 0}, {"segment_id": "0131227", "street": "38 AVENUE", "length_ft": 119, "time_sec": 5, "demand": 36, "toll": 0}, {"segment_id": "0011472", "street": "EDISON STREET", "length_ft": 304, "time_sec": 13, "demand": 9, "toll": 0}]}, {"id": 2, "segments": [{"segment_id": "0052415", "street": "86 ROAD", "length_ft": 329, "time_sec": 16, "demand": 8, "toll": 0}, {"segment_id": "0055009", "street": "ROCKAWAY BOULEVARD", "length_ft": 53, "time_sec": 2, "demand": 39, "toll": 0}, {"segment_id": "0322240", "street": "MORRIS AVENUE", "length_ft": 40, "time_sec": 2, "demand": 40, "toll": 0}, {"segment_id": "0307287", "street": "THROGS NECK EXPRESSWAY", "length_ft": 373, "time_sec": 15, "demand": 18, "toll": 0}, {"segment_id": "0312009", "street": "PARK ROW", "length_ft": 55, "time_sec": 3, "demand": 41, "toll": 0.75}]}, {"id": 3, "segments": [{"segment_id": "0076211", "street": "41 AVENUE", "length_ft": 259, "time_sec": 16, "demand": 40, "toll": 0}, {"segment_id": "0221634", "street": "LEONARD STREET", "length_ft": 265, "time_sec": 14, "demand": 7, "toll": 0}, {"segment_id": "0092410", "street": "WHITESTONE BRIDGE", "length_ft": 854, "time_sec": 52, "demand": 6, "toll": 7.46}, {"segment_id": "0129376", "street": "BEACH 17 STREET", "length_ft": 154, "time_sec": 8, "demand": 12, "toll": 0}, {"segment_id": "0070737", "street": "FORT WASHINGTON AVENUE", "length_ft": 178, "time_sec": 8, "demand": 13, "toll": 0}]}, {"id": 4, "segments": [{"segment_id": "0293376", "street": "VANDALIA AVENUE", "length_ft": 118, "time_sec": 6, "demand": 40, "toll": 0}, {"segment_id": "0021377", "street": "14 AVENUE", "length_ft": 144, "time_sec": 7, "demand": 47, "toll": 0}, {"segment_id": "0160215", "street": "RICHMOND TERRACE", "length_ft": 112, "time_sec": 5, "demand": 41, "toll": 0}, {"segment_id": "9003085", "street": "COLUMBIA STREET", "length_ft": 80, "time_sec": 4, "demand": 16, "toll": 0.75}, {"segment_id": "0149111", "street": "LINDEN BOULEVARD", "length_ft": 34, "time_sec": 2, "demand": 39, "toll": 0}]}, {"id": 5, "segments": [{"segment_id": "0059683", "street": "145 ROAD", "length_ft": 317, "time_sec": 17, "demand": 40, "toll": 0}, {"segment_id": "0172435", "street": "QUEENS BOULEVARD", "length_ft": 82, "time_sec": 3, "demand": 17, "toll": 0}, {"segment_id": "0062006", "street": "READS LANE", "length_ft": 199, "time_sec": 10, "demand": 38, "toll": 0}, {"segment_id": "0049165", "street": "65 STREET", "length_ft": 452, "time_sec": 22, "demand": 24, "toll": 0}]}, {"id": 6, "segments": [{"segment_id": "0162630", "street": "BROOKLYN BRIDGE", "length_ft": 24, "time_sec": 1, "demand": 33, "toll": 0}, {"segment_id": "0021750", "street": "RICHARDS STREET", "length_ft": 261, "time_sec": 12, "demand": 19, "toll": 0}, {"segment_id": "0014610", "street": "COLUMBIA AVENUE", "length_ft": 277, "time_sec": 16, "demand": 48, "toll": 0}, {"segment_id": "0328499", "street": "4 AVENUE", "length_ft": 140, "time_sec": 8, "demand": 9, "toll": 0}, {"segment_id": "0106178", "street": "FRANKLIN D ROOSEVELT DRIVE", "length_ft": 57, "time_sec": 3, "demand": 37, "toll": 0}]}, {"id": 7, "segments": [{"segment_id": "0005394", "street": "COMMERCE STREET", "length_ft": 270, "time_sec": 13, "demand": 25, "toll": 0}, {"segment_id": "0048853", "street": "SUMMERFIELD STREET", "length_ft": 607, "time_sec": 34, "demand": 22, "toll": 0}, {"segment_id": "0161595", "street": "CROPSEY AVENUE", "length_ft": 26, "time_sec": 1, "demand": 8, "toll": 0}, {"segment_id": "0088419", "street": "NEEDHAM AVENUE", "length_ft": 93, "time_sec": 4, "demand": 30, "toll": 0}, {"segment_id": "0048745", "street": "68 AVENUE", "length_ft": 554, "time_sec": 23, "demand": 25, "toll": 0}]}, {"id": 8, "segments": [{"segment_id": "0043924", "street": "ROCKAWAY AVENUE", "length_ft": 269, "time_sec": 11, "demand": 35, "toll": 0}, {"segment_id": "0127540", "street": "BROOKLYN AVENUE", "length_ft": 181, "time_sec": 9, "demand": 46, "toll": 0}, {"segment_id": "0062486", "street": "HUXLEY STREET", "length_ft": 319, "time_sec": 13, "demand": 39, "toll": 0}, {"segment_id": "0101165", "street": "64 AVENUE", "length_ft": 392, "time_sec": 20, "demand": 24, "toll": 0}]}, {"id": 9, "segments": [{"segment_id": "0035062", "street": "2 STREET", "length_ft": 230, "time_sec": 11, "demand": 26, "toll": 0}, {"segment_id": "0150927", "street": "EMMONS AVENUE", "length_ft": 130, "time_sec": 7, "demand": 41, "toll": 0}, {"segment_id": "0188924", "street": "MORRIS PARK AVENUE", "length_ft": 64, "time_sec": 4, "demand": 8, "toll": 0}, {"segment_id": "0016648", "street": "85 STREET", "length_ft": 768, "time_sec": 44, "demand": 21, "toll": 0}, {"segment_id": "0076596", "street": "ROOSEVELT AVENUE", "length_ft": 194, "time_sec": 10, "demand": 46, "toll": 0}]}, {"id": 10, "segments": [{"segment_id": "0068107", "street": "31 AVENUE", "length_ft": 259, "time_sec": 10, "demand": 50, "toll": 0}, {"segment_id": "0122067", "street": "OCEAN PARKWAY", "length_ft": 201, "time_sec": 11, "demand": 45, "toll": 0}, {"segment_id": "0160912", "street": "BELT PARKWAY", "length_ft": 501, "time_sec": 26, "demand": 47, "toll": 0}, {"segment_id": "0015091", "street": "VANDERBILT AVENUE", "length_ft": 104, "time_sec": 6, "demand": 22, "toll": 0}]}];
+
+// 실제 서빙 계약: POST /api/navigation/values
+// { segment_ids, type: 1|2|3|4, date, time } -> { value: [...] }
+// 지금은 라이브 서버 대신 ROUTES에 미리 넣어둔 값으로 같은 모양의 응답을 만든다.
+function fetchRouteMetrics(route) {
+  const byId = Object.fromEntries(route.segments.map(s => [s.segment_id, s]));
+  const segmentIds = route.segments.map(s => s.segment_id);
+
+  const responses = {
+    1: segmentIds.map(id => byId[id].time_sec),
+    2: segmentIds.map(id => byId[id].length_ft),
+    3: segmentIds.map(id => byId[id].demand),
+    4: segmentIds.map(id => byId[id].toll),
+  };
+
+  return Promise.resolve(responses);
+  // 실제 연결 시:
+  // return Promise.all([1,2,3,4].map(type =>
+  //   fetch('http://localhost:8001/api/navigation/values', {
+  //     method: 'POST', headers: {'Content-Type': 'application/json'},
+  //     body: JSON.stringify({segment_ids: segmentIds, type, date: '2026-08-23', time: '12:00'})
+  //   }).then(r => r.json()).then(r => r.value)
+  // )).then(([t1,t2,t3,t4]) => ({1:t1,2:t2,3:t3,4:t4}));
+}
+
+function sum(arr) { return arr.reduce((a, b) => a + b, 0); }
+function avg(arr) { return arr.length ? sum(arr) / arr.length : 0; }
+
+async function computeTotals(route) {
+  const values = await fetchRouteMetrics(route);
+  return {
+    id: route.id,
+    segments: route.segments,
+    totalTime: sum(values[1]),
+    totalLength: sum(values[2]),
+    avgDemand: avg(values[3]),
+    totalToll: sum(values[4]),
+  };
+}
+
+function fmtTime(sec) {
+  const m = Math.floor(sec / 60), s = Math.round(sec % 60);
+  return m > 0 ? `${m}분 ${s}초` : `${s}초`;
+}
+function fmtMiles(ft) { return (ft / 5280).toFixed(2) + ' mi'; }
+function fmtToll(v) { return v === 0 ? '$0.00' : '$' + v.toFixed(2); }
+
+async function render() {
+  const totals = await Promise.all(ROUTES.map(computeTotals));
+  const winner = totals.reduce((a, b) => (b.totalTime < a.totalTime ? b : a));
+  const maxTime = Math.max(...totals.map(t => t.totalTime));
+
+  const chart = document.getElementById('chart');
+  chart.innerHTML = totals.map(t => {
+    const isWin = t.id === winner.id;
+    const pct = Math.max(4, (t.totalTime / maxTime) * 100);
+    return `
+      <div class="barrow">
+        <div class="label ${isWin ? 'win' : ''}">경로 ${t.id}${isWin ? ' 🏆' : ''}</div>
+        <div class="bartrack"><div class="barfill ${isWin ? 'win' : ''}" style="width:${pct}%"></div></div>
+        <div class="val">${fmtTime(t.totalTime)}</div>
+      </div>`;
+  }).join('');
+
+  const grid = document.getElementById('grid');
+  grid.innerHTML = totals.map(t => {
+    const isWin = t.id === winner.id;
+    const pathStr = t.segments.map(s => s.street).join(' → ');
+    return `
+      <div class="card ${isWin ? 'win' : ''}">
+        <div class="top">
+          <div class="rid">경로 ${t.id} <span style="color:var(--muted);font-weight:400;">· segment ${t.segments.length}개</span></div>
+          ${isWin ? '<div class="crown">🏆 최단 경로</div>' : ''}
+        </div>
+        <div class="path"><b>${pathStr}</b></div>
+        <div class="metrics">
+          <div class="metric time"><div class="mlabel">총 시간</div><div class="mval">${fmtTime(t.totalTime)}</div></div>
+          <div class="metric"><div class="mlabel">총 거리</div><div class="mval">${fmtMiles(t.totalLength)}</div></div>
+          <div class="metric toll"><div class="mlabel">총 통행료</div><div class="mval">${fmtToll(t.totalToll)}</div></div>
+          <div class="metric demand"><div class="mlabel">평균 수요</div><div class="mval">${t.avgDemand.toFixed(0)}</div></div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+render();
+</script>
+</body>
+</html>
