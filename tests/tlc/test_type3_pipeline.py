@@ -24,7 +24,7 @@ from src.tlc.type3_pipeline import (
     _month_success_marker,
     _staging_run_path,
     _type3_metadata_is_current,
-    validate_type3_reference,
+    _type3_reference_exists,
 )
 
 
@@ -160,30 +160,41 @@ def test_type3_metadata_is_current_only_after_completed_publish():
         "status": "COMPLETED",
         "window_start": "2026-05-04",
         "window_end": "2026-05-31",
+        "mapping_version": "map-v1",
     }
 
-    assert _type3_metadata_is_current(metadata, window_start, window_end)
+    assert _type3_metadata_is_current(metadata, window_start, window_end, "map-v1")
     assert not _type3_metadata_is_current(
         {**metadata, "status": "WRITING"},
         window_start,
         window_end,
+        "map-v1",
     )
     assert not _type3_metadata_is_current(
         {**metadata, "window_end": "2026-04-30"},
         window_start,
         window_end,
+        "map-v1",
     )
+    assert not _type3_metadata_is_current(
+        metadata,
+        window_start,
+        window_end,
+        "map-v2",
+    ), "zone-segment 매핑이 바뀌면(mapping_version 불일치) 최신으로 보면 안 된다"
 
 
-def test_validate_type3_reference_requires_zone_segment_mapping(tmp_path):
+def test_type3_reference_exists_is_false_until_mapping_is_published(tmp_path):
+    """zone_segment_pipeline이 아직 안 돌았을 때(최초 배포/재부트스트랩)
+    DAG를 실패시키는 대신 조용히 False를 반환해야 한다."""
+
     mapping_path = tmp_path / "map_zone_segment.parquet"
 
-    with pytest.raises(FileNotFoundError, match="필수 입력"):
-        validate_type3_reference(mapping_path)
+    assert _type3_reference_exists(mapping_path) is False
 
     mapping_path.touch()
 
-    assert validate_type3_reference(mapping_path) == str(mapping_path)
+    assert _type3_reference_exists(mapping_path) is True
 
 
 def test_build_weekday_rolling_frame_uses_latest_12_weeks(spark):
@@ -274,6 +285,7 @@ def test_write_type3_rolling_to_dynamodb_writes_metadata_after_success(spark, mo
         date(2026, 5, 4),
         date(2026, 5, 31),
         12,
+        "map-v1",
     )
 
     assert written == 2
@@ -285,6 +297,7 @@ def test_write_type3_rolling_to_dynamodb_writes_metadata_after_success(spark, mo
         "window_start": "2026-05-04",
         "window_end": "2026-05-31",
         "rolling_weeks": 12,
+        "mapping_version": "map-v1",
         "updated_at": "ignored",
     }
 

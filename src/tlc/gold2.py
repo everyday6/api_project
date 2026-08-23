@@ -428,6 +428,7 @@ def write_type3_rolling_to_dynamodb(
     window_start: date,
     window_end: date,
     rolling_weeks: int,
+    mapping_version: str | None = None,
 ) -> int:
     """검증된 Spark 롤링 결과를 executor 병렬로 저장한 뒤 완료 메타데이터를 기록한다.
 
@@ -454,6 +455,7 @@ def write_type3_rolling_to_dynamodb(
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
         "rolling_weeks": rolling_weeks,
+        "mapping_version": mapping_version,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
     return written

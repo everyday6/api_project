@@ -5,6 +5,11 @@ lion_pipeline(Asset("lion_dim_segment_ready"))이나 taxi_zone_pipeline
 재실행된다 — 리스트로 넘기면 AND로 해석되므로(둘 다 갱신돼야 트리거),
 `|` 연산자로 OR 조건을 명시한다(toll_silver_gold_pipeline과 동일한 패턴).
 두 소스가 같은 날 겹쳐도 스케줄러가 중복 실행 없이 하나로 묶어 처리한다.
+
+publish_map_zone_segment는 Asset("map_zone_segment_ready")를 outlet으로
+내보낸다 — 지금은 구독하는 소비자가 없지만(tlc_daily는 여전히 cron
+스케줄이라 매핑 존재 여부는 check_type3_reference_ready short-circuit으로
+직접 확인한다), 다른 publish 단계들과의 일관성을 위해 남겨둔다.
 """
 
 from datetime import datetime, timedelta
@@ -26,6 +31,8 @@ default_args = {
     "retry_delay": timedelta(minutes=5),
     "on_failure_callback": notify_slack_failure,
 }
+
+MAP_ZONE_SEGMENT_READY = Asset("map_zone_segment_ready")
 
 with DAG(
     dag_id="zone_segment_pipeline",
@@ -59,6 +66,7 @@ with DAG(
         op_kwargs={
             "validated_stage": "{{ ti.xcom_pull(task_ids='validate_staged_map_zone_segment') }}",
         },
+        outlets=[MAP_ZONE_SEGMENT_READY],
     )
 
     validate_inputs >> stage_mapping >> validate_mapping >> publish_mapping
