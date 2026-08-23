@@ -44,10 +44,11 @@ DATE_PARTITION_PATTERN = re.compile(r"^date=(\d{4}-\d{2}-\d{2})$")
 # 쓰게 해서, driver가 toLocalIterator()로 한 줄씩 순차 처리할 때보다
 # wall-clock을 파티션 수만큼 나눈다(Airflow heartbeat timeout 예방 — segment
 # 수가 많으면 순차 처리가 5분을 넘겨 태스크가 강제 종료되는 사고가 있었다).
-# DynamoDB가 PAY_PER_REQUEST(온디맨드)라 동시 쓰기 자체는 감당하지만,
-# 파티션이 너무 잘게 쪼개지면 파티션마다 boto3 리소스를 새로 만드는 오버헤드가
-# 커지므로 적당한 값으로 고정한다.
-TYPE3_DYNAMODB_WRITE_PARTITIONS = 32
+# 원래 32로 뒀었는데, PAY_PER_REQUEST(온디맨드) 테이블도 최근 트래픽 기준으로
+# 순간 처리량 한도가 정해져 있어서 32-way로 한꺼번에 몰아치면
+# RequestLimitExceeded로 죽는 사고가 실제로 있었다(get_dynamodb_resource의
+# adaptive 재시도와 별개로, 애초에 순간 부하 자체를 낮춰서 두 겹으로 방어).
+TYPE3_DYNAMODB_WRITE_PARTITIONS = 10
 TAXI_ZONE_IDS = tuple(range(1, 264))
 DOW_NAMES = TLC_TYPE3_DOW_NAMES
 SPARK_DOW_NAMES = (DOW_NAMES[-1], *DOW_NAMES[:-1])
