@@ -36,7 +36,20 @@ def _summarize_exception(exception: object) -> tuple[str, str]:
     """긴 Spark/Java 스택 트레이스에서 Slack에 보낼 핵심 내용만 추린다."""
 
     if exception is None:
-        return "UnknownError", "에러 정보가 없습니다. Airflow 로그를 확인하세요."
+        # 태스크 코드가 예외를 던진 게 아니라, Airflow가 하트비트 끊김(zombie)을
+        # 감지해서 강제로 실패 처리한 경우 context에 실제 예외가 없다. 이
+        # 서비스는 Airflow 컴포넌트/Spark/navigation-api가 전부 vCPU 2개짜리
+        # EC2 하나에서 같이 도는 구조라, 무거운 태스크가 몰리면 워커가
+        # OOM 등으로 죽었다가 restart:unless-stopped로 되살아나는 사이에
+        # 이 상태가 자주 나온다 — "이 태스크 코드의 버그"보다 "그 시점에
+        # 워커/스케줄러가 죽었었는가"부터 의심하는 게 순서다.
+        return "UnknownError", (
+            "실제 예외 없이 실패 처리됨 — 태스크 실행 중 워커/스케줄러가 하트비트를 "
+            "못 보내 zombie로 판정됐을 가능성이 높습니다(코드 버그가 아니라 EC2 "
+            "자원 부족으로 컨테이너가 죽었다 재기동됐을 수 있음). 같은 시간대에 "
+            "컨테이너 재시작 알림이 있었는지 먼저 확인하고, 없으면 Airflow 로그를 "
+            "확인하세요."
+        )
 
     error_type = type(exception).__name__
     raw_lines = [line.strip() for line in str(exception).splitlines() if line.strip()]
