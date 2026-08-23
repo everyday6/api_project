@@ -15,12 +15,12 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.common.config import GOLD2_DIR, SILVER1_DIR
+from src.common.config import GOLD2_DIR
 from src.common.logger import get_logger
+from src.lion.silver1 import DIM_SEGMENT_BASE_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_gold2")
 
-DIM_SEGMENT_BASE_PATH = SILVER1_DIR / "dim_segment.parquet"
 DIM_SEGMENT_PATH = GOLD2_DIR / "dim_segment.parquet"
 
 # RW_TYPE(도로유형 코드): 차량이 통행할 수 없는 유형(Boardwalk, Path/Trail,

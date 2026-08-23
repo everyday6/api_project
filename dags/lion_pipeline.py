@@ -11,6 +11,13 @@ NYC DCP LION(도로망) Bronze와 Silver1을 담당하는 도메인 파이프라
 ingest_lion은 Asset("lion_bronze_updated")를 outlet으로 내보낸다 —
 toll_silver_gold_pipeline이 이 Asset을 구독해서, 분기 LION 갱신 때도
 (요금표가 안 바뀌어도) segment 매핑을 다시 계산하도록 하기 위함이다.
+
+publish_dim_segment는 별도로 Asset("lion_dim_segment_ready")를 outlet으로
+내보낸다 — segment_length_pipeline(nav type2)이 이 Asset을 구독해서,
+자체적으로 LION을 다시 받지 않고 여기서 발행한 Silver1 dim_segment를 그대로
+읽어 Gold2(is_routable)만 계산한다. lion_bronze_updated가 아니라 이 Asset을
+쓰는 이유: Bronze 다운로드 직후가 아니라 Silver1 검증·발행까지 끝난
+뒤여야 dim_segment.parquet가 실제로 최신 상태이기 때문.
 """
 
 from datetime import datetime, timedelta
@@ -36,6 +43,7 @@ default_args = {
 }
 
 LION_BRONZE_UPDATED = Asset("lion_bronze_updated")
+LION_DIM_SEGMENT_READY = Asset("lion_dim_segment_ready")
 
 with DAG(
     dag_id="lion_pipeline",
@@ -51,11 +59,10 @@ with DAG(
 
     task_ingest_lion = PythonOperator(
         task_id="ingest_lion",
+        # {{ ds }}를 op_kwargs로 넘기지 않는다 - 수동 트리거(logical_date
+        # 없음)에서 Jinja가 UndefinedError로 죽는다. ingest_lion()은 인자
+        # 없으면 실행 시점의 실제 날짜로 태깅한다.
         python_callable=ingest_lion,
-        op_kwargs={
-            # 실행일을 그대로 버전 태그로 사용 (파일명이 아니라 "언제 받았는지" 기준)
-            "version_date": "{{ ds }}",
-        },
         outlets=[LION_BRONZE_UPDATED],
     )
 
@@ -81,6 +88,7 @@ with DAG(
         op_kwargs={
             "validated_stage": "{{ ti.xcom_pull(task_ids='validate_staged_dim_segment') }}",
         },
+        outlets=[LION_DIM_SEGMENT_READY],
     )
 
     task_cleanup_dim_segment_staging = PythonOperator(
