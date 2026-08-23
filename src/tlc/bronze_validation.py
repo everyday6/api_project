@@ -12,8 +12,9 @@ from airflow.decorators import task
 from src.common.alerts import notify_slack_message
 from src.common.gx import validate_spark_dataframe
 from src.common.logger import get_logger
-from src.common.spark import get_spark, to_spark_path
+from src.common.spark import to_spark_path
 
+from src.tlc.emr import run_tlc_emr_operation
 from src.tlc.expectations import critical_expectations, log_only_expectations
 
 
@@ -173,20 +174,16 @@ def _build_excluded_files_message(excluded: list[dict]) -> str:
 
 @task(pool="silver_pool")
 def validate_bronze_quality(bronze_chunk: list[dict]) -> list[dict]:
-    """청크(taxi_type 하나) 안 파일들을 검증하고, 통과한 파일만 반환한다.
-
-    build_silver와 같은 이유로 taxi_type당 Spark 세션 하나를 재사용하고
-    같은 silver_pool을 공유한다 — spark-worker가 1대(10코어)뿐인 유한
-    자원이라, Bronze 검증과 Silver 변환이 각자 다른 풀로 동시에 실행되면
-    풀 슬롯 상한(3개)과 무관하게 Spark 클러스터 코어가 초과 예약될 수 있다.
-    """
+    """EMR에서 Bronze 청크를 검증하고 통과한 파일만 반환한다."""
 
     if not bronze_chunk:
         return []
 
-    spark = get_spark()
-
-    try:
-        return _validate_chunk_files(spark, bronze_chunk)
-    finally:
-        spark.stop()
+    result = run_tlc_emr_operation(
+        "validate_bronze",
+        {"bronze_chunk": bronze_chunk},
+    )
+    excluded = result.get("excluded", [])
+    if excluded:
+        notify_slack_message(_build_excluded_files_message(excluded))
+    return result["passed"]

@@ -79,7 +79,11 @@ DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
 # 있게 둔다.
 DYNAMO_LOCAL_ENDPOINT = os.getenv("DYNAMO_LOCAL_ENDPOINT", "http://localhost:8002")
 
-NAV_GOLD_TABLE = "nav_gold_values"
+# type4(혼잡통행료)/type5(도로통행료)가 같이 쓰는 toll 전용 테이블.
+# 나머지 세 테이블(TYPE1/TYPE2/NAV_TABLE)과 설정 방식을 통일하기 위해
+# env var로 바꾸되, 기존 하드코딩 값을 기본값으로 유지해 기존 배포에
+# 영향 없게 한다.
+NAV_GOLD_TABLE = os.getenv("NAV_GOLD_TABLE", "nav_gold_values")
 
 # ==========================
 # EMR Serverless (Spark 잡 실행) 설정

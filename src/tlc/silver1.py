@@ -12,9 +12,8 @@ from airflow.decorators import task
 from src.common.config import SILVER1_DIR, TAXI_TYPES
 from src.common.downloader import build_filename, get_recent_service_months
 from src.common.logger import get_logger
-from src.common.spark import get_spark, to_spark_path
 from src.tlc.bronze import BRONZE_ROOT
-from src.tlc.silver1_transform import transform
+from src.tlc.emr import run_tlc_emr_operation
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver1")
 
@@ -58,43 +57,21 @@ def find_pending_silver_files(_stored_bronze_files=None) -> list[dict]:
 
 @task(pool="silver_pool")
 def build_silver(bronze_chunk: list[dict]) -> list[dict]:
-    """검증된 Bronze 파일 묶음을 공통 스키마로 변환해 S3 Silver1에 저장한다."""
+    """EMR에서 Bronze 파일을 공통 스키마로 변환해 S3 Silver1에 저장한다."""
 
     if not bronze_chunk:
         return []
 
-    spark = get_spark()
     SILVER1_ROOT.mkdir(parents=True, exist_ok=True)
-    results: list[dict] = []
-
-    try:
-        for bronze_result in bronze_chunk:
-            taxi_type = bronze_result["taxi_type"]
-            filename = bronze_result["filename"]
-            bronze_path = bronze_result["bronze_path"]
-            silver_path = SILVER1_ROOT / Path(filename).stem
-
-            # Spark가 쓰기를 완료한 출력에만 _SUCCESS가 존재한다. 중간 실패로
-            # 디렉터리만 남은 경우에는 overwrite로 다시 처리한다.
-            if (silver_path / "_SUCCESS").exists():
-                logger.info("이미 처리된 Silver1 파일입니다. 건너뜁니다: %s", filename)
-            else:
-                logger.info("Silver1 변환 시작: %s", filename)
-                bronze_df = spark.read.parquet(to_spark_path(bronze_path))
-                silver_df = transform(bronze_df, taxi_type)
-                silver_df.write.mode("overwrite").parquet(to_spark_path(silver_path))
-                logger.info("Silver1 저장 완료: %s", silver_path)
-
-            results.append({
-                "taxi_type": taxi_type,
-                "filename": filename,
-                "silver_path": str(silver_path),
-            })
-
-    except Exception:
-        logger.exception("Silver1 처리 실패")
-        raise
-    finally:
-        spark.stop()
-
-    return results
+    work_items = [
+        {
+            **item,
+            "silver_path": str(SILVER1_ROOT / Path(item["filename"]).stem),
+        }
+        for item in bronze_chunk
+    ]
+    result = run_tlc_emr_operation(
+        "build_silver",
+        {"bronze_chunk": work_items},
+    )
+    return result["results"]

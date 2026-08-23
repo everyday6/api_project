@@ -15,7 +15,8 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src.common import dynamo
+from src.common import dynamodb
+from src.common.config import NAV_GOLD_TABLE
 from src.common.logger import get_logger
 from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
@@ -79,8 +80,12 @@ def _dedupe_items(items: list[dict]) -> list[dict]:
 
 
 def write_gold_items(items: list[dict]) -> None:
-    dynamo.ensure_table()
-    dynamo.batch_write_items(items)
+    # ensure_table은 원래 로컬/테스트 편의용이라 운영 경로에서는 안 쓰는 게
+    # 원칙이지만, 이 파이프라인은 처음부터 그렇게 짜여 있었고 여기서 빼면
+    # 배포 순서(scripts/create_dynamodb_tables.py를 먼저 돌려야 함)에
+    # 새로 의존하게 되어 그대로 유지한다. idempotent라 반복 호출해도 안전.
+    dynamodb.ensure_table(NAV_GOLD_TABLE)
+    dynamodb.batch_write_items(NAV_GOLD_TABLE, items)
     logger.info(f"[toll_gold] DynamoDB에 {len(items)}개 아이템 적재 완료")
 
 
@@ -102,7 +107,7 @@ def get_toll_value(segment_id: str, toll_type: int) -> float:
     """서빙 조회 함수. 시설/zone에 해당 안 하는 segment는 0을 반환한다
     (무결점 응답 원칙 — null/에러 없음)."""
 
-    return dynamo.get_value(segment_id, f"TYPE#{toll_type}", default=0)
+    return dynamodb.get_value(NAV_GOLD_TABLE, segment_id, f"TYPE#{toll_type}", default=0)
 
 
 if __name__ == "__main__":
