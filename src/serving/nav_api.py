@@ -9,6 +9,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from fastapi import FastAPI, Request
@@ -16,6 +17,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
 from src.common.logger import get_logger
+from src.serving.api import get_type3_values
 from src.serving.nav_lookup import resolve_segment_values
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
@@ -52,6 +54,26 @@ class SegmentValuesResponse(BaseModel):
     values: list[int]
 
 
+class NavigationValuesRequest(BaseModel):
+    segment_ids: list[str] = Field(min_length=1, max_length=500)
+    type: Literal[1, 2, 3]
+    date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
+    time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+
+class NavigationValuesResponse(BaseModel):
+    value: list[float]
+
+
+def _resolve_navigation_values(
+    segment_ids: list[str], type_: int, date: str, time: str
+) -> list[float]:
+    if type_ == 3:
+        requested_at = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
+        return get_type3_values(segment_ids, requested_at)
+    return [float(v) for v in resolve_segment_values(segment_ids, type_, time)]
+
+
 @app.exception_handler(Exception)
 async def log_unexpected_exception(request: Request, exc: Exception):
     """개별 엔드포인트가 처리 못한 예외만 여기로 옴 — 500으로 감춰지기 전에 로그.
@@ -67,3 +89,11 @@ async def log_unexpected_exception(request: Request, exc: Exception):
 def get_segment_values(request: SegmentValuesRequest) -> SegmentValuesResponse:
     values = resolve_segment_values(request.segment_ids, request.type, request.time)
     return SegmentValuesResponse(values=values)
+
+
+@app.post("/api/navigation/values", response_model=NavigationValuesResponse)
+def get_navigation_values(request: NavigationValuesRequest) -> NavigationValuesResponse:
+    values = _resolve_navigation_values(
+        request.segment_ids, request.type, request.date, request.time
+    )
+    return NavigationValuesResponse(value=values)

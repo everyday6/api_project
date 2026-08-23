@@ -60,3 +60,73 @@ def test_health_returns_ok():
 
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
+
+
+def test_navigation_values_type1_dispatches_to_resolve_segment_values():
+    with patch("src.serving.nav_api.resolve_segment_values", return_value=[30, 50]) as mock_resolve:
+        response = client.post(
+            "/api/navigation/values",
+            json={"segment_ids": ["1", "2"], "type": 1, "date": "2026-08-23", "time": "12:00"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": [30.0, 50.0]}
+    mock_resolve.assert_called_once_with(["1", "2"], 1, "12:00")
+
+
+def test_navigation_values_type2_dispatches_to_resolve_segment_values():
+    with patch("src.serving.nav_api.resolve_segment_values", return_value=[100]) as mock_resolve:
+        response = client.post(
+            "/api/navigation/values",
+            json={"segment_ids": ["1"], "type": 2, "date": "2026-08-23", "time": "12:00"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": [100.0]}
+    mock_resolve.assert_called_once_with(["1"], 2, "12:00")
+
+
+def test_navigation_values_type3_combines_date_and_time_into_datetime():
+    from datetime import datetime
+
+    with patch("src.serving.nav_api.get_type3_values", return_value=[12.5, 7.0]) as mock_type3:
+        response = client.post(
+            "/api/navigation/values",
+            json={"segment_ids": ["1", "2"], "type": 3, "date": "2026-08-23", "time": "14:30"},
+        )
+
+    assert response.status_code == 200
+    assert response.json() == {"value": [12.5, 7.0]}
+    mock_type3.assert_called_once_with(["1", "2"], datetime(2026, 8, 23, 14, 30))
+
+
+def test_navigation_values_rejects_type4():
+    response = client.post(
+        "/api/navigation/values",
+        json={"segment_ids": ["1"], "type": 4, "date": "2026-08-23", "time": "12:00"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_navigation_values_rejects_malformed_date():
+    response = client.post(
+        "/api/navigation/values",
+        json={"segment_ids": ["1"], "type": 1, "date": "2026/08/23", "time": "12:00"},
+    )
+
+    assert response.status_code == 422
+
+
+def test_navigation_values_rejects_too_many_segment_ids():
+    response = client.post(
+        "/api/navigation/values",
+        json={
+            "segment_ids": [str(i) for i in range(501)],
+            "type": 1,
+            "date": "2026-08-23",
+            "time": "12:00",
+        },
+    )
+
+    assert response.status_code == 422
