@@ -39,6 +39,7 @@ with DAG(
     schedule="0 4 1 * *",          # 매월 1일 새벽 4시
     start_date=datetime(2025, 1, 1),
     catchup=False,
+    max_active_runs=1,
     default_args=default_args,
     tags=["taxi_zone", "monthly"],
 ) as dag:

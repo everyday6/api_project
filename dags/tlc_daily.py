@@ -29,7 +29,6 @@ Zone 최근 12주 요일별 평균 → Segment 매핑 → DynamoDB (EMR Serverle
 from datetime import datetime, timedelta
 
 from airflow.decorators import dag
-from airflow.operators.python import PythonOperator
 
 from src.common.alerts import notify_slack_failure
 from src.common.downloader import (
@@ -53,11 +52,11 @@ from src.tlc.silver1 import build_silver, find_pending_silver_files
 from src.tlc.type3_pipeline import (
     build_type3_staged_records,
     check_type3_publish_needed,
+    check_type3_reference_ready,
     cleanup_type3_staging,
     find_pending_type3_months,
     publish_type3_daily_records,
     publish_type3_rolling_values,
-    validate_type3_reference,
     validate_type3_staged_records,
 )
 
@@ -166,12 +165,9 @@ def tlc_daily():
     # -----------------------------------------
 
     publish_plan = check_type3_publish_needed(published_type3)
-    type3_reference_valid = PythonOperator(
-        task_id="validate_type3_reference",
-        python_callable=validate_type3_reference,
-    )
+    reference_ready = check_type3_reference_ready(publish_plan)
     published_values = publish_type3_rolling_values(publish_plan)
-    publish_plan >> type3_reference_valid >> published_values
+    reference_ready >> published_values
 
 
 # DAG 생성

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import io
 import re
 import shutil
@@ -25,6 +26,11 @@ TAXI_ZONE_SHAPEFILE = (
 )
 MAP_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_zone_segment.parquet"
 MAP_ZONE_SEGMENT_STAGING_ROOT = SILVER2_DIR / "_staging" / "map_zone_segment"
+# Type 3가 "매핑이 실제로 바뀌었는지"를 TLC 날짜 범위와 별개로 판단할 수
+# 있도록, 승격에 성공할 때마다 매핑 내용의 해시를 여기 남긴다. 이게 없으면
+# LION/Taxi Zone이 갱신돼 zone-segment 매핑이 바뀌어도, TLC 쪽 날짜 범위가
+# 그대로면 DynamoDB Type 3 값이 조용히 갱신되지 않는다.
+MAP_ZONE_SEGMENT_VERSION_PATH = SILVER2_DIR / "map_zone_segment_version.txt"
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -32,6 +38,30 @@ def _staging_run_path(run_id: str, staging_root=MAP_ZONE_SEGMENT_STAGING_ROOT):
     if not RUN_ID_PATTERN.fullmatch(run_id):
         raise ValueError(f"잘못된 zone-segment staging run_id입니다: {run_id}")
     return staging_root / f"run_id={run_id}"
+
+
+def _content_hash(mapping: pd.DataFrame) -> str:
+    """매핑 내용 자체의 해시를 만든다.
+
+    run_id(uuid)로는 "이번에 다시 승격했다"만 알 수 있고 "내용이 실제로
+    달라졌다"는 못 구분한다 — LION/Taxi Zone이 갱신됐지만 매핑 결과 자체는
+    안 바뀌는 경우(무관한 속성만 바뀐 경우 등)에 매번 불필요하게 재계산을
+    유발하지 않도록, segment_id로 정렬한 내용을 해시한다."""
+
+    canonical = mapping.sort_values("segment_id").to_csv(index=False).encode("utf-8")
+    return hashlib.sha256(canonical).hexdigest()
+
+
+def current_mapping_version(version_path=MAP_ZONE_SEGMENT_VERSION_PATH) -> str | None:
+    """가장 최근에 승격된 zone-segment 매핑의 버전을 반환한다.
+
+    마커가 아직 없으면(이 기능 배포 전에 마지막으로 승격된 경우 등) None을
+    반환한다 — 호출부가 "버전을 모른다"와 "버전이 바뀌었다"를 구분해서
+    처리해야 한다."""
+
+    if not version_path.exists():
+        return None
+    return version_path.read_text().strip()
 
 
 def validate_reference_inputs(
@@ -179,13 +209,19 @@ def build_map_zone_segment_staged(
     stage_path = run_path / "map_zone_segment.parquet"
     stage_path.parent.mkdir(parents=True, exist_ok=True)
     mapping.to_parquet(str(stage_path), index=False)
+    mapping_version = _content_hash(mapping)
     logger.info(
-        "segment-zone staging 저장 완료: %s행(nearest=%s행) -> %s",
+        "segment-zone staging 저장 완료: %s행(nearest=%s행) version=%s -> %s",
         len(mapping),
         int((mapping["mapping_method"] == "nearest").sum()),
+        mapping_version,
         stage_path,
     )
-    return {"run_id": run_id, "stage_path": str(stage_path)}
+    return {
+        "run_id": run_id,
+        "stage_path": str(stage_path),
+        "mapping_version": mapping_version,
+    }
 
 
 def validate_map_zone_segment(path, lion_segment_path=LION_SEGMENT_PATH) -> str:
@@ -230,6 +266,7 @@ def publish_map_zone_segment(
     validated_stage: dict,
     output_path=MAP_ZONE_SEGMENT_PATH,
     staging_root=MAP_ZONE_SEGMENT_STAGING_ROOT,
+    version_path=MAP_ZONE_SEGMENT_VERSION_PATH,
 ) -> str:
     """검증된 임시 매핑만 운영 Silver2 경로로 승격하고 임시본을 지운다."""
 
@@ -246,9 +283,23 @@ def publish_map_zone_segment(
     if not output_path.exists():
         raise RuntimeError(f"zone-segment 운영 경로 승격 실패: {output_path}")
 
+    # Type 3(tlc_daily)가 매핑이 바뀐 걸 알아챌 수 있도록 버전 마커를
+    # 승격 성공 시점에만 기록한다 - 검증 실패로 승격 자체가 안 되면 이
+    # 줄까지 못 와서 예전 버전이 그대로 남는다(안전한 방향).
+    mapping_version = validated_stage.get("mapping_version")
+    if mapping_version:
+        version_path.parent.mkdir(parents=True, exist_ok=True)
+        version_path.write_text(mapping_version)
+    else:
+        logger.warning(
+            "zone-segment 승격 결과에 mapping_version이 없어 버전 마커를 갱신하지 않습니다"
+        )
+
     if isinstance(run_path, Path):
         shutil.rmtree(run_path)
     else:
         run_path.rmtree()
-    logger.info("segment-zone Silver2 승격 완료: %s", output_path)
+    logger.info(
+        "segment-zone Silver2 승격 완료: %s (version=%s)", output_path, mapping_version
+    )
     return str(output_path)
