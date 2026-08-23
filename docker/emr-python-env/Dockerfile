@@ -4,8 +4,9 @@
 # (scripts/package_emr_dependencies.sh 참고).
 #
 # (이 줄은 build-emr-python-env 잡의 paths-filter가 이 파일 변경을 감지해야
-# scripts/package_emr_dependencies.sh에 추가한 진단용 `ls -la`가 실제로
-# 실행되므로 트리거 목적으로 추가 — 원인 확인되면 지워도 된다.)
+# S3의 pyspark_deps.tar.gz가 재빌드/재업로드되므로 트리거 목적으로 추가 —
+# EMR job이 ModuleNotFoundError: cloudpathlib로 죽어서, 예전에 올라간
+# tarball이 최신 requirements와 안 맞는 것 같아 강제로 재빌드시킨다.)
 #
 # 로컬 Mac(arm64/Darwin)에서 그냥 pip install해서 만든 venv는 EMR
 # Serverless(Amazon Linux, x86_64)에서 그대로 못 쓴다 — geopandas/shapely/
