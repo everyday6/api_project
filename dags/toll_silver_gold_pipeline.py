@@ -52,29 +52,27 @@ def toll_silver_gold_pipeline():
 
     @task(task_id="build_lion_facility_mapping")
     def build_lion_facility_mapping_task(gdb_path: str) -> str:
-        from pathlib import Path
-
         from src.toll.silver2 import build_lion_facility_mapping
 
-        return build_lion_facility_mapping(gdb_path=Path(gdb_path))
+        # gdb_path는 S3 경로일 수 있다(예: "s3://bucket/...") — stdlib
+        # pathlib.Path로 감싸면 "//"가 "/"로 뭉개져서 s3:／bucket/... 이 돼버려
+        # 더 이상 유효한 S3 URI가 아니게 된다(실제로 겪음, build_and_write_gold
+        # FileNotFoundError 원인). 문자열 그대로 넘긴다.
+        return build_lion_facility_mapping(gdb_path=gdb_path)
 
     @task(task_id="build_lion_cbd_mapping")
     def build_lion_cbd_mapping_task(gdb_path: str) -> str:
-        from pathlib import Path
-
         from src.toll.silver2 import build_lion_cbd_mapping
 
-        return build_lion_cbd_mapping(gdb_path=Path(gdb_path))
+        return build_lion_cbd_mapping(gdb_path=gdb_path)
 
     @task(task_id="build_and_write_gold")
     def build_and_write_gold(lion_facility_map_path: str, lion_cbd_map_path: str) -> int:
-        from pathlib import Path
-
         from src.toll.gold import build_and_write
 
         return build_and_write(
-            lion_facility_map_path=Path(lion_facility_map_path),
-            lion_cbd_map_path=Path(lion_cbd_map_path),
+            lion_facility_map_path=lion_facility_map_path,
+            lion_cbd_map_path=lion_cbd_map_path,
         )
 
     gdb_path = find_latest_lion_gdb()
