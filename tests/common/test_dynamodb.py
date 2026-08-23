@@ -90,3 +90,55 @@ def test_batch_write_items_then_get_all():
 
     assert len(result) == 30
     assert result[("29", "LENGTH")]["value"] == 290
+
+
+@mock_aws
+def test_put_item_and_batch_get_items_round_trip_floats():
+    # toll처럼 실제 소수값을 쓰는 호출부가 TypeError 없이 그대로 쓸 수
+    # 있어야 한다(Decimal 변환은 이 모듈 안에서 처리).
+    _create_test_table()
+
+    dynamodb.put_item(TABLE_NAME, {"segment_id": "S1", "sk": "TYPE#4", "value": 0.75})
+
+    result = dynamodb.batch_get_items(TABLE_NAME, [{"segment_id": "S1", "sk": "TYPE#4"}])
+
+    assert result[("S1", "TYPE#4")]["value"] == 0.75
+
+
+@mock_aws
+def test_get_value_returns_written_value():
+    _create_test_table()
+
+    dynamodb.put_item(TABLE_NAME, {"segment_id": "S1", "sk": "TYPE#4", "value": 0.75})
+
+    result = dynamodb.get_value(TABLE_NAME, "S1", "TYPE#4")
+
+    assert result == 0.75
+
+
+@mock_aws
+def test_get_value_returns_default_when_missing():
+    _create_test_table()
+
+    result = dynamodb.get_value(TABLE_NAME, "NO_SUCH_SEGMENT", "TYPE#4", default=0)
+
+    assert result == 0
+
+
+def test_get_value_returns_default_when_table_does_not_exist():
+    # ensure_table을 아예 안 부른 테이블 — Gold 파이프라인이 한 번도 안
+    # 돈 상태를 재현한다. 에러 없이 default가 나와야 한다("무결점 응답").
+    with mock_aws():
+        result = dynamodb.get_value("table_that_does_not_exist", "S1", "TYPE#4", default=0)
+
+    assert result == 0
+
+
+def test_ensure_table_creates_table_once_and_is_idempotent():
+    with mock_aws():
+        dynamodb.ensure_table(TABLE_NAME)
+        # 두 번째 호출은 이미 있으니 그냥 조용히 넘어가야 한다(예외 없음).
+        dynamodb.ensure_table(TABLE_NAME)
+
+        client = dynamodb.get_dynamodb_resource().meta.client
+        assert TABLE_NAME in client.list_tables()["TableNames"]
