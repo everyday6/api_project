@@ -25,6 +25,7 @@ from pyspark.sql.functions import (
 )
 
 from src.common.config import TLC_TYPE3_DOW_NAMES, TLC_TYPE3_ID
+from src.common.dynamodb import get_table
 from src.common.spark import to_spark_path
 
 
@@ -38,6 +39,15 @@ TIME_SLOTS = tuple(
 TYPE3_META_SEGMENT_ID = "__META__"
 TYPE3_META_SK = "TYPE#3"
 DATE_PARTITION_PATTERN = re.compile(r"^date=(\d{4}-\d{2}-\d{2})$")
+
+# DynamoDB 쓰기 병렬도. executor마다 자기 파티션을 독립적으로 batch_writer로
+# 쓰게 해서, driver가 toLocalIterator()로 한 줄씩 순차 처리할 때보다
+# wall-clock을 파티션 수만큼 나눈다(Airflow heartbeat timeout 예방 — segment
+# 수가 많으면 순차 처리가 5분을 넘겨 태스크가 강제 종료되는 사고가 있었다).
+# DynamoDB가 PAY_PER_REQUEST(온디맨드)라 동시 쓰기 자체는 감당하지만,
+# 파티션이 너무 잘게 쪼개지면 파티션마다 boto3 리소스를 새로 만드는 오버헤드가
+# 커지므로 적당한 값으로 고정한다.
+TYPE3_DYNAMODB_WRITE_PARTITIONS = 32
 TAXI_ZONE_IDS = tuple(range(1, 264))
 DOW_NAMES = TLC_TYPE3_DOW_NAMES
 SPARK_DOW_NAMES = (DOW_NAMES[-1], *DOW_NAMES[:-1])
@@ -392,32 +402,52 @@ def validate_segment_values(
     return {"segments": actual_segments, "rows": actual_rows}
 
 
+def _write_type3_partition(table_name: str):
+    """executor 파티션 하나를 자기만의 boto3 리소스로 DynamoDB에 쓴다.
+
+    driver에서 만든 boto3 리소스는 executor로 직렬화해서 보낼 수 없으므로
+    (네트워크 커넥션을 포함한 객체라 pickle 불가/안전하지 않음), 파티션마다
+    executor 안에서 새로 만든다."""
+
+    def _write(rows) -> None:
+        table = get_table(table_name)
+        with table.batch_writer(overwrite_by_pkeys=["segment_id", "sk"]) as batch:
+            for row in rows:
+                batch.put_item(Item={
+                    "segment_id": str(row["segment_id"]),
+                    "sk": f"{TYPE_ID}#{row['dow']}#{str(row['time']).zfill(4)}",
+                    "value": Decimal(str(row["value"])),
+                })
+
+    return _write
+
+
 def write_type3_rolling_to_dynamodb(
-    table,
+    table_name: str,
     rolling: DataFrame,
     window_start: date,
     window_end: date,
     rolling_weeks: int,
 ) -> int:
-    """검증된 Spark 롤링 결과 저장 후 마지막에 완료 메타데이터를 기록한다."""
+    """검증된 Spark 롤링 결과를 executor 병렬로 저장한 뒤 완료 메타데이터를 기록한다.
 
-    written = 0
-    with table.batch_writer(overwrite_by_pkeys=["segment_id", "sk"]) as batch:
-        for row in rolling.select(
-            "segment_id",
-            "dow",
-            "time",
-            "value",
-        ).toLocalIterator():
-            batch.put_item(Item={
-                "segment_id": str(row["segment_id"]),
-                "sk": f"{TYPE_ID}#{row['dow']}#{str(row['time']).zfill(4)}",
-                "value": Decimal(str(row["value"])),
-            })
-            written += 1
+    이전엔 driver가 toLocalIterator()로 한 줄씩 순차로 batch_writer를
+    호출했다 — segment 수가 많으면(zone 값이 segment마다 복제되므로 수만~
+    수십만 건) 이 태스크 하나가 Airflow heartbeat timeout(기본 300초)을
+    넘겨 강제 종료되는 사고가 실제로 있었다. foreachPartition으로
+    executor마다 자기 파티션을 병렬로 쓰게 바꿔서 wall-clock을 파티션
+    수만큼 나눈다.
+    """
 
-    # 값 저장 도중 실패하면 COMPLETED가 남지 않아 다음 DAG가 다시 처리한다.
-    table.put_item(Item={
+    to_write = rolling.select("segment_id", "dow", "time", "value").repartition(
+        TYPE3_DYNAMODB_WRITE_PARTITIONS
+    )
+    written = to_write.count()
+    to_write.foreachPartition(_write_type3_partition(table_name))
+
+    # 값 저장 도중(어느 파티션에서든) 실패하면 예외가 여기까지 전파되어
+    # COMPLETED가 안 남고, 다음 DAG 실행이 워터마크를 보고 다시 처리한다.
+    get_table(table_name).put_item(Item={
         "segment_id": TYPE3_META_SEGMENT_ID,
         "sk": TYPE3_META_SK,
         "status": "COMPLETED",

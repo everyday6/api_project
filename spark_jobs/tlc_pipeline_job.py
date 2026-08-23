@@ -17,7 +17,6 @@ from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, max as spark_max, min as spark_min, to_date
 
 from src.common.config import TLC_TYPE3_ROLLING_WEEKS
-from src.common.dynamodb import get_table
 from src.common.gx import validate_spark_dataframe
 from src.common.logger import get_logger
 from src.common.spark import to_spark_path
@@ -227,9 +226,8 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
         )
         try:
             final_stats = validate_segment_values(segment_values, mapping)
-            table = get_table(payload["table_name"])
             written = write_type3_rolling_to_dynamodb(
-                table,
+                payload["table_name"],
                 segment_values,
                 window_start,
                 window_end,
