@@ -24,7 +24,7 @@ RECENT_MONTHS_WINDOW = 4
 TLC_TIMEZONE = "America/New_York"
 TLC_TYPE3_ID = 3
 TLC_TYPE3_DOW_NAMES = ("MON", "TUE", "WED", "THU", "FRI", "SAT", "SUN")
-TLC_TYPE3_ROLLING_WEEKS = int(os.getenv("TLC_TYPE3_ROLLING_WEEKS", "12"))
+TLC_TYPE3_ROLLING_WEEKS = int(os.getenv("TLC_TYPE3_ROLLING_WEEKS", "8"))
 
 # 로컬 경로
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
