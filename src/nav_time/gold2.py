@@ -23,9 +23,11 @@ from pyspark.sql.functions import (
     floor,
     hour,
     lpad,
+    max as spark_max,
     minute,
     row_number,
     sum as spark_sum,
+    to_date,
 )
 
 from src.common.config import AVG_SORT_KEY, BUCKET_MINUTES
@@ -55,6 +57,10 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
 
     한 버킷 안에서 시간순으로 매긴 순위(rank)를 가중치로 쓴다 — n개 판독값이면
     1:2:...:n 비율(최근 값일수록 크게), 삼각수 n*(n+1)/2로 정규화한다.
+
+    collected_date는 그 버킷을 구성한 판독값들의 observed_at 중 가장 최근 값의
+    날짜다 — DynamoDB에 저장된 버킷 값이 며칠자 원본 데이터로 계산됐는지 표시하기
+    위함(docs/superpowers/specs/2026-08-24-type1-collected-date-design.md).
     """
 
     spark = silver2_df.sparkSession
@@ -75,7 +81,10 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
 
     bucket_avg_speed = (
         weighted.groupBy("segment_id", "bucket")
-        .agg(spark_sum("weighted_speed").alias("avg_speed"))
+        .agg(
+            spark_sum("weighted_speed").alias("avg_speed"),
+            to_date(spark_max("observed_at")).alias("collected_date"),
+        )
         .filter(col("avg_speed") > 0)
     )
 
@@ -84,6 +93,7 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
     return joined.select(
         "segment_id",
         "bucket",
+        "collected_date",
         (
             (col("length_ft") / _FEET_PER_MILE) / col("avg_speed") * _SECONDS_PER_HOUR
         ).alias("time_seconds"),

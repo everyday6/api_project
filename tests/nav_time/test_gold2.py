@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import date, datetime
 from unittest.mock import patch
 
 import boto3
@@ -96,6 +96,33 @@ def test_compute_time_seconds_excludes_zero_speed_segment(spark):
 
     assert len(result) == 1
     assert result[0]["segment_id"] == "1"
+
+
+def test_compute_time_seconds_includes_collected_date(spark):
+    df = spark.createDataFrame([
+        {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
+    ])
+    dim_segment_length_df = pd.DataFrame([{"segment_id": "1", "length_ft": 5280.0}])
+
+    result = gold2.compute_time_seconds(df, dim_segment_length_df).collect()
+
+    assert result[0]["collected_date"] == date(2026, 8, 21)
+
+
+def test_compute_time_seconds_collected_date_uses_latest_observed_at_when_dates_mixed(spark):
+    # 같은 세그먼트/버킷(0000)에 서로 다른 날짜의 판독값이 섞여 들어오는 경우
+    # (자정 경계 등) -> 가장 최근 observed_at의 날짜를 collected_date로 쓴다.
+    df = spark.createDataFrame([
+        {"segment_id": "1", "speed": 20.0, "observed_at": datetime(2026, 8, 21, 0, 5)},
+        {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 22, 0, 10)},
+    ])
+    dim_segment_length_df = pd.DataFrame([{"segment_id": "1", "length_ft": 5280.0}])
+
+    result = gold2.compute_time_seconds(df, dim_segment_length_df).collect()
+
+    assert len(result) == 1
+    assert result[0]["bucket"] == "0000"
+    assert result[0]["collected_date"] == date(2026, 8, 22)
 
 
 @mock_aws
