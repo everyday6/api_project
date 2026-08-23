@@ -5,9 +5,6 @@ NYC DCP LION(도로망) Bronze와 Silver1을 담당하는 도메인 파이프라
 분기마다 새 릴리즈가 나오는 전체 스냅샷 데이터라, 증분 개념 없이 매번
 통째로 받는다.
 
-검증된 Silver1 dim_segment가 운영 경로에 반영된 뒤에만 Zone-Segment
-매핑 DAG를 실행한다.
-
 ingest_lion은 Asset("lion_bronze_updated")를 outlet으로 내보낸다 —
 toll_silver_gold_pipeline이 이 Asset을 구독해서, 분기 LION 갱신 때도
 (요금표가 안 바뀌어도) segment 매핑을 다시 계산하도록 하기 위함이다.
@@ -18,13 +15,18 @@ publish_dim_segment는 별도로 Asset("lion_dim_segment_ready")를 outlet으로
 읽어 Gold2(is_routable)만 계산한다. lion_bronze_updated가 아니라 이 Asset을
 쓰는 이유: Bronze 다운로드 직후가 아니라 Silver1 검증·발행까지 끝난
 뒤여야 dim_segment.parquet가 실제로 최신 상태이기 때문.
+
+예전엔 publish_dim_segment 뒤에 TriggerDagRunOperator로 zone_segment_pipeline을
+직접 호출했는데, taxi_zone_pipeline도 같은 걸 호출하다 보니 둘이 같은 날
+겹치면 zone_segment_pipeline이 두 번 도는 문제가 있었다. zone_segment_pipeline이
+Asset("lion_dim_segment_ready") | Asset("taxi_zone_silver1_updated")를
+직접 구독하도록 바꿔, TriggerDagRunOperator 대신 Asset 이벤트를 기준으로 실행한다.
 """
 
 from datetime import datetime, timedelta
 
 from airflow import DAG
 from airflow.operators.python import PythonOperator
-from airflow.providers.standard.operators.trigger_dagrun import TriggerDagRunOperator
 from airflow.sdk import Asset
 
 from src.common.alerts import notify_slack_failure
@@ -99,18 +101,10 @@ with DAG(
         },
     )
 
-    trigger_zone_segment = TriggerDagRunOperator(
-        task_id="trigger_zone_segment_pipeline",
-        trigger_dag_id="zone_segment_pipeline",
-        trigger_run_id="zone_segment__lion__{{ run_id }}",
-        skip_when_already_exists=True,
-        fail_when_dag_is_paused=True,
-    )
-
     (
         task_ingest_lion
         >> task_build_dim_segment_staged
         >> task_validate_dim_segment
         >> task_publish_dim_segment
+        >> task_cleanup_dim_segment_staging
     )
-    task_publish_dim_segment >> [task_cleanup_dim_segment_staging, trigger_zone_segment]
