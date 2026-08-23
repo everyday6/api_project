@@ -40,6 +40,7 @@ on:
       - requirements-lambda.txt
       - src/**
       - dags/**
+      - spark_jobs/**
       - docker/emr-python-env/Dockerfile
       - docker/lambda/Dockerfile
       - .github/workflows/build-push-ecr.yml
