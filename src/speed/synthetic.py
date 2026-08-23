@@ -17,7 +17,7 @@ import geopandas as gpd
 import pandas as pd
 from shapely import wkt as shapely_wkt
 
-from src.common.config import LION_CRS
+from src.common.config import GOLD2_DIR, LION_CRS
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_synthetic")
@@ -39,6 +39,18 @@ SPEED_COLUMNS = [
     "link_points", "encoded_poly_line", "encoded_poly_line_lvls", "owner",
     "transcom_id", "borough", "link_name",
 ]
+
+# 참고표(reference table) 스키마 - routable 세그먼트마다 무거운 계산
+# (geometry->link_points 변환, POSTED_SPEED 조회)을 미리 끝내둔 결과.
+REFERENCE_TABLE_COLUMNS = [
+    "segment_id", "link_points", "base_speed", "street_name", "borough", "length_ft",
+]
+
+# LION은 분기(1월/7월)에 한 번만 갱신되는데 collect_speed_data()는 30분마다
+# 도니, 매번 gdb 원본(로드만 9초+)을 다시 읽지 않도록 이 경로에 캐싱한다.
+# dim_segment.parquet(Gold2)과 같은 디렉터리에 둔다 - 같은 LION 소스에서
+# 파생된 산출물이라서다.
+REFERENCE_TABLE_PATH = GOLD2_DIR / "speed_synthetic_reference.parquet"
 
 
 def _clean_posted_speed(raw_df: pd.DataFrame) -> pd.Series:
@@ -80,29 +92,80 @@ def _random_speed(base_speed: float, rng: random.Random) -> float:
     return max(_MIN_SPEED_MPH, base_speed * multiplier)
 
 
-def build_synthetic_rows(
-    dim_segment_df: pd.DataFrame,
-    uncovered_segment_ids,
-    posted_speed: pd.Series,
-    data_as_of: str,
-    rng: random.Random | None = None,
-) -> pd.DataFrame:
-    """커버 안 된 세그먼트들에 대해 실제 속도 API와 동일한 스키마의
-    synthetic row를 만든다."""
+def build_reference_table(dim_segment_df: pd.DataFrame, posted_speed: pd.Series) -> pd.DataFrame:
+    """routable 세그먼트 전체에 대해 geometry->link_points 변환과
+    POSTED_SPEED(없으면 기본값) 조회를 미리 끝내둔 참고표를 만든다.
 
-    rng = rng or random.Random()
-    uncovered_set = set(uncovered_segment_ids)
-    target = dim_segment_df[dim_segment_df["segment_id"].isin(uncovered_set)]
+    이게 이 모듈에서 제일 무거운 계산이라(세그먼트당 shapely/geopandas
+    호출) load_or_build_reference_table()이 결과를 캐싱해서 재사용한다."""
 
     rows = []
-    for _, seg in target.iterrows():
+    for _, seg in dim_segment_df.iterrows():
         segment_id = seg["segment_id"]
         base_speed = posted_speed.get(segment_id)
         if base_speed is None or pd.isna(base_speed) or base_speed <= 0:
             base_speed = DEFAULT_SPEED_MPH
 
-        speed = _random_speed(base_speed, rng)
-        length_ft = seg.get("length_ft") or 0.0
+        rows.append({
+            "segment_id": segment_id,
+            "link_points": segment_geometry_to_link_points(seg["geometry"]),
+            "base_speed": base_speed,
+            "street_name": seg.get("street_name", ""),
+            "borough": _BOROUGH_NAMES.get(str(seg.get("borough_code", "")), ""),
+            "length_ft": seg.get("length_ft") or 0.0,
+        })
+
+    logger.info(f"[speed_synthetic] 참고표 {len(rows)}행 생성")
+
+    return pd.DataFrame(rows, columns=REFERENCE_TABLE_COLUMNS)
+
+
+def load_or_build_reference_table(
+    reference_path=REFERENCE_TABLE_PATH,
+    *,
+    dim_segment_loader,
+    posted_speed_loader,
+) -> pd.DataFrame:
+    """참고표 캐시가 있으면 그대로 읽고(gdb 재로드 없음), 없으면 한 번
+    만들어서 저장한다. dim_segment_loader/posted_speed_loader는 캐시가
+    없을 때만 호출된다(무거운 gdb 읽기를 캐시 hit 시 완전히 건너뛰기 위함)."""
+
+    if reference_path.exists():
+        return pd.read_parquet(str(reference_path))
+
+    dim_segment = dim_segment_loader()
+    routable = dim_segment[dim_segment["is_routable"]] if "is_routable" in dim_segment else dim_segment
+    posted_speed = posted_speed_loader()
+
+    table = build_reference_table(routable, posted_speed)
+
+    reference_path.parent.mkdir(parents=True, exist_ok=True)
+    table.to_parquet(str(reference_path), index=False)
+    logger.info(f"[speed_synthetic] 참고표 캐시 저장 -> {reference_path}")
+
+    return table
+
+
+def build_synthetic_rows(
+    reference_df: pd.DataFrame,
+    uncovered_segment_ids,
+    data_as_of: str,
+    rng: random.Random | None = None,
+) -> pd.DataFrame:
+    """참고표(build_reference_table 산출물)를 바탕으로, 커버 안 된
+    세그먼트들에 대해 실제 속도 API와 동일한 스키마의 synthetic row를
+    만든다. geometry 변환 등 무거운 계산은 참고표에 이미 끝나있어서
+    여기서는 매번 달라지는 speed 변동만 계산한다."""
+
+    rng = rng or random.Random()
+    uncovered_set = set(uncovered_segment_ids)
+    target = reference_df[reference_df["segment_id"].isin(uncovered_set)]
+
+    rows = []
+    for _, ref in target.iterrows():
+        segment_id = ref["segment_id"]
+        speed = _random_speed(ref["base_speed"], rng)
+        length_ft = ref["length_ft"] or 0.0
         travel_time = (length_ft / (speed * 5280 / 3600)) if speed > 0 else 0.0
 
         rows.append({
@@ -115,13 +178,13 @@ def build_synthetic_rows(
             "status": "0",
             "data_as_of": data_as_of,
             "link_id": segment_id,
-            "link_points": segment_geometry_to_link_points(seg["geometry"]),
+            "link_points": ref["link_points"],
             "encoded_poly_line": "",
             "encoded_poly_line_lvls": "",
             "owner": "NYC-DOT",
             "transcom_id": str(segment_id),
-            "borough": _BOROUGH_NAMES.get(str(seg.get("borough_code", "")), ""),
-            "link_name": seg.get("street_name", ""),
+            "borough": ref["borough"],
+            "link_name": ref["street_name"],
         })
 
     logger.info(f"[speed_synthetic] synthetic row {len(rows)}개 생성")

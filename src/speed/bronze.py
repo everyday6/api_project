@@ -127,9 +127,16 @@ def _synthesize_uncovered_segments(links_df: pd.DataFrame, data_as_of: str) -> p
     covered_ids = set(matched["segment_id"])
     uncovered_ids = set(routable["segment_id"]) - covered_ids
 
-    posted_speed = synthetic.load_posted_speed(_find_latest_lion_gdb())
+    # 참고표(geometry->link_points 변환 + POSTED_SPEED 조회, 세그먼트당
+    # 무거운 계산)는 캐시가 있으면 그대로 읽는다 - LION은 분기에 한 번만
+    # 바뀌는데 이 함수는 30분마다 불려서, 캐시 없이는 매번 gdb 원본을
+    # 다시 읽게 된다(로드만 9초+).
+    reference_table = synthetic.load_or_build_reference_table(
+        dim_segment_loader=lambda: routable,
+        posted_speed_loader=lambda: synthetic.load_posted_speed(_find_latest_lion_gdb()),
+    )
 
-    return synthetic.build_synthetic_rows(routable, uncovered_ids, posted_speed, data_as_of)
+    return synthetic.build_synthetic_rows(reference_table, uncovered_ids, data_as_of)
 
 
 def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:

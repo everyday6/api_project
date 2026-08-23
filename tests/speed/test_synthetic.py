@@ -54,7 +54,6 @@ def test_random_speed_stays_within_variation_range():
 
 def test_random_speed_never_below_minimum():
     rng = random.Random(1)
-    # base가 아주 작아도(0.5mph) 최소값 아래로는 안 내려가야 한다.
     for _ in range(200):
         speed = synthetic._random_speed(0.5, rng)
         assert speed >= synthetic._MIN_SPEED_MPH
@@ -73,71 +72,158 @@ def _dim_segment_row(**overrides):
     return row
 
 
-def test_build_synthetic_rows_uses_posted_speed_as_base():
+# ---------------------------------------------------------------------------
+# 참고표(reference table) - 무거운 geometry 변환/POSTED_SPEED 조회를 미리
+# 한 번만 해서 저장해두는 부분. LION은 분기에 한 번만 바뀌는데 이 계산을
+# collect_speed_data()가 30분마다 새로 하면 낭비라(gdb 로드만 9초+) 캐싱한다.
+# ---------------------------------------------------------------------------
+
+def test_build_reference_table_uses_posted_speed_as_base():
     dim_segment = pd.DataFrame([_dim_segment_row(segment_id="1001")])
     posted_speed = pd.Series({"1001": 30.0})
-    rng = random.Random(0)
 
-    result = synthetic.build_synthetic_rows(
-        dim_segment, ["1001"], posted_speed, "2026-08-24T00:00:00.000", rng=rng
-    )
+    result = synthetic.build_reference_table(dim_segment, posted_speed)
 
     assert len(result) == 1
-    row = result.iloc[0]
-    speed = float(row["speed"])
-    assert 30.0 * synthetic._SPEED_VARIATION_MIN <= speed <= 30.0 * synthetic._SPEED_VARIATION_MAX
+    assert result.iloc[0]["base_speed"] == 30.0
 
 
-def test_build_synthetic_rows_falls_back_to_default_when_posted_speed_missing():
+def test_build_reference_table_falls_back_to_default_when_posted_speed_missing():
     dim_segment = pd.DataFrame([_dim_segment_row(segment_id="1002")])
     posted_speed = pd.Series({"1002": float("nan")})
-    rng = random.Random(0)
 
-    result = synthetic.build_synthetic_rows(
-        dim_segment, ["1002"], posted_speed, "2026-08-24T00:00:00.000", rng=rng
-    )
+    result = synthetic.build_reference_table(dim_segment, posted_speed)
 
-    row = result.iloc[0]
-    speed = float(row["speed"])
-    lo = synthetic.DEFAULT_SPEED_MPH * synthetic._SPEED_VARIATION_MIN
-    hi = synthetic.DEFAULT_SPEED_MPH * synthetic._SPEED_VARIATION_MAX
-    assert lo <= speed <= hi
+    assert result.iloc[0]["base_speed"] == synthetic.DEFAULT_SPEED_MPH
 
 
-def test_build_synthetic_rows_matches_real_speed_api_schema():
+def test_build_reference_table_precomputes_link_points():
     dim_segment = pd.DataFrame([_dim_segment_row(segment_id="1001")])
     posted_speed = pd.Series({"1001": 25.0})
 
-    result = synthetic.build_synthetic_rows(
-        dim_segment, ["1001"], posted_speed, "2026-08-24T00:00:00.000", rng=random.Random(0)
+    result = synthetic.build_reference_table(dim_segment, posted_speed)
+
+    assert result.iloc[0]["link_points"] == synthetic.segment_geometry_to_link_points(
+        _dim_segment_row(segment_id="1001")["geometry"]
     )
 
-    assert list(result.columns) == synthetic.SPEED_COLUMNS
 
-
-def test_build_synthetic_rows_only_includes_requested_uncovered_segments():
+def test_build_reference_table_covers_every_routable_segment():
     dim_segment = pd.DataFrame([
         _dim_segment_row(segment_id="1001"),
         _dim_segment_row(segment_id="1002"),
     ])
-    posted_speed = pd.Series({"1001": 25.0, "1002": 25.0})
+    posted_speed = pd.Series({"1001": 25.0, "1002": 30.0})
 
-    result = synthetic.build_synthetic_rows(
-        dim_segment, ["1001"], posted_speed, "2026-08-24T00:00:00.000", rng=random.Random(0)
+    result = synthetic.build_reference_table(dim_segment, posted_speed)
+
+    assert set(result["segment_id"]) == {"1001", "1002"}
+    assert list(result.columns) == synthetic.REFERENCE_TABLE_COLUMNS
+
+
+# ---------------------------------------------------------------------------
+# load_or_build_reference_table - 캐시 파일 있으면 그대로 읽고(gdb 재로드
+# 없음), 없으면 한 번 만들어서 저장.
+# ---------------------------------------------------------------------------
+
+def test_load_or_build_reference_table_reads_cache_when_present(tmp_path):
+    reference_path = tmp_path / "reference.parquet"
+    cached = pd.DataFrame(
+        [{"segment_id": "1001", "link_points": "40.0,-73.0", "base_speed": 25.0,
+          "street_name": "CACHED ST", "borough": "Manhattan", "length_ft": 100.0}],
+        columns=synthetic.REFERENCE_TABLE_COLUMNS,
     )
+    cached.to_parquet(reference_path, index=False)
+
+    def _should_not_be_called():
+        raise AssertionError("캐시가 있으면 다시 빌드하면 안 된다")
+
+    result = synthetic.load_or_build_reference_table(
+        reference_path, dim_segment_loader=_should_not_be_called, posted_speed_loader=_should_not_be_called,
+    )
+
+    assert result.iloc[0]["street_name"] == "CACHED ST"
+
+
+def test_load_or_build_reference_table_builds_and_saves_when_missing(tmp_path):
+    reference_path = tmp_path / "reference.parquet"
+    dim_segment = pd.DataFrame([_dim_segment_row(segment_id="1001")])
+    posted_speed = pd.Series({"1001": 25.0})
+
+    result = synthetic.load_or_build_reference_table(
+        reference_path, dim_segment_loader=lambda: dim_segment, posted_speed_loader=lambda: posted_speed,
+    )
+
+    assert len(result) == 1
+    assert reference_path.exists()
+
+
+# ---------------------------------------------------------------------------
+# build_synthetic_rows - 이제 참고표를 입력으로 받아서 실제 speed API
+# 스키마 row를 만든다(geometry 변환 등 무거운 계산은 이미 참고표에 끝나있음).
+# ---------------------------------------------------------------------------
+
+def _reference_row(**overrides):
+    row = {
+        "segment_id": "1001",
+        "link_points": "40.8303538,-73.9034669",
+        "base_speed": 25.0,
+        "street_name": "TEST STREET",
+        "borough": "Manhattan",
+        "length_ft": 396.0,
+    }
+    row.update(overrides)
+    return row
+
+
+def test_build_synthetic_rows_matches_real_speed_api_schema():
+    reference = pd.DataFrame([_reference_row()], columns=synthetic.REFERENCE_TABLE_COLUMNS)
+
+    result = synthetic.build_synthetic_rows(reference, ["1001"], "2026-08-24T00:00:00.000", rng=random.Random(0))
+
+    assert list(result.columns) == synthetic.SPEED_COLUMNS
+
+
+def test_build_synthetic_rows_speed_varies_around_reference_base_speed():
+    reference = pd.DataFrame([_reference_row(segment_id="1001", base_speed=30.0)], columns=synthetic.REFERENCE_TABLE_COLUMNS)
+    rng = random.Random(0)
+
+    result = synthetic.build_synthetic_rows(reference, ["1001"], "2026-08-24T00:00:00.000", rng=rng)
+
+    speed = float(result.iloc[0]["speed"])
+    assert 30.0 * synthetic._SPEED_VARIATION_MIN <= speed <= 30.0 * synthetic._SPEED_VARIATION_MAX
+
+
+def test_build_synthetic_rows_only_includes_requested_uncovered_segments():
+    reference = pd.DataFrame([
+        _reference_row(segment_id="1001"),
+        _reference_row(segment_id="1002"),
+    ], columns=synthetic.REFERENCE_TABLE_COLUMNS)
+
+    result = synthetic.build_synthetic_rows(reference, ["1001"], "2026-08-24T00:00:00.000", rng=random.Random(0))
 
     assert list(result["link_id"]) == ["1001"]
 
 
 def test_build_synthetic_rows_sets_link_id_and_status():
-    dim_segment = pd.DataFrame([_dim_segment_row(segment_id="1001")])
-    posted_speed = pd.Series({"1001": 25.0})
+    reference = pd.DataFrame([_reference_row(segment_id="1001")], columns=synthetic.REFERENCE_TABLE_COLUMNS)
 
-    result = synthetic.build_synthetic_rows(
-        dim_segment, ["1001"], posted_speed, "2026-08-24T00:00:00.000", rng=random.Random(0)
-    )
+    result = synthetic.build_synthetic_rows(reference, ["1001"], "2026-08-24T00:00:00.000", rng=random.Random(0))
 
     row = result.iloc[0]
     assert row["link_id"] == "1001"
     assert row["status"] == "0"
     assert row["data_as_of"] == "2026-08-24T00:00:00.000"
+
+
+def test_build_synthetic_rows_reuses_precomputed_link_points_without_recomputing():
+    # 참고표에 이미 저장된 link_points를 그대로 써야 한다 - geometry
+    # 재계산(shapely/geopandas 호출)이 없어야 빠르다.
+    reference = pd.DataFrame(
+        [_reference_row(segment_id="1001", link_points="1.234567,7.654321")],
+        columns=synthetic.REFERENCE_TABLE_COLUMNS,
+    )
+
+    result = synthetic.build_synthetic_rows(reference, ["1001"], "2026-08-24T00:00:00.000", rng=random.Random(0))
+
+    assert result.iloc[0]["link_points"] == "1.234567,7.654321"
