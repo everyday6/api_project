@@ -13,7 +13,7 @@ import해서 기존 호출부(테스트 포함) 하위 호환을 유지한다.
 from __future__ import annotations
 
 from src.common import dynamodb
-from src.common.config import NAV_GOLD_TABLE
+from src.common.config import DYNAMODB_TABLE_TYPE4
 
 TYPE_TOLL = 4
 
@@ -22,4 +22,4 @@ def get_toll_value(segment_id: str) -> float:
     """서빙 조회 함수. 시설/zone에 해당 안 하는 segment는 0을 반환한다
     (무결점 응답 원칙 — null/에러 없음)."""
 
-    return dynamodb.get_value(NAV_GOLD_TABLE, segment_id, f"TYPE#{TYPE_TOLL}", default=0)
+    return dynamodb.get_value(DYNAMODB_TABLE_TYPE4, segment_id, f"TYPE#{TYPE_TOLL}", default=0)
