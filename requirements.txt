@@ -5,6 +5,9 @@ python-dateutil==2.9.0.post0
 pandas==2.2.2
 
 shapely
+# LION GDB 지오메트리 읽기/공간조인(src/toll/silver2.py)에 사용. Dockerfile의
+# gdal-bin과 짝을 이룬다 — geopandas 자체가 requirements에서 빠져있었다.
+geopandas
 
 pyarrow==25.0.1
 python-dotenv==1.2.2
