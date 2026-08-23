@@ -235,7 +235,11 @@ def test_build_weekday_rolling_frame_rejects_missing_date(spark):
 
 
 def test_write_type3_partition_builds_expected_sk_and_decimal_value():
-    """executor에서 실제로 도는 부분만 떼어내 같은 프로세스에서 직접 검증한다."""
+    """executor에서 실제로 도는 부분만 떼어내 같은 프로세스에서 직접 검증한다.
+
+    파티션 안에서 여러 스레드가 청크를 나눠 동시에 쓰므로(성능을 위해),
+    items가 입력 순서 그대로 쌓인다는 보장은 없다 — segment_id로 정렬해
+    내용만 비교한다."""
 
     table = _FakeTable()
 
@@ -247,7 +251,7 @@ def test_write_type3_partition_builds_expected_sk_and_decimal_value():
         ])
 
     assert table.overwrite_by_pkeys == ["segment_id", "sk"]
-    assert table.items == [
+    assert sorted(table.items, key=lambda item: item["segment_id"]) == [
         {"segment_id": "0000001", "sk": "3#FRI#1200", "value": Decimal("1.5")},
         {"segment_id": "0000002", "sk": "3#MON#1230", "value": Decimal("2.5")},
     ]
