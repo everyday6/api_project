@@ -13,6 +13,7 @@ from datetime import datetime
 from typing import Literal
 
 from fastapi import FastAPI, Request
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 
@@ -24,6 +25,19 @@ from src.toll.serving import get_toll_values
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
 
 app = FastAPI(title="Segment Metrics API")
+
+# API Gateway가 이 Lambda 앞에 catch-all 라우트(ANY /{proxy+} 등)로 붙어있으면,
+# API Gateway 콘솔의 CORS 설정만으로는 preflight(OPTIONS) 요청이 API Gateway
+# 선에서 자동 처리되지 않고 그대로 Lambda까지 넘어온다 - FastAPI가 OPTIONS를
+# 모르면 200이 아닌 응답을 내서 브라우저가 "preflight가 OK 상태가 아니다"로
+# 막아버린다(S3 정적 페이지에서 실제로 겪음). 그래서 애플리케이션 레벨에서도
+# CORS를 직접 처리한다 - API Gateway 설정 여부와 무관하게 항상 동작한다.
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 
 @app.get("/health")

@@ -142,3 +142,31 @@ def test_navigation_values_rejects_too_many_segment_ids():
     )
 
     assert response.status_code == 422
+
+
+def test_cors_preflight_request_succeeds():
+    # API Gateway가 catch-all 라우트로 붙어있으면 OPTIONS가 API Gateway
+    # 선에서 처리 안 되고 그대로 Lambda까지 넘어올 수 있다 - 이때도 FastAPI가
+    # 직접 200 + CORS 헤더로 응답해야 브라우저가 preflight를 통과시킨다.
+    response = client.options(
+        "/api/navigation/values",
+        headers={
+            "Origin": "http://example.com",
+            "Access-Control-Request-Method": "POST",
+        },
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
+
+
+def test_cors_actual_response_includes_allow_origin_header():
+    with patch("src.serving.nav_api.resolve_segment_values", return_value=[30]):
+        response = client.post(
+            "/api/navigation/values",
+            json={"segment_ids": ["1"], "type": 1, "date": "2026-08-23", "time": "12:00"},
+            headers={"Origin": "http://example.com"},
+        )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "*"
