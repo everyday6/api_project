@@ -3,8 +3,10 @@ DAG: toll_bronze_pipeline
 
 통행료 요금표/시설목록/CBD 폴리곤을 Bronze에 올린다. 요금표는 사람이
 config/toll_rates.yaml을 고친 뒤에만 값이 바뀌므로 cron 스케줄이 아니라
-수동 트리거(schedule=None)로 둔다 — toll_rate_monitor DAG가 매달 확인
-알림을 보내면, 그걸 본 사람이 파일을 고치고 이 DAG를 수동으로 실행한다.
+수동 트리거(schedule=None)로 둔다 — 요금표 변경 여부는 사람이 직접
+공식 페이지를 확인해서 파일을 고치고 이 DAG를 수동으로 실행한다(월간
+확인 알림 DAG는 mta.info 봇 차단으로 자동 감지가 불가능해 실효성이
+없어 제거함).
 
 이 DAG가 끝나면 Asset("toll_bronze_updated")을 내보내서
 toll_silver_gold_pipeline이 자동으로 이어서 돈다.
