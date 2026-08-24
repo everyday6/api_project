@@ -50,12 +50,19 @@ if APP_ENV == "local":
     SILVER2_DIR = PROJECT_ROOT / "data" / "silver2"
     GOLD1_DIR = PROJECT_ROOT / "data" / "gold1"
     GOLD2_DIR = PROJECT_ROOT / "data" / "gold2"
+    GOLD_CACHE_DIR = PROJECT_ROOT / "data" / "gold_cache"
 else:
     BRONZE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/bronze")
     SILVER1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver1")
     SILVER2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver2")
     GOLD1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold1")
     GOLD2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold2")
+    GOLD_CACHE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold_cache")
+
+# GOLD_CACHE_DIR: RDS가 완전히 응답 불가능할 때 쓰는 "마지막으로 성공한
+# 값" 스냅샷 저장 위치(src/serving/nav_lookup.py의 S3 폴백 참고). Gold/S3는
+# 이미 멀티 AZ로 복제되는 관리형 스토리지라 RDS(Multi-AZ 안 쓰면 단일
+# 인스턴스)보다 훨씬 죽기 어렵다 - RDS 장애 시 이 스냅샷으로 대체한다.
 
 # ==========================
 # RDS (Gold 서빙 테이블) 설정
@@ -66,6 +73,29 @@ RDS_PORT = os.getenv("RDS_PORT", "5432")
 RDS_DB = os.getenv("RDS_DB")
 RDS_USER = os.getenv("RDS_USER")
 RDS_PASSWORD = os.getenv("RDS_PASSWORD")
+
+# APP_ENV=local이면 docker-compose의 nav-gold-postgres 컨테이너를 가리킨다.
+# 호스트(venv)에서 직접 돌릴 땐 localhost:5434(호스트 매핑 포트 - 기존
+# traffic-postgres-local 잔재 컨테이너가 5433을 이미 쓰고 있어 충돌 피하려고
+# 5434로 뺐다)가 기본값이고, 컨테이너 안에서는 docker-compose가 이 값을
+# 서비스명+내부 포트로 덮어쓴다(DYNAMO_LOCAL_ENDPOINT 때와 동일한 컨테이너/호스트
+# 엔드포인트 구분 필요 - 실제로 겪었던 문제라 처음부터 이렇게 분리한다).
+NAV_GOLD_RDS_LOCAL_DSN = os.getenv(
+    "NAV_GOLD_RDS_LOCAL_DSN",
+    "postgresql://nav_gold:nav_gold@localhost:5434/nav_gold",
+)
+
+
+def get_rds_dsn() -> str:
+    """type1 서빙(src/common/rds.py)이 실제로 접속할 DSN을 반환한다.
+    local이면 로컬 컨테이너, 아니면 실제 RDS(RDS_HOST 등) - 이 함수만
+    실제 RDS 엔드포인트로 바뀌면 나머지 코드는 손 안 대도 된다."""
+    if APP_ENV == "local":
+        return NAV_GOLD_RDS_LOCAL_DSN
+    return f"postgresql://{RDS_USER}:{RDS_PASSWORD}@{RDS_HOST}:{RDS_PORT}/{RDS_DB}"
+
+
+RDS_TABLE_TYPE1 = os.getenv("RDS_TABLE_TYPE1", "segment_metrics_type1")
 
 # ==========================
 # DynamoDB (nav 골드 데이터셋 서빙) 설정
@@ -143,6 +173,11 @@ HOTSPOT_INVERSE_DISTANCE_EPSILON_FT = 1.0
 # type3(DYNAMODB_NAV_TABLE)/type4(NAV_GOLD_TABLE)도 원래 각자 다른 이름의
 # env var를 썼는데, 이 네 줄로 이름/기본값 패턴을 통일했다.
 
+# TODO(팀 검토 필요): type1이 RDS_TABLE_TYPE1(아래)로 옮겨가면서 이 값은
+# 더 이상 nav_lookup.py/nav_time/gold2.py 어디서도 안 읽는다 - scripts/
+# create_dynamodb_tables.py/seed_dynamodb_defaults.py가 아직 이 이름으로
+# DynamoDB 테이블을 만들고/시드하는데, 그 테이블 자체가 이제 안 쓰이므로
+# 정리 대상이다(당장 지우면 저 스크립트들이 깨지니 이번 변경 범위 밖으로 둠).
 DYNAMODB_TABLE_TYPE1 = os.getenv("DYNAMODB_TABLE_TYPE1", "SegmentMetricsType1")
 DYNAMODB_TABLE_TYPE2 = os.getenv("DYNAMODB_TABLE_TYPE2", "SegmentMetricsType2")
 DYNAMODB_TABLE_TYPE3 = os.getenv("DYNAMODB_TABLE_TYPE3", "SegmentMetricsType3")

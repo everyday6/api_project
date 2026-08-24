@@ -63,6 +63,21 @@ x-airflow-env: &airflow-env
   DYNAMODB_TABLE_TYPE3: ${DYNAMODB_TABLE_TYPE3:-SegmentMetricsType3}
   DYNAMODB_TABLE_TYPE4: ${DYNAMODB_TABLE_TYPE4:-SegmentMetricsType4}
 
+  # nav-gold RDS(type1 서빙 저장소, src/common/config.py 참고). 컨테이너
+  # 안에서는 호스트 매핑 포트(5434)가 아니라 서비스명(nav-gold-postgres) +
+  # 컨테이너 내부 포트(5432)로 붙어야 한다(DYNAMO_LOCAL_ENDPOINT 때와
+  # 동일한 이유로 여기서 명시적으로 덮어쓴다). 실제 AWS RDS로 옮길 땐
+  # APP_ENV=aws에서 RDS_HOST/PORT/DB/USER/PASSWORD(.env)를 채우면 되고
+  # 이 값은 안 쓰인다.
+  NAV_GOLD_RDS_LOCAL_DSN: >-
+    postgresql://${NAV_GOLD_RDS_USER:-nav_gold}:${NAV_GOLD_RDS_PASSWORD:-nav_gold}@nav-gold-postgres:5432/${NAV_GOLD_RDS_DB:-nav_gold}
+
+  RDS_HOST: ${RDS_HOST:-}
+  RDS_PORT: ${RDS_PORT:-}
+  RDS_DB: ${RDS_DB:-}
+  RDS_USER: ${RDS_USER:-}
+  RDS_PASSWORD: ${RDS_PASSWORD:-}
+
   PYTHONPATH: /opt/airflow
 
 # CI(GitHub Actions)가 ECR에 미리 빌드해둔 이미지를 가리키는 값.
@@ -110,6 +125,45 @@ services:
 
     healthcheck:
       test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+
+  # =========================================================
+  # nav-gold-postgres
+  #
+  # DynamoDB에서 RDS Postgres로 옮기는 nav-gold 서빙 데이터 전용 로컬 DB.
+  # 위 postgres(Airflow 메타데이터)와는 완전히 다른 용도라 인스턴스를
+  # 분리한다 - 같은 DB에 스케줄러 상태랑 서빙 데이터를 섞으면 나중에 실제
+  # RDS로 옮길 때도 그대로 꼬인다. 호스트 포트를 5434로 매핑한 이유는
+  # 컨테이너 안 postgres 서비스도 내부적으로 5432를 쓰고 있어서 호스트에서
+  # 헷갈리지 않게 다른 번호를 쓴 것이고(5433이 아닌 5434인 건 이 리포와
+  # 별개로 로컬에 떠 있던 traffic-postgres-local 컨테이너가 5433을 이미
+  # 쓰고 있어 충돌을 피한 것) - 컨테이너 안에서는 서비스명(아래
+  # nav-gold-postgres) + 내부 포트(5432)로 붙는다(dynamodb-local 때
+  # 겪었던 것과 같은 컨테이너/호스트 엔드포인트 구분 필요).
+  nav-gold-postgres:
+    image: postgres:16
+    container_name: nav-gold-postgres
+    restart: unless-stopped
+
+    environment:
+      POSTGRES_USER: ${NAV_GOLD_RDS_USER:-nav_gold}
+      POSTGRES_PASSWORD: ${NAV_GOLD_RDS_PASSWORD:-nav_gold}
+      POSTGRES_DB: ${NAV_GOLD_RDS_DB:-nav_gold}
+
+    ports:
+      - "5434:5432"
+
+    volumes:
+      - nav_gold_postgres_data:/var/lib/postgresql/data
+
+    networks:
+      - airflow-network
+
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${NAV_GOLD_RDS_USER:-nav_gold} -d ${NAV_GOLD_RDS_DB:-nav_gold}"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -425,6 +479,7 @@ services:
 # =========================================================
 volumes:
   postgres_data:
+  nav_gold_postgres_data:
 
 
 # =========================================================
