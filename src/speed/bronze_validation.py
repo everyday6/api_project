@@ -10,7 +10,9 @@ Task 3 참고).
 from __future__ import annotations
 
 import pandas as pd
+from airflow.decorators import task
 
+from src.common.alerts import notify_slack_message
 from src.common.gx import validate_pandas_dataframe
 from src.common.logger import get_logger
 from src.speed.expectations import critical_expectations, log_only_expectations
@@ -68,3 +70,51 @@ def validate_bronze_file(bronze_path: str) -> list[dict]:
         asset_name="speed_bronze_logonly",
     )
     return [r for r in log_results if not r["success"]]
+
+
+def _validate_and_decide(bronze_path: str) -> bool:
+    """실제 결정 로직 - critical 실패시 False+Slack, log_only 실패시
+    True+Slack+로그, 전부 통과(또는 검증할 파일 자체가 없음)시 True.
+
+    @task.short_circuit는 Airflow TaskFlow 데코레이터라 직접 단위 테스트가
+    번거로우므로, 분기 로직은 이 plain 함수에 두고 validate_bronze는 얇은
+    wrapper로만 둔다.
+    """
+
+    if not bronze_path:
+        return True
+
+    try:
+        failed_log_only = validate_bronze_file(bronze_path)
+    except CriticalValidationError as error:
+        logger.error(f"speed Bronze critical 검증 실패: {error}")
+        notify_slack_message(
+            f":red_circle: speed Bronze critical 검증 실패 - 이번 사이클 스킵\n{error}"
+        )
+        return False
+
+    if failed_log_only:
+        for check in failed_log_only:
+            logger.warning(
+                "speed Bronze 검증 실패(로그만): %s %s -> %s",
+                check["expectation_type"], check["kwargs"], check["result"],
+            )
+        notify_slack_message(
+            f":warning: speed Bronze log_only 검증 실패 {len(failed_log_only)}건 "
+            f"(처리는 계속됨)"
+        )
+
+    return True
+
+
+@task.short_circuit
+def validate_bronze(bronze_path: str) -> bool:
+    """collect_bronze() 직후, EMR 제출 전에 도는 게이트.
+
+    False를 반환하면 Airflow가 이 task를 upstream으로 잡은 downstream
+    task를 전부 스킵한다(on_failure_callback은 안 걸림 - 실패가 아니라
+    정상 스킵이라서 - 그래서 위 _validate_and_decide 안에서 critical
+    실패 시 Slack을 직접 호출한다).
+    """
+
+    return _validate_and_decide(bronze_path)
