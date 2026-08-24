@@ -125,22 +125,38 @@ def test_validate_and_decide_returns_false_and_alerts_on_critical_failure():
 
     assert result is False
     mock_notify.assert_called_once()
-    assert "speed" in mock_notify.call_args.args[0]
+    message = mock_notify.call_args.args[0]
+    assert "speed" in message
+    # 어느 파일/사이클인지 Airflow 로그를 따로 뒤지지 않도록 경로가 포함돼야 한다.
+    assert "s3://bucket/bronze.parquet" in message
 
 
-def test_validate_and_decide_returns_true_and_alerts_on_log_only_failure():
+def test_validate_and_decide_returns_true_and_alerts_on_log_only_failure(caplog):
     failed = [{
         "expectation_type": "expect_column_values_to_be_between",
         "kwargs": {"column": "speed"},
         "result": {"unexpected_count": 3},
+        "exception_info": {"exception_message": "dtype mismatch: expected numeric"},
     }]
     with patch.object(bronze_validation, "validate_bronze_file", return_value=failed), \
          patch.object(bronze_validation, "notify_slack_message") as mock_notify:
-        result = bronze_validation._validate_and_decide("s3://bucket/bronze.parquet")
+        with caplog.at_level("WARNING"):
+            result = bronze_validation._validate_and_decide("s3://bucket/bronze.parquet")
 
     assert result is True
     mock_notify.assert_called_once()
-    assert "1건" in mock_notify.call_args.args[0]
+    message = mock_notify.call_args.args[0]
+    assert "1건" in message
+    # 알림 받은 사람이 Airflow 로그를 따로 뒤지지 않도록 파일 경로와 실패
+    # 컬럼 이름이 Slack 메시지에 바로 담겨 있어야 한다.
+    assert "s3://bucket/bronze.parquet" in message
+    assert "speed" in message
+    # GX가 메트릭 계산 중 내부적으로 예외를 삼킨 경우(success=False,
+    # result={}) 실제 원인은 exception_info에만 담기므로 로그에도 남겨야 한다.
+    assert any(
+        "exception_info" in record.message and "dtype mismatch" in record.message
+        for record in caplog.records
+    )
 
 
 def test_validate_and_decide_returns_true_without_alert_when_all_pass():

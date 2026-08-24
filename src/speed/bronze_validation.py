@@ -89,19 +89,24 @@ def _validate_and_decide(bronze_path: str) -> bool:
     except CriticalValidationError as error:
         logger.error(f"speed Bronze critical 검증 실패: {error}")
         notify_slack_message(
-            f":red_circle: speed Bronze critical 검증 실패 - 이번 사이클 스킵\n{error}"
+            f":red_circle: speed Bronze critical 검증 실패 - 이번 사이클 스킵\n"
+            f"*파일*: `{bronze_path}`\n{error}"
         )
         return False
 
     if failed_log_only:
         for check in failed_log_only:
             logger.warning(
-                "speed Bronze 검증 실패(로그만): %s %s -> %s",
-                check["expectation_type"], check["kwargs"], check["result"],
+                f"speed Bronze 검증 실패(로그만): {check['expectation_type']} "
+                f"{check['kwargs']} -> {check['result']} "
+                f"-> exception_info: {check['exception_info']}"
             )
+        failed_columns = [check["kwargs"].get("column") for check in failed_log_only]
         notify_slack_message(
             f":warning: speed Bronze log_only 검증 실패 {len(failed_log_only)}건 "
-            f"(처리는 계속됨)"
+            f"(처리는 계속됨)\n"
+            f"*파일*: `{bronze_path}`\n"
+            f"*실패 컬럼*: {failed_columns}"
         )
 
     return True
