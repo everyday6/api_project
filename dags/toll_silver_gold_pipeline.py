@@ -4,7 +4,7 @@ DAG: toll_silver_gold_pipeline
 toll_bronze_pipeline이 요금표/시설목록/CBD 폴리곤을 갱신하거나
 (Asset("toll_bronze_updated")), lion_pipeline이 분기 LION을 갱신할 때
 (Asset("lion_bronze_updated")) Silver2 매핑(lion_facility, lion_cbd)을
-다시 만들고 Gold 값을 재계산해서 DynamoDB에 적재한다. 이름을
+다시 만들고 Gold 값을 재계산해서 RDS에 적재한다. 이름을
 "gold_pipeline"이 아니라 "silver_gold_pipeline"으로 붙인 이유는 실제로
 Silver2 매핑 태스크가 여기 포함돼 있어서다(순수 Gold 계산만 하는 DAG가
 아님). 요금표가 1년에 한 번 정도만 바뀌므로 cron 스케줄 없이 Asset

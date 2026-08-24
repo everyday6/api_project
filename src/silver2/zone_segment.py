@@ -29,7 +29,7 @@ MAP_ZONE_SEGMENT_STAGING_ROOT = SILVER2_DIR / "_staging" / "map_zone_segment"
 # Type 3가 "매핑이 실제로 바뀌었는지"를 TLC 날짜 범위와 별개로 판단할 수
 # 있도록, 승격에 성공할 때마다 매핑 내용의 해시를 여기 남긴다. 이게 없으면
 # LION/Taxi Zone이 갱신돼 zone-segment 매핑이 바뀌어도, TLC 쪽 날짜 범위가
-# 그대로면 DynamoDB Type 3 값이 조용히 갱신되지 않는다.
+# 그대로면 RDS Type 3 값이 조용히 갱신되지 않는다.
 MAP_ZONE_SEGMENT_VERSION_PATH = SILVER2_DIR / "map_zone_segment_version.txt"
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 

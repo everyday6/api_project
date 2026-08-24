@@ -20,7 +20,7 @@ Silver1 (EMR Serverless)
     ↓
 Zone 날짜별 Type 3 (EMR Serverless → S3 Gold2)
     ↓
-Zone 최근 12주 요일별 평균 → Segment 매핑 → DynamoDB (EMR Serverless)
+Zone 최근 12주 요일별 평균 → Segment 매핑 → RDS (EMR Serverless)
 
 신규 파일이 없는 날은 각 단계가 빈 목록에 대해 실행되어
 아무 일도 하지 않고 정상 종료된다.
@@ -161,7 +161,7 @@ def tlc_daily():
     cleanup_type3_staging(published_type3)
 
     # -----------------------------------------
-    # 10. DynamoDB가 최신 12주보다 오래된 경우에만 갱신
+    # 10. RDS가 최신 12주보다 오래된 경우에만 갱신
     # -----------------------------------------
 
     publish_plan = check_type3_publish_needed(published_type3)

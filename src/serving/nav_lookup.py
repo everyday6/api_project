@@ -1,93 +1,93 @@
 """
 세그먼트 지표 조회 + fallback 체인
 
-"무조건 응답"(설계 문서 7절)을 구현하는 핵심 모듈. 키가 없는 경우와
-DB 호출 자체가 실패(예외)하는 경우를 구분하지 않고 똑같이 다음 fallback
+"무조건 응답"(설계 문서 7절)을 구현하는 핵심 모듈. 키가 없는 경우와 RDS
+호출 자체가 실패(예외)하는 경우를 구분하지 않고 똑같이 다음 fallback
 단계로 넘어간다.
 
-Type1(시간)은 RDS Postgres(src/common/rds.py)로 서빙한다. DynamoDB에서
-RDS로 옮기며 멀티 AZ 자동 failover(가용성)를 잃은 걸 보완하려고, RDS
-"자체가 응답 불가능한" 경우를 위한 별도 폴백 계층(메모리 캐시 -> S3
-Gold 스냅샷)을 추가로 둔다:
+Type1(시간)은 segment_metrics_type1(segment_id+time 복합키, src/common/
+config.py 참고)로 서빙한다. 한 행 안에 오늘 실측값(value)과 그 시간대의
+과거 평균(avg)을 같이 들고 있어서, "오늘 값이 있으면 그걸, 없으면 평균을"
+판단이 조회 한 번으로 끝난다. DynamoDB에서 RDS로 옮기며 잃은 멀티 AZ
+자동 failover(가용성)를 보완하려고, RDS 자체가 응답 불가능한 경우를 위한
+별도 폴백 계층(메모리 캐시 -> S3 Gold 스냅샷)을 추가로 둔다:
 
   [RDS 정상 응답]
-  1. Fresh Exact — 정확한 (segment_id, bucket) 값. observed_at이
-     freshness 기준(_FRESHNESS_THRESHOLD_SECONDS) 이내인 경우만 채택.
-  2. Historical AVG — (segment_id, "AVG")
-  3. SPEC Estimate — (segment_id, "SPEC"). 도로 스펙(length_ft / speed_limit_mph)
-     으로 계산한 추정 통과시간 — segment_length_pipeline이 LION 갱신 때마다
-     (quarterly) 다시 써둔다.
-  4. 코드 상수
-
-  [RDS 자체가 응답 불가능 — 연결 실패/타임아웃]
-  1. 메모리 캐시(이 프로세스가 이전에 RDS에서 성공적으로 읽은 값)
-  2. S3 Gold 스냅샷(src/common/gold_snapshot.py) — RDS가 정상일 때 Gold
-     파이프라인이 미리 내보내둔 세그먼트별 (exact, avg, spec) 스냅샷을
-     처음 미스가 날 때 한 번만 통째로 로드해 메모리에 얹는다. 이 안에서도
-     exact -> avg -> spec 순서로, 같은 freshness 기준을 재적용한다.
+  1. Fresh Exact — (segment_id, time) 행의 value. collected_date가 오늘인
+     경우만 채택한다.
+  2. Historical AVG — 같은 행의 avg(이 시간대의 과거 평균 - src/nav_time/
+     gold2.py가 실측이 들어올 때마다 증분 갱신한다).
   3. 코드 상수
 
-Type2(길이)도 RDS(segment_metrics_type2)로 서빙한다(별개 테이블,
-시간 무관 정적값): 정확한 segment_id 값 → 코드 상수. 길이는 시간과
-무관해 순서/중복에 영향받지 않고, GLOBAL#DEFAULT 같은 전역 폴백 행도
-따로 안 둔다(정성적 초안값일 뿐이라 DB에 둘 이유가 약함 - type1처럼
-멀티 AZ 손실을 보완하는 메모리/S3 폴백 계층도 아직은 안 둔다).
+  [RDS 자체가 응답 불가능 — 연결 실패/타임아웃]
+  1. 메모리 캐시(이 프로세스가 이전에 RDS에서 성공적으로 읽은 (segment_id,
+     time) 값)
+  2. S3 Gold 스냅샷(src/common/gold_snapshot.py) — RDS가 정상일 때 Gold
+     파이프라인이 미리 내보내둔 세그먼트×시간대별 스냅샷을 처음 미스가 날
+     때 한 번만 통째로 로드해 메모리에 얹는다. 이 안에서도 위와 같은
+     exact(오늘 것만) -> avg 순서를 그대로 재현한다.
+  3. 코드 상수
+
+  RDS는 정상 응답했는데 그 (segment_id, time)에 해당하는 행 자체가 없는
+  경우("값이 없음")는 메모리/S3 폴백으로 내려가지 않고 곧장 코드 상수로
+  간다 - 메모리/S3는 "RDS 자체가 죽었을 때 예전에 알던 값을 대신 쓰는"
+  용도라, RDS가 멀쩡한데 원래 없는 데이터에 그걸 섞으면 두 실패 모드가
+  헷갈린다.
 
 Type1(소요시간)의 segment_ids는 경로를 순서대로 나열한 것으로 간주한다.
 요청 시각은 첫 세그먼트에만 그대로 쓰고, 이후 세그먼트는 앞 세그먼트들의
-누적 소요시간만큼 시각을 이동해서 조회한다. 다만 어떤 버킷(sk)이 필요할지는
+누적 소요시간만큼 시각을 이동해서 조회한다. 다만 어떤 시간 슬롯이 필요할지는
 그 누적시각을 계산해봐야 알 수 있어서, RDS 조회 자체는 요청당 딱 한 번만
-한다 - segment_id별로 존재 가능한 행이 PK(segment_id, sk) 특성상 최대
-50개(버킷 48개+AVG+SPEC, sk가 날짜가 아니라 시간대라서)로 정해져 있어
-필요할지 모르는 버킷까지 전부 미리 배치로 가져와도 데이터량이 작다. 그
-결과로 순차 누적시각 계산 자체는 이 로컬 dict만 보고 끝나서(RDS를 더
-안 건드림), "세그먼트 수만큼 RDS 왕복이 쌓여 응답이 느려지거나 타임아웃
-나는" 문제 자체가 없어진다(_resolve_time_values 참고).
+한다 - segment_id별로 존재 가능한 행이 PK(segment_id, time) 특성상 최대
+48개(30분 슬롯)로 정해져 있어 필요할지 모르는 슬롯까지 전부 미리 배치로
+가져와도 데이터량이 작다. 그 결과로 순차 누적시각 계산 자체는 이 로컬
+dict만 보고 끝나서(RDS를 더 안 건드림), "세그먼트 수만큼 RDS 왕복이 쌓여
+응답이 느려지거나 타임아웃 나는" 문제 자체가 없어진다(_resolve_time_values
+참고) - 예전에 있던 circuit breaker/시간 예산 방어 로직은 그래서 필요 없다.
+
+Type2(길이)는 segment_metrics_type2(segment_id 단일키)로 서빙한다 - 시간과
+무관한 정적값이라 정확한 segment_id 값 -> GLOBAL 기본값 -> 코드 상수
+순서를 그대로 유지한다(멀티 AZ 손실을 보완하는 메모리/S3 폴백 계층은
+아직 type1에만 있다 - type2 확장은 이후 과제, TODO 팀 검토 필요).
 """
 
 from __future__ import annotations
 
-import time
+from datetime import date
 
-from src.common import gold_snapshot, rds
-from src.common.config import BUCKET_MINUTES, RDS_TABLE_TYPE1, RDS_TABLE_TYPE2
+from psycopg2 import sql
+
+from src.common import gold_snapshot
+from src.common.config import GLOBAL_PARTITION_KEY, SERVING_TABLE_TYPE1, SERVING_TABLE_TYPE2
+from src.common.db import batch_get_items, get_shared_connection
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
 
-# RDS/DynamoDB/GLOBAL#DEFAULT까지 전부 실패했을 때 쓰는 최후의 상수. 외부
+# RDS/GLOBAL#DEFAULT/메모리/S3까지 전부 실패했을 때 쓰는 최후의 상수. 외부
 # 호출이 전혀 없어 어떤 저장소도 완전히 응답 불가능한 상황에서도 동작한다.
-# TODO(팀 검토 필요): scripts/seed_dynamodb_defaults.py의 기본값과 동일한
+# TODO(팀 검토 필요): scripts/seed_rds_defaults.py의 기본값과 동일한
 # 정성적 초안.
 _HARDCODED_DEFAULTS = {1: 45, 2: 300}
 
-# type1 exact(segment_id, bucket) 값의 신선도 기준(초). observed_at이 이보다
-# 오래되면 그 bucket이 갱신을 멈췄다고 보고(파이프라인 중단 등) Historical
-# AVG로 내려간다. DB TTL로 삭제하지 않고 조회 시점에 매번 판단한다. RDS
-# 폴백(S3 스냅샷) 안 exact 값에도 같은 기준을 그대로 적용한다.
-# TODO(팀 검토 필요): 아직 기준 미확정 - 30분 수집 주기의 2배인 1시간으로
-# 잡은 정성적 초안. observed_at은 그 bucket 값을 마지막으로 계산한 시각
-# (epoch seconds) - src/nav_time/gold2.py가 기록한다.
-_FRESHNESS_THRESHOLD_SECONDS = 3600.0
-
-# RDS 장애 시 쓰는 메모리 캐시. segment_id -> {"avg", "spec", "exact_value",
-# "exact_observed_at"}. 상한을 안 걸면 Lambda 인스턴스가 오래 켜져 있을 때
-# 계속 커져서 OOM으로 함수 자체가 죽을 수 있어(관측값이 없는 것보다 훨씬
-# 나쁜 실패) 개수 상한 + 가장 오래된 것부터 제거한다.
+# RDS 장애 시 쓰는 메모리 캐시. (segment_id, time) -> 그 슬롯의 마지막 성공
+# 조회 행. 상한을 안 걸면 Lambda 인스턴스가 오래 켜져 있을 때 계속 커져서
+# OOM으로 함수 자체가 죽을 수 있어(관측값이 없는 것보다 훨씬 나쁜 실패)
+# 개수 상한 + 가장 오래된 것부터 제거한다.
 _MEMORY_CACHE_MAX_SIZE = 50_000
-_memory_cache: dict[str, dict] = {}
+_memory_cache: dict[tuple[str, str], dict] = {}
 
-# S3 Gold 스냅샷은 이 프로세스(Lambda 웜 인스턴스)에서 처음 필요할 때
-# 딱 한 번만 통째로 읽는다 - 세그먼트마다 매번 S3를 부르면 RDS가 죽어있는
+# S3 Gold 스냅샷은 이 프로세스(Lambda 웜 인스턴스)에서 처음 필요할 때 딱
+# 한 번만 통째로 읽는다 - 세그먼트마다 매번 S3를 부르면 RDS가 죽어있는
 # 동안 세그먼트 수만큼 S3 호출이 쌓이는 문제가 재발한다.
 _s3_snapshot_loaded = False
-_s3_snapshot: dict[str, dict] = {}
+_s3_snapshot: dict[str, dict[str, dict]] = {}
 
 
 def time_to_bucket(time_str: str) -> str:
     """'HH:MM' -> 'HHMM' (30분 단위로 내림)."""
     hour_str, minute_str = time_str.split(":")
-    bucket_minute = (int(minute_str) // BUCKET_MINUTES) * BUCKET_MINUTES
+    bucket_minute = (int(minute_str) // 30) * 30
     return f"{int(hour_str):02d}{bucket_minute:02d}"
 
 
@@ -104,21 +104,107 @@ def _add_seconds(time_str: str, seconds: int) -> str:
 
 def table_for_type(type_: int) -> str:
     if type_ == 1:
-        return RDS_TABLE_TYPE1
+        return SERVING_TABLE_TYPE1
     if type_ == 2:
-        return RDS_TABLE_TYPE2
+        return SERVING_TABLE_TYPE2
     raise ValueError(f"알 수 없는 type: {type_}")
 
 
-def _is_fresh(observed_at) -> bool:
-    """observed_at(epoch seconds)이 freshness 기준 이내인지 확인한다.
-    없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로 "신선하지
+def _batch_fetch_type1_rows(segment_ids: list[str], table_name: str) -> dict[str, dict[str, dict]]:
+    """요청에 포함된 segment_id 전체가 가질 수 있는 모든 (time) 행을 한 번의
+    쿼리로 가져온다. segment_id별 존재 가능한 행은 최대 48개(30분 슬롯)뿐이라
+    "이번에 어떤 슬롯이 필요할지" 미리 몰라도 전부 가져오는 비용이 작다
+    (_resolve_time_values 참고). batch_get_items는 정확한 키(segment_id+time
+    둘 다)로만 조회할 수 있어 이 "segment_id만으로 그 세그먼트의 모든 슬롯"
+    조회에는 못 쓴다 - 그래서 커넥션을 직접 빌려 커스텀 쿼리를 짠다.
+
+    반환값은 segment_id -> {time: {"value","avg","collected_date"}}.
+    RDS 연결/쿼리 실패는 삼키지 않고 그대로 던진다 - 호출부가 이걸로 "RDS
+    자체가 죽었다"를 판단해서 메모리/S3 폴백으로 넘어간다."""
+    if not segment_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(segment_ids))
+    conn = get_shared_connection()
+    with conn.cursor() as cur:
+        cur.execute(
+            sql.SQL(
+                "SELECT segment_id, time, value, avg, collected_date "
+                "FROM {table} WHERE segment_id = ANY(%s)"
+            ).format(table=sql.Identifier(table_name)),
+            (unique_ids,),
+        )
+        rows = cur.fetchall()
+
+    result: dict[str, dict[str, dict]] = {}
+    for segment_id, time_slot, value, avg, collected_date in rows:
+        result.setdefault(segment_id, {})[time_slot] = {
+            "value": float(value) if value is not None else None,
+            "avg": float(avg) if avg is not None else None,
+            "collected_date": collected_date,
+        }
+    return result
+
+
+def _is_fresh(collected_date) -> bool:
+    """collected_date가 오늘인지 확인한다. 시:분 단위가 아니라 "오늘 수집된
+    값인지"만 본다(TODO 팀 검토 필요 - 하루 단위 신선도로 충분하다는 판단).
+    값이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로 "신선하지
     않음"으로 처리해 다음 단계로 내려가게 한다."""
-    try:
-        observed_at = float(observed_at)
-    except (TypeError, ValueError):
+    if not isinstance(collected_date, date):
         return False
-    return (time.time() - observed_at) <= _FRESHNESS_THRESHOLD_SECONDS
+    return collected_date == date.today()
+
+
+def _resolve_from_row(row: dict | None) -> int | None:
+    """한 (segment_id, time) 행(또는 메모리 캐시/S3 스냅샷의 같은 모양
+    dict)에서 Fresh Exact -> Historical AVG 순서로 값을 뽑는다. 둘 다
+    없으면 None을 돌려줘서 호출부가 다음 단계로 내려가게 한다."""
+    if row is None:
+        return None
+    if row.get("value") is not None and _is_fresh(row.get("collected_date")):
+        return round(row["value"])
+    if row.get("avg") is not None:
+        return round(row["avg"])
+    return None
+
+
+def _remember_in_memory(segment_id: str, time_slot: str, row: dict) -> None:
+    key = (segment_id, time_slot)
+    _memory_cache[key] = row
+    if len(_memory_cache) > _MEMORY_CACHE_MAX_SIZE:
+        oldest_key = next(iter(_memory_cache))
+        del _memory_cache[oldest_key]
+
+
+def _load_s3_snapshot_once() -> None:
+    global _s3_snapshot_loaded, _s3_snapshot
+    if _s3_snapshot_loaded:
+        return
+    _s3_snapshot = gold_snapshot.read_snapshot("type1")
+    _s3_snapshot_loaded = True
+
+
+def _resolve_from_fallback(segment_id: str, time_slot: str) -> int:
+    """RDS 자체가 응답 불가능할 때: 메모리 캐시 -> S3 스냅샷(최초 미스 때
+    한 번만 로드) -> 코드 상수 순서로 내려간다."""
+    row = _memory_cache.get((segment_id, time_slot))
+
+    if row is None:
+        _load_s3_snapshot_once()
+        row = _s3_snapshot.get(segment_id, {}).get(time_slot)
+        if row is not None:
+            _remember_in_memory(segment_id, time_slot, row)
+
+    value = _resolve_from_row(row)
+    if value is not None:
+        return value
+
+    logger.warning(
+        f"메모리 캐시/S3 스냅샷에도 값 없음 -> 코드 상수 사용: "
+        f"segment_id={segment_id} time={time_slot}"
+    )
+    return _HARDCODED_DEFAULTS[1]
 
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
@@ -144,85 +230,73 @@ def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: 
     return _resolve_length_values(segment_ids, table_name)
 
 
+def _lookup_global_default(table_name: str) -> int:
+    try:
+        key = {"segment_id": GLOBAL_PARTITION_KEY}
+        items = batch_get_items(table_name, [key])
+        item = items.get(tuple(key.values()))
+        if item is not None:
+            return round(item["value"])
+    except Exception:
+        logger.exception(f"RDS GLOBAL 기본값 조회 실패: table={table_name}")
+
+    logger.warning("GLOBAL 기본값까지 실패 -> 코드 상수 사용: type=2")
+    return _HARDCODED_DEFAULTS[2]
+
+
 def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]:
     """Type2(길이)는 시간과 무관해 세그먼트당 값이 하나뿐이다 - 중복
-    segment_id는 한 번만 조회해서 재사용해도 안전하다. RDS 호출 자체가
-    실패하면(연결 장애 등) GLOBAL#DEFAULT 같은 중간 단계 없이 바로 코드
-    상수로 응답한다 - type1과 달리 메모리/S3 폴백 계층은 아직 없다."""
+    segment_id는 한 번만 조회해서 재사용해도 안전하다."""
     unique_ids = list(dict.fromkeys(segment_ids))
+    resolved: dict[str, int] = {}
 
     try:
-        rows_by_segment = rds.batch_get_static_values(table_name, unique_ids)
+        keys = [{"segment_id": sid} for sid in unique_ids]
+        items = batch_get_items(table_name, keys)
+        for sid in unique_ids:
+            item = items.get((sid,))
+            if item is None:
+                continue
+            try:
+                resolved[sid] = round(item["value"])
+            except (KeyError, ValueError, TypeError):
+                logger.exception(
+                    f"RDS 항목 형식 오류(다음 fallback 단계로 넘어감): "
+                    f"table={table_name} segment_id={sid}"
+                )
     except Exception:
-        logger.exception(f"RDS 배치 조회 실패 -> 코드 상수로 응답: table={table_name}")
-        rows_by_segment = {}
+        logger.exception(f"RDS batch_get_items 실패: table={table_name}")
 
-    resolved = {
-        sid: round(rows_by_segment[sid]["value"]) if sid in rows_by_segment else _HARDCODED_DEFAULTS[2]
-        for sid in unique_ids
-    }
+    remaining = [sid for sid in unique_ids if sid not in resolved]
+    if remaining:
+        default_value = _lookup_global_default(table_name)
+        for sid in remaining:
+            resolved[sid] = default_value
+
     return [resolved[sid] for sid in segment_ids]
-
-
-def _remember_in_memory(segment_id: str, entry: dict) -> None:
-    _memory_cache[segment_id] = entry
-    if len(_memory_cache) > _MEMORY_CACHE_MAX_SIZE:
-        oldest_key = next(iter(_memory_cache))
-        del _memory_cache[oldest_key]
-
-
-def _load_s3_snapshot_once() -> None:
-    global _s3_snapshot_loaded, _s3_snapshot
-    if _s3_snapshot_loaded:
-        return
-    _s3_snapshot = gold_snapshot.read_snapshot("type1")
-    _s3_snapshot_loaded = True
-
-
-def _resolve_from_fallback(segment_id: str) -> int:
-    """RDS 자체가 응답 불가능할 때: 메모리 캐시 -> S3 스냅샷(최초 미스 때
-    한 번만 로드) -> 코드 상수 순서로 내려간다. 스냅샷 안에서도 exact(신선한
-    경우만) -> avg -> spec 순서를 그대로 재현한다."""
-    entry = _memory_cache.get(segment_id)
-
-    if entry is None:
-        _load_s3_snapshot_once()
-        entry = _s3_snapshot.get(segment_id)
-        if entry:
-            _remember_in_memory(segment_id, entry)
-
-    if entry:
-        exact_value = entry.get("exact_value")
-        if exact_value is not None and _is_fresh(entry.get("exact_observed_at")):
-            return round(exact_value)
-        if entry.get("avg") is not None:
-            return round(entry["avg"])
-        if entry.get("spec") is not None:
-            return round(entry["spec"])
-
-    logger.warning(f"메모리 캐시/S3 스냅샷에도 값 없음 -> 코드 상수 사용: segment_id={segment_id}")
-    return _HARDCODED_DEFAULTS[1]
 
 
 def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str) -> list[int]:
     """Type1(소요시간)은 segment_ids를 경로 순서로 간주한다. 세그먼트 k의
     조회 시각은 "요청 시각 + 세그먼트 1..k-1의 소요시간 합"이다 - 그
-    세그먼트에 실제로 도착하는 시점의 버킷을 봐야 하기 때문이다. 이 누적
+    세그먼트에 실제로 도착하는 시점의 슬롯을 봐야 하기 때문이다. 이 누적
     시각은 앞 세그먼트의 조회 *결과*에 의존하므로 순서대로(순차) 처리해야
     하고, 같은 segment_id가 경로에 두 번 나와도(루프) 등장 위치의 누적
     시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다.
 
-    RDS 조회는 요청당 딱 한 번(batch_resolve_type1_rows)만 하고, 이후
+    RDS 조회는 요청당 딱 한 번(_batch_fetch_type1_rows)만 하고, 이후
     누적시각 계산은 그 결과 dict만 보고 순수 로컬 연산으로 끝낸다 - 그
     한 번의 호출이 실패하면(RDS 자체 장애) 모든 세그먼트를 메모리/S3
     폴백으로 채운다. RDS 호출이 요청당 하나뿐이라 "연속 실패"나 "순차
     호출이 쌓여 느려짐" 같은 문제 자체가 없어져 별도 circuit
     breaker/시간 예산이 필요 없다."""
     try:
-        rows_by_segment = rds.batch_resolve_type1_rows(segment_ids, table_name)
+        rows_by_segment = _batch_fetch_type1_rows(segment_ids, table_name)
     except Exception:
-        logger.exception(f"RDS 배치 조회 실패 -> 전체 세그먼트 메모리/S3 폴백으로 응답: table={table_name}")
-        return [_resolve_from_fallback(sid) for sid in segment_ids]
+        logger.exception(
+            f"RDS 배치 조회 실패 -> 전체 세그먼트 메모리/S3 폴백으로 응답: table={table_name}"
+        )
+        rows_by_segment = None
 
     values: list[int] = []
     elapsed_seconds = 0
@@ -231,28 +305,19 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
         lookup_time = _add_seconds(time_str, elapsed_seconds)
         bucket = time_to_bucket(lookup_time)
 
-        rows = rows_by_segment.get(sid, {})
-        exact = rows.get(bucket)
-        avg = rows.get("AVG")
-        spec = rows.get("SPEC")
-
-        if exact is not None and _is_fresh(exact["observed_at"]):
-            value = round(exact["value"])
-        elif avg is not None:
-            value = round(avg["value"])
-        elif spec is not None:
-            value = round(spec["value"])
+        if rows_by_segment is None:
+            # RDS 자체가 응답 불가능했던 경우 - 메모리/S3 폴백으로 내려간다.
+            value = _resolve_from_fallback(sid, bucket)
         else:
-            value = _HARDCODED_DEFAULTS[1]
-
-        # RDS가 정상 응답했으니, 다음 장애에 대비해 이 세그먼트의 최신
-        # 상태를 메모리 캐시에 남겨둔다(폴백 경로와 같은 모양의 항목).
-        _remember_in_memory(sid, {
-            "avg": avg["value"] if avg is not None else None,
-            "spec": spec["value"] if spec is not None else None,
-            "exact_value": exact["value"] if exact is not None else None,
-            "exact_observed_at": exact["observed_at"] if exact is not None else None,
-        })
+            row = rows_by_segment.get(sid, {}).get(bucket)
+            if row is not None:
+                _remember_in_memory(sid, bucket, row)
+            value = _resolve_from_row(row)
+            if value is None:
+                # RDS는 정상 응답했지만 이 슬롯 자체가 없는 경우 - "RDS가
+                # 죽었을 때의 예전 값"과 성격이 다르므로 메모리/S3로 내려가지
+                # 않고 곧장 코드 상수로 간다.
+                value = _HARDCODED_DEFAULTS[1]
 
         values.append(value)
         elapsed_seconds += value

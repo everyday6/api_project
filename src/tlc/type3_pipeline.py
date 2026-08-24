@@ -1,7 +1,8 @@
-"""TLC type=3 Zone Gold2 기록과 Segment DynamoDB 서빙값 적재 태스크."""
+"""TLC type=3 Zone Gold2 기록과 Segment RDS 서빙값 적재 태스크."""
 
 from __future__ import annotations
 
+import json
 import re
 import shutil
 from datetime import date
@@ -12,24 +13,19 @@ from airflow.decorators import task
 from airflow.exceptions import AirflowSkipException
 
 from src.common.config import (
-    DYNAMODB_TABLE_TYPE3,
     GOLD2_DIR,
+    SERVING_TABLE_TYPE3,
     SILVER1_DIR,
     SILVER2_DIR,
     TAXI_TYPES,
     TLC_TYPE3_ROLLING_WEEKS,
 )
-from src.common.dynamodb import get_table
 from src.common.logger import get_logger
 from src.common.downloader import get_recent_service_months
 from src.common.spark import to_spark_path
 from src.silver2.zone_segment import MAP_ZONE_SEGMENT_VERSION_PATH, current_mapping_version
 from src.tlc.emr import run_tlc_emr_operation
-from src.tlc.gold2 import (
-    TYPE3_META_SEGMENT_ID,
-    TYPE3_META_SK,
-    select_latest_date_partitions,
-)
+from src.tlc.gold2 import select_latest_date_partitions
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_type3")
@@ -39,6 +35,7 @@ TYPE3_DAILY_ROOT = GOLD2_DIR / "tlc" / "type3_zone_daily"
 MAP_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_zone_segment.parquet"
 TYPE3_STAGING_ROOT = TYPE3_DAILY_ROOT / "_staging"
 TYPE3_MONTH_MARKER_ROOT = TYPE3_DAILY_ROOT / "_month_success"
+TYPE3_PUBLISH_STATE_PATH = TYPE3_DAILY_ROOT / "_rds_publish_state.json"
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -90,11 +87,11 @@ def _type3_metadata_is_current(
     window_end: date,
     mapping_version: str | None,
 ) -> bool:
-    """DynamoDB 메타데이터가 현재 S3 롤링 윈도우와 zone-segment 매핑을
+    """S3 배포 상태가 현재 롤링 윈도우와 zone-segment 매핑을
     모두 가리키는지 확인한다.
 
     날짜 범위만 보면, LION/Taxi Zone이 갱신돼 zone-segment 매핑이
-    바뀌었는데도 TLC 날짜 범위가 그대로라는 이유로 DynamoDB Type 3 값이
+    바뀌었는데도 TLC 날짜 범위가 그대로라는 이유로 RDS Type 3 값이
     조용히 갱신되지 않는 문제가 있었다 - 매핑 버전도 함께 비교한다."""
 
     return (
@@ -103,6 +100,30 @@ def _type3_metadata_is_current(
         and item.get("window_end") == window_end.isoformat()
         and item.get("mapping_version") == mapping_version
     )
+
+
+def _read_type3_publish_state(state_path=TYPE3_PUBLISH_STATE_PATH) -> dict:
+    """S3(로컬 개발에서는 파일)의 Type 3 RDS 배포 상태를 읽는다."""
+
+    if not state_path.exists():
+        return {}
+    try:
+        state = json.loads(state_path.read_text())
+    except (OSError, TypeError, json.JSONDecodeError):
+        logger.exception("Type 3 RDS 배포 상태를 읽지 못해 다시 적재합니다: %s", state_path)
+        return {}
+    return state if isinstance(state, dict) else {}
+
+
+def _write_type3_publish_state(
+    metadata: dict,
+    state_path=TYPE3_PUBLISH_STATE_PATH,
+) -> None:
+    """Type 3 RDS 적재가 끝난 뒤 다음 실행이 확인할 상태를 S3에 기록한다."""
+
+    if isinstance(state_path, Path):
+        state_path.parent.mkdir(parents=True, exist_ok=True)
+    state_path.write_text(json.dumps(metadata, ensure_ascii=False, sort_keys=True))
 
 
 def _type3_reference_exists(map_zone_segment_path=MAP_ZONE_SEGMENT_PATH) -> bool:
@@ -199,30 +220,22 @@ def cleanup_type3_staging(published_result: dict) -> None:
 
 @task(trigger_rule="none_failed")
 def check_type3_publish_needed(_published_result=None) -> dict:
-    """S3 최신 N주와 DynamoDB 메타데이터를 비교해 적재 여부를 판단한다."""
-
-    if not DYNAMODB_TABLE_TYPE3:
-        raise ValueError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
+    """S3 최신 N주와 마지막 RDS 배포 상태를 비교해 적재 여부를 판단한다."""
 
     _, window_start, window_end = select_latest_date_partitions(
         TYPE3_DAILY_ROOT.glob("date=*"),
         TLC_TYPE3_ROLLING_WEEKS * 7,
     )
     mapping_version = current_mapping_version()
-    table = get_table(DYNAMODB_TABLE_TYPE3)
-    response = table.get_item(
-        Key={"segment_id": TYPE3_META_SEGMENT_ID, "sk": TYPE3_META_SK},
-        ConsistentRead=True,
-    )
-    metadata = response.get("Item", {})
+    metadata = _read_type3_publish_state()
     if _type3_metadata_is_current(metadata, window_start, window_end, mapping_version):
         raise AirflowSkipException(
-            f"DynamoDB Type 3가 이미 최신입니다: {window_start}~{window_end} "
+            f"RDS Type 3가 이미 최신입니다: {window_start}~{window_end} "
             f"(mapping_version={mapping_version})"
         )
 
     logger.info(
-        "DynamoDB Type 3 갱신 필요: current_window_end=%s current_mapping_version=%s "
+        "RDS Type 3 갱신 필요: current_window_end=%s current_mapping_version=%s "
         "target=%s~%s target_mapping_version=%s",
         metadata.get("window_end"),
         metadata.get("mapping_version"),
@@ -246,14 +259,14 @@ def check_type3_reference_ready(_publish_plan=None) -> bool:
     중이면 이 매핑이 없을 수 있다. 예전엔 이 경우 FileNotFoundError를 던져서
     DAG run 전체가 실패로 확정됐는데(재시도 3회 소진 후), segment_time_
     pipeline의 check_dim_segment_exists와 같은 이유로 - 의존 파일이 아직
-    없다고 DAG 전체를 실패시키는 대신, 이번 실행의 DynamoDB 갱신만 조용히
+    없다고 DAG 전체를 실패시키는 대신, 이번 실행의 RDS 갱신만 조용히
     건너뛴다."""
 
     exists = _type3_reference_exists()
     if not exists:
         logger.warning(
             "%s 없음 - zone_segment_pipeline이 아직 매핑을 만들지 않았거나 "
-            "수동 부트스트랩이 필요함. 이번 실행은 Type 3 DynamoDB 갱신을 건너뛴다.",
+            "수동 부트스트랩이 필요함. 이번 실행은 Type 3 RDS 갱신을 건너뛴다.",
             MAP_ZONE_SEGMENT_PATH,
         )
     return exists
@@ -261,16 +274,16 @@ def check_type3_reference_ready(_publish_plan=None) -> bool:
 
 @task(pool="silver_pool")
 def publish_type3_rolling_values(publish_plan: dict) -> dict:
-    """EMR에서 최근 N주 평균을 계산하고 DynamoDB에 적재한다."""
+    """EMR에서 최근 N주 평균을 계산하고 RDS에 적재한다."""
 
-    if not DYNAMODB_TABLE_TYPE3:
-        raise ValueError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
+    if not SERVING_TABLE_TYPE3:
+        raise ValueError("SERVING_TABLE_TYPE3 환경변수가 필요합니다")
 
     daily_path = publish_plan["daily_path"]
     if daily_path != str(TYPE3_DAILY_ROOT):
         raise ValueError(f"예상하지 못한 Type 3 날짜별 경로입니다: {daily_path}")
 
-    return run_tlc_emr_operation(
+    result = run_tlc_emr_operation(
         "publish_type3_rolling",
         {
             "publish_plan": publish_plan,
@@ -282,8 +295,18 @@ def publish_type3_rolling_values(publish_plan: dict) -> dict:
             # "s3://None/..." 경로로 타임아웃난다(실제로 겪은 장애). Airflow
             # 쪽에서 이미 올바르게 계산된 경로를 문자열로 그대로 넘긴다.
             "mapping_version_path": str(MAP_ZONE_SEGMENT_VERSION_PATH),
-            "table_name": DYNAMODB_TABLE_TYPE3,
+            "table_name": SERVING_TABLE_TYPE3,
             "rolling_weeks": TLC_TYPE3_ROLLING_WEEKS,
             "mapping_version": publish_plan.get("mapping_version"),
         },
     )
+    _write_type3_publish_state(
+        {
+            "status": "COMPLETED",
+            "window_start": result["window_start"],
+            "window_end": result["window_end"],
+            "rolling_weeks": result["rolling_weeks"],
+            "mapping_version": result.get("mapping_version"),
+        }
+    )
+    return result

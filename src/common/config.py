@@ -9,9 +9,10 @@ from dotenv import load_dotenv
 
 # find_dotenv()의 스택 프레임 추적 방식은 PySpark executor의 worker
 # 프로세스처럼 콜스택이 얕은 곳에서 이 모듈이 import되면 AssertionError로
-# 죽는다(EMR Serverless에서 foreachPartition 안에서 src.common.dynamodb를
-# import할 때 실제로 발생). .env 경로를 직접 넘겨 find_dotenv() 호출 자체를
-# 피한다. 파일이 없으면 조용히 넘어간다(예: EMR 컨테이너에는 .env가 없음).
+# 죽는다(EMR Serverless에서 foreachPartition 안에서 src.common.db를
+# import할 때 실제로 발생). .env 경로를 직접 넘겨 find_dotenv() 호출
+# 자체를 피한다. 파일이 없으면 조용히 넘어간다(예: EMR 컨테이너에는 .env가
+# 없음).
 load_dotenv(Path(__file__).resolve().parents[2] / ".env")
 
 # TLC 원본 데이터
@@ -67,6 +68,12 @@ else:
 # ==========================
 # RDS (Gold 서빙 테이블) 설정
 # ==========================
+#
+# nav 골드 데이터셋(segment_id x type 조회)은 원래 DynamoDB로 서빙했다 —
+# 접근 패턴이 key-value 조회(BatchGetItem)뿐이라는 이유였다. 비용(요청
+# 기반 과금이 30분 주기 대량 upsert 워크로드에 불리)과 계정 정책(DynamoDB
+# 사용 금지)으로 RDS(PostgreSQL)로 전환했다 — src/common/db.py 참고.
+# 자세한 배경은 docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md.
 
 RDS_HOST = os.getenv("RDS_HOST")
 RDS_PORT = os.getenv("RDS_PORT", "5432")
@@ -98,16 +105,6 @@ def get_rds_dsn() -> str:
 RDS_TABLE_TYPE1 = os.getenv("RDS_TABLE_TYPE1", "segment_metrics_type1")
 RDS_TABLE_TYPE2 = os.getenv("RDS_TABLE_TYPE2", "segment_metrics_type2")
 RDS_TABLE_TYPE4 = os.getenv("RDS_TABLE_TYPE4", "segment_metrics_type4")
-
-# ==========================
-# DynamoDB (nav 골드 데이터셋 서빙) 설정
-# ==========================
-
-# type1/2/4는 RDS로 옮겨갔다(비용/크레딧 문제로 DynamoDB 대신 RDS를 쓰기로
-# 한 팀 결정 - DynamoDB가 기술적으로 부족해서가 아니다). type3(TLC
-# 택시수요)만 아직 DynamoDB에 남아있다 - zone×요일×시간대 롤링평균이라
-# 스키마가 많이 달라 별도 설계가 필요해서 이후 과제로 미뤘다.
-DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 # ==========================
 # EMR Serverless (Spark 잡 실행) 설정
@@ -166,39 +163,83 @@ HOTSPOT_SEGMENT_BUFFER_FT = 100
 HOTSPOT_INVERSE_DISTANCE_EPSILON_FT = 1.0
 
 # ==========================
-# 세그먼트 지표 API — DynamoDB 서빙 저장소 설정
+# 세그먼트 지표 API — RDS 서빙 저장소 설정
 # ==========================
 #
 # 타입별로 완전히 분리된 테이블을 쓴다(팀원이 타입별로 독립 개발하기 때문 —
 # 접두사 컨벤션이 아니라 물리적으로 다른 테이블). 자세한 설계 근거는
-# docs/superpowers/specs/2026-08-21-segment-metrics-api-design.md 6절 참고.
-# type3(DYNAMODB_NAV_TABLE)/type4(NAV_GOLD_TABLE)도 원래 각자 다른 이름의
-# env var를 썼는데, 이 네 줄로 이름/기본값 패턴을 통일했다.
+# docs/superpowers/specs/2026-08-21-segment-metrics-api-design.md 6절 참고
+# (DynamoDB 기준으로 쓰였지만 "타입별 별도 테이블" 논리는 RDS에도 동일하게
+# 적용된다). PostgreSQL 테이블명은 소문자+언더스코어 컨벤션을 따른다.
+#
+# 테이블마다 스키마가 다르다 — DynamoDB 시절의 범용 sk/value 컬럼을
+# 유지하지 않고 PostgreSQL에서 의미가 바로 드러나는 이름을 쓴다.
+# *_COLUMNS는 기본키를 제외한 컬럼, *_KEY_COLUMNS는 그 테이블의 복합키를
+# 정의한다. updated_date는 더 이상 db.py가 자동으로 채워주는 시스템
+# 컬럼이 아니라 여기 COLUMNS에 명시된 일반 컬럼이다 - 호출부가 직접 값을
+# 넣어야 한다(2026-08-24 스키마 개편, db.py의 ensure_table/batch_write_items
+# 참고).
 
-# TODO(팀 검토 필요): type1/2/4가 각각 RDS_TABLE_TYPE1/2/4(위)로 옮겨가면서
-# 이 값들은 더 이상 서빙/쓰기 경로(nav_lookup.py, nav_time/nav_length/toll의
-# gold 모듈) 어디서도 안 읽는다 - scripts/create_dynamodb_tables.py/
-# seed_dynamodb_defaults.py가 아직 이 이름들로 DynamoDB 테이블을 만들고/
-# 시드하는데, 그 테이블 자체가 이제 안 쓰이므로 정리 대상이다(당장 지우면
-# 저 스크립트들이 깨지니 이번 변경 범위 밖으로 둠). DYNAMODB_TABLE_TYPE3만
-# 여전히 실제로 쓰인다.
-DYNAMODB_TABLE_TYPE1 = os.getenv("DYNAMODB_TABLE_TYPE1", "SegmentMetricsType1")
-DYNAMODB_TABLE_TYPE2 = os.getenv("DYNAMODB_TABLE_TYPE2", "SegmentMetricsType2")
-DYNAMODB_TABLE_TYPE3 = os.getenv("DYNAMODB_TABLE_TYPE3", "SegmentMetricsType3")
-DYNAMODB_TABLE_TYPE4 = os.getenv("DYNAMODB_TABLE_TYPE4", "SegmentMetricsType4")
+SERVING_TABLE_TYPE1 = os.getenv("SERVING_TABLE_TYPE1", "segment_metrics_type1")
+# segment_id+time(HHMM 30분 슬롯)이 복합키다. 한 행 안에 오늘 실측값(value)과
+# 그 슬롯의 과거 평균(avg)을 같이 들고 있어서, 폴백 판단(오늘 값이 없으면
+# avg로)이 조회 한 번으로 끝난다(src/serving/nav_lookup.py 참고) - 팀원이
+# 만든 type1 폴백 체인(Fresh Exact -> Historical AVG -> 코드 상수,
+# PR #138/#139)과 같은 구조를 이 스키마 위에 얹은 것이다. 팀 버전에는 도로
+# 스펙(길이/제한속도) 기반 추정치(SPEC Estimate) 단계가 하나 더 있었는데,
+# 이 Gold 파이프라인은 그 값을 쓰지 않기로 해서 컬럼 자체를 안 둔다.
+SERVING_TABLE_TYPE1_COLUMNS = {
+    "value": "NUMERIC NOT NULL",
+    "avg": "NUMERIC",
+    "count": "INTEGER",
+    "collected_date": "DATE",
+    "updated_date": "DATE",
+}
+SERVING_TABLE_TYPE1_KEY_COLUMNS = ("segment_id", "time")
 
-# TODO(팀 검토 필요): type2가 RDS로 옮겨가면서 GLOBAL_PARTITION_KEY/
-# DEFAULT_SORT_KEY/LENGTH_SORT_KEY는 서빙 경로(nav_lookup.py)에서 더 이상
-# 안 쓴다 - scripts/seed_dynamodb_defaults.py가 아직 이 이름들로 시드하므로
-# 그 스크립트가 정리되기 전까지는 상수 자체를 남겨둔다.
+SERVING_TABLE_TYPE2 = os.getenv("SERVING_TABLE_TYPE2", "segment_metrics_type2")
+# 길이는 시간과 무관해 세그먼트당 행 하나뿐이다. GLOBAL 행도 같은 value
+# 컬럼에 기본값을 가진다.
+SERVING_TABLE_TYPE2_COLUMNS = {
+    "value": "NUMERIC NOT NULL",
+    "collected_date": "DATE",
+    "updated_date": "DATE",
+}
+SERVING_TABLE_TYPE2_KEY_COLUMNS = ("segment_id",)
+
+SERVING_TABLE_TYPE3 = os.getenv("SERVING_TABLE_TYPE3", "segment_metrics_type3")
+# 세그먼트당 요일×시간 슬롯마다 독립된 행이다 - segment_id+dow+time이
+# 복합키다(예전엔 세그먼트당 1행에 336개 값을 JSONB로 중첩했었다 - 실제
+# 조회가 항상 "세그먼트 여러 개 x 시각 하나"라서, dow/time을 진짜 컬럼으로
+# 꺼내는 게 조회에 더 맞고 코드도 단순해진다). "요일" 대신 "dow"를 쓴다 -
+# db.py의 _validate_identifier가 컬럼명을 ASCII만 허용해서(psycopg2.sql.
+# Identifier로 안전하게 조립하기 전 방어용 정규식) 한글 컬럼명은 여기서
+# 막힌다.
+SERVING_TABLE_TYPE3_COLUMNS = {
+    "value": "NUMERIC NOT NULL",
+    "collected_date": "DATE",
+    "updated_date": "DATE",
+}
+SERVING_TABLE_TYPE3_KEY_COLUMNS = ("segment_id", "dow", "time")
+
+SERVING_TABLE_TYPE4 = os.getenv("SERVING_TABLE_TYPE4", "segment_metrics_type4")
+# 통행료도 시간/요일 무관 - 세그먼트당 행 하나뿐이다.
+SERVING_TABLE_TYPE4_COLUMNS = {
+    "value": "NUMERIC NOT NULL",
+    "collected_date": "DATE",
+    "updated_date": "DATE",
+}
+SERVING_TABLE_TYPE4_KEY_COLUMNS = ("segment_id",)
+
 # GLOBAL_PARTITION_KEY: 실제 segment_id가 아닌 예약된 PK — 배포 시점에 수동으로
-#   심어두는 전역 기본값 전용 파티션.
+# 심어두는 type2 전역 기본값 전용 파티션(scripts/seed_rds_defaults.py 참고).
 GLOBAL_PARTITION_KEY = "GLOBAL"
-DEFAULT_SORT_KEY = "DEFAULT"
+
+# src/common/rds.py(팀원이 만든 범용 sk 기반 접근 모듈, 아직 몇몇 테스트가
+# 직접 참조함)가 쓰는 sort key 상수. 지금 실제로 도는 type1 파이프라인은
+# segment_id+time 컬럼 스키마라 이 값들을 안 쓰지만, rds.py 자체를 지우지
+# 않았으니 그 모듈이 참조하는 상수도 같이 남겨둔다.
 AVG_SORT_KEY = "AVG"
-LENGTH_SORT_KEY = "LENGTH"
-# type1의 3단계 폴백(SPEC Estimate). 읽는 쪽(src/serving/nav_lookup.py)과
-# 쓰는 쪽(src/nav_time/gold2.py)이 같은 상수를 참조하게 여기 둔다.
 SPEC_SORT_KEY = "SPEC"
 
 # 하루를 30분 단위로 나눈 버킷 수(00:00~23:30 -> 48개). 버킷 키는 "HHMM" 문자열.

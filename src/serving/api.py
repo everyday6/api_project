@@ -2,22 +2,25 @@
 
 from __future__ import annotations
 
-import time
+import re
 from collections import OrderedDict
 from datetime import datetime
-from functools import lru_cache
 from threading import Lock
 from typing import Annotated, Literal
 
-import boto3
-from botocore.config import Config
+import psycopg2
+from psycopg2 import sql
 from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field, RootModel, field_validator
 
 from src.common.config import (
-    AWS_REGION,
-    DYNAMODB_TABLE_TYPE3,
+    RDS_DB,
+    RDS_HOST,
+    RDS_PASSWORD,
+    RDS_PORT,
+    RDS_USER,
+    SERVING_TABLE_TYPE3,
     TLC_TYPE3_DOW_NAMES,
     TLC_TYPE3_ID,
 )
@@ -30,26 +33,24 @@ app = FastAPI(title="Navigation Segment Value API", version="1.0.0")
 
 TYPE3_ID = TLC_TYPE3_ID
 WEEKDAY_NAMES = TLC_TYPE3_DOW_NAMES
-DYNAMODB_BATCH_SIZE = 100
+# Type3 RDS는 (segment_id, dow, time)이 복합키인 flat 테이블이다(2026-08-24
+# 스키마 개편 - 예전엔 세그먼트당 row 1개에 336개 값을 JSONB로 중첩했었다).
+# 한 요청 안에서 dow/time은 요청 시각 하나로 고정되므로, segment_id
+# 여러 개를 한 번에 조회할 때도 dow/time 조건은 쿼리에 딱 한 번만 걸면 된다.
+TYPE3_BATCH_SIZE = 100
 MAX_SEGMENTS_PER_REQUEST = 1_000
-MAX_BATCH_GET_ATTEMPTS = 3
 VALUE_CACHE_SIZE = 50_000
 MISSING_VALUE = 0.0
-DYNAMODB_CONNECT_TIMEOUT_SECONDS = 1
-DYNAMODB_READ_TIMEOUT_SECONDS = 1
-DYNAMODB_SDK_TOTAL_ATTEMPTS = 2
-DYNAMODB_MAX_POOL_CONNECTIONS = 50
 
-DYNAMODB_CLIENT_CONFIG = Config(
-    connect_timeout=DYNAMODB_CONNECT_TIMEOUT_SECONDS,
-    read_timeout=DYNAMODB_READ_TIMEOUT_SECONDS,
-    retries={
-        "total_max_attempts": DYNAMODB_SDK_TOTAL_ATTEMPTS,
-        "mode": "standard",
-    },
-    max_pool_connections=DYNAMODB_MAX_POOL_CONNECTIONS,
-    tcp_keepalive=True,
-)
+# RDS 커넥션 타임아웃/쿼리 타임아웃: 이 API는 Lambda 콜드/웜스타트 전체
+# 시간 예산이 빠듯해서(nav_lookup.py의 _TIME_BUDGET_SECONDS 참고) RDS
+# 커넥션/쿼리가 오래 걸리면 기다리는 대신 빨리 실패하고 fallback(캐시/
+# 기본값)으로 넘어가야
+# 한다. statement_timeout은 커넥션 세션 옵션으로 서버 쪽에 강제한다 —
+# psycopg2 자체엔 botocore Config의 read_timeout과 동등한 클라이언트
+# 옵션이 없어서, 쿼리 실행 시간 상한은 Postgres 서버가 직접 끊게 한다.
+RDS_CONNECT_TIMEOUT_SECONDS = 1
+RDS_STATEMENT_TIMEOUT_MS = 1_000
 
 _value_cache: OrderedDict[tuple[str, str], float] = OrderedDict()
 _cache_lock = Lock()
@@ -87,29 +88,68 @@ async def log_unexpected_exception(request: Request, exc: Exception):
     return JSONResponse(status_code=500, content={"detail": "Internal Server Error"})
 
 
+def _weekday_and_bucket(requested_at: datetime) -> tuple[str, str]:
+    """요청 시각을 (요일, 30분 버킷) 쌍으로 변환한다.
+
+    RDS 아이템 안의 중첩 JSON(`values[dow][bucket]`)에서 값을 꺼낼 때
+    쓰는 실제 조회 키다."""
+
+    slot_minute = (requested_at.minute // 30) * 30
+    dow = WEEKDAY_NAMES[requested_at.weekday()]
+    return dow, f"{requested_at.hour:02d}{slot_minute:02d}"
+
+
 def build_sort_key(type_id: int, requested_at: datetime) -> str:
-    """요청 날짜의 요일과 시각을 Type 3 반복 버킷 키로 변환한다."""
+    """요청 날짜의 요일과 시각을 Type 3 반복 버킷 문자열로 변환한다.
+
+    지금은 RDS의 실제 기본키가 아니라 _value_cache의 식별자로만 쓰인다 —
+    세그먼트 하나의 아이템에 336개
+    값이 다 들어있어도, 캐시는 여전히 "이 세그먼트의 이 요일·시간 값"
+    단위로 구분해야 하기 때문이다."""
 
     if type_id != TYPE3_ID:
         raise ValueError(f"지원하지 않는 type입니다: {type_id}")
-    slot_minute = (requested_at.minute // 30) * 30
-    dow = WEEKDAY_NAMES[requested_at.weekday()]
-    return f"{type_id}#{dow}#{requested_at.hour:02d}{slot_minute:02d}"
+    dow, bucket = _weekday_and_bucket(requested_at)
+    return f"{type_id}#{dow}#{bucket}"
 
 
-@lru_cache(maxsize=1)
-def get_dynamodb_resource():
-    if not DYNAMODB_TABLE_TYPE3:
-        raise RuntimeError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
-    return boto3.resource(
-        "dynamodb",
-        region_name=AWS_REGION,
-        config=DYNAMODB_CLIENT_CONFIG,
+_db_connection = None
+
+
+def get_db_connection():
+    """RDS 커넥션을 Lambda 웜스타트 사이에 재사용한다. 끊어진
+    채로 남아있으면(RDS 재부팅, 유휴 타임아웃 등) 자동으로 다시 연다 —
+    콜드스타트가 아닌 첫 호출이 예외 대신 재연결로 복구되게 하기 위함."""
+    global _db_connection
+
+    if not SERVING_TABLE_TYPE3:
+        raise RuntimeError("SERVING_TABLE_TYPE3 환경변수가 필요합니다")
+    if not RDS_HOST or not RDS_DB:
+        raise RuntimeError("RDS_HOST/RDS_DB 환경변수가 필요합니다")
+
+    if _db_connection is not None and not _db_connection.closed:
+        try:
+            with _db_connection.cursor() as cur:
+                cur.execute("SELECT 1")
+            return _db_connection
+        except psycopg2.Error:
+            logger.warning("RDS 커넥션이 끊어져 재연결합니다")
+
+    _db_connection = psycopg2.connect(
+        host=RDS_HOST,
+        port=RDS_PORT,
+        dbname=RDS_DB,
+        user=RDS_USER,
+        password=RDS_PASSWORD,
+        connect_timeout=RDS_CONNECT_TIMEOUT_SECONDS,
+        options=f"-c statement_timeout={RDS_STATEMENT_TIMEOUT_MS}",
     )
+    _db_connection.autocommit = True
+    return _db_connection
 
 
-def _remember_value(segment_id: str, sk: str, value: float) -> None:
-    key = (segment_id, sk)
+def _remember_value(segment_id: str, cache_slot: str, value: float) -> None:
+    key = (segment_id, cache_slot)
     with _cache_lock:
         _value_cache[key] = value
         _value_cache.move_to_end(key)
@@ -117,8 +157,8 @@ def _remember_value(segment_id: str, sk: str, value: float) -> None:
             _value_cache.popitem(last=False)
 
 
-def _fallback_value(segment_id: str, sk: str) -> float:
-    key = (segment_id, sk)
+def _fallback_value(segment_id: str, cache_slot: str) -> float:
+    key = (segment_id, cache_slot)
     with _cache_lock:
         value = _value_cache.get(key, MISSING_VALUE)
         if key in _value_cache:
@@ -130,65 +170,76 @@ def _unique_in_order(values: list[str]) -> list[str]:
     return list(dict.fromkeys(values))
 
 
-def _fetch_batch(dynamodb, table_name: str, keys: list[dict]) -> list[dict]:
-    """DynamoDB가 돌려준 미처리 키를 짧게 재시도한다."""
+_TABLE_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
 
-    items: list[dict] = []
-    pending = keys
-    for attempt in range(MAX_BATCH_GET_ATTEMPTS):
-        response = dynamodb.batch_get_item(
-            RequestItems={
-                table_name: {
-                    "Keys": pending,
-                    "ConsistentRead": True,
-                }
-            }
-        )
-        items.extend(response.get("Responses", {}).get(table_name, []))
-        pending = (
-            response.get("UnprocessedKeys", {})
-            .get(table_name, {})
-            .get("Keys", [])
-        )
-        if not pending:
-            break
-        time.sleep(0.05 * (2 ** attempt))
 
-    if pending:
-        logger.warning("DynamoDB BatchGet 미처리 키: %s개", len(pending))
-    return items
+def _fetch_batch(
+    conn, table_name: str, segment_ids: list[str], dow: str, bucket: str
+) -> list[tuple[str, float]]:
+    """segment_id 목록 + (dow, time) 하나로 (segment_id, value) 쌍을
+    한 번에 조회한다.
+
+    DynamoDB BatchGetItem은 요청량 제한으로 일부만 처리하고 나머지를
+    UnprocessedKeys로 돌려주는 부분 실패가 있어 재시도 루프가 필요했는데,
+    SQL 쿼리 하나는 원자적으로 전체 성공/전체 실패이므로 그런 부분 실패
+    자체가 없다 — 재시도 로직이 필요 없어졌다. 커넥션 문제(끊김 등)는 이
+    함수를 호출하는 get_type3_values()의 try/except가 잡아서 캐시/기본값
+    fallback으로 넘어간다."""
+
+    if not _TABLE_NAME_PATTERN.match(table_name):
+        raise ValueError(f"잘못된 테이블 이름입니다: {table_name}")
+
+    query = sql.SQL(
+        "SELECT segment_id, value FROM {table} "
+        "WHERE segment_id = ANY(%s) AND dow = %s AND time = %s"
+    ).format(table=sql.Identifier(table_name))
+
+    with conn.cursor() as cur:
+        cur.execute(query, (segment_ids, dow, bucket))
+        return cur.fetchall()
 
 
 def get_type3_values(
     segment_ids: list[str],
     requested_at: datetime,
     *,
-    dynamodb=None,
+    conn=None,
     table_name: str | None = None,
 ) -> list[float]:
-    """DynamoDB를 조회하고 입력 segment 순서대로 숫자 값을 반환한다."""
+    """RDS를 조회하고 입력 segment 순서대로 숫자 값을 반환한다.
 
-    sk = build_sort_key(TYPE3_ID, requested_at)
-    resolved_table = table_name or DYNAMODB_TABLE_TYPE3
+    Type3 테이블은 (segment_id, dow, time)이 복합키인 flat 테이블이라,
+    요청 시각 하나로 정해지는 dow/time 조건과 segment_id 목록으로 바로
+    필요한 값만 조회한다."""
+
+    cache_slot = build_sort_key(TYPE3_ID, requested_at)
+    dow, bucket = _weekday_and_bucket(requested_at)
+    resolved_table = table_name or SERVING_TABLE_TYPE3
     found: dict[str, float] = {}
 
     try:
         if not resolved_table:
-            raise RuntimeError("DYNAMODB_TABLE_TYPE3 환경변수가 필요합니다")
-        resource = dynamodb or get_dynamodb_resource()
+            raise RuntimeError("SERVING_TABLE_TYPE3 환경변수가 필요합니다")
+        connection = conn or get_db_connection()
         unique_segments = _unique_in_order(segment_ids)
-        for offset in range(0, len(unique_segments), DYNAMODB_BATCH_SIZE):
-            chunk = unique_segments[offset:offset + DYNAMODB_BATCH_SIZE]
-            keys = [{"segment_id": segment_id, "sk": sk} for segment_id in chunk]
-            for item in _fetch_batch(resource, resolved_table, keys):
-                if "segment_id" not in item or "value" not in item:
+        for offset in range(0, len(unique_segments), TYPE3_BATCH_SIZE):
+            chunk = unique_segments[offset:offset + TYPE3_BATCH_SIZE]
+            for segment_id, value in _fetch_batch(connection, resolved_table, chunk, dow, bucket):
+                if value is None:
                     continue
-                segment_id = str(item["segment_id"])
-                value = float(item["value"])
+                segment_id = str(segment_id)
+                try:
+                    value = float(value)
+                except (TypeError, ValueError):
+                    logger.exception(
+                        f"RDS Type 3 값 형식 오류(다음 fallback으로 넘어감): "
+                        f"segment_id={segment_id} dow={dow} bucket={bucket}"
+                    )
+                    continue
                 found[segment_id] = value
-                _remember_value(segment_id, sk, value)
+                _remember_value(segment_id, cache_slot, value)
     except Exception:
-        logger.exception("DynamoDB Type 3 조회 실패; 캐시 또는 기본값으로 응답합니다")
+        logger.exception("RDS Type 3 조회 실패; 캐시 또는 기본값으로 응답합니다")
 
     missing = sum(segment_id not in found for segment_id in segment_ids)
     if missing:
@@ -197,7 +248,7 @@ def get_type3_values(
     return [
         found[segment_id]
         if segment_id in found
-        else _fallback_value(segment_id, sk)
+        else _fallback_value(segment_id, cache_slot)
         for segment_id in segment_ids
     ]
 
@@ -206,7 +257,7 @@ def get_type3_values(
 def health() -> dict:
     return {
         "status": "ok",
-        "dynamodb_table_configured": bool(DYNAMODB_TABLE_TYPE3),
+        "rds_table_configured": bool(SERVING_TABLE_TYPE3),
     }
 
 

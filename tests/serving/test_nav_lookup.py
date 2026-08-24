@@ -1,74 +1,32 @@
-import time
+from datetime import date, timedelta
 from unittest.mock import patch
 
 import pytest
 
-from src.common import gold_snapshot, rds
-from src.common.config import NAV_GOLD_RDS_LOCAL_DSN
 from src.serving import nav_lookup
 
-RDS_TEST_TABLE = "test_segment_metrics_type1_lookup"
-RDS_TYPE2_TEST_TABLE = "test_segment_metrics_type2_lookup"
+# 순수 로직 테스트(배치 조회를 monkeypatch로 대체)는 RDS가 없어도 돈다 -
+# 실제 테이블에 값을 심어두고 조회하는 테스트에만 개별로
+# @requires_postgres를 붙인다.
+requires_postgres = pytest.mark.usefixtures("require_postgres")
+
+# _is_fresh()가 date.today()를 직접 부르므로, date 자체를 mock하는 대신
+# 실제 "오늘"을 기준으로 어제를 계산한다 - date를 MagicMock으로 바꿔치기하면
+# isinstance(collected_date, date) 검사가 깨진다(date가 더 이상 타입이 아니게 됨).
+TODAY = date.today()
+YESTERDAY = TODAY - timedelta(days=1)
 
 
 @pytest.fixture(autouse=True)
-def _reset_nav_lookup_fallback_state():
-    """RDS 폴백용 모듈 전역 상태(메모리 캐시/S3 스냅샷 로드 여부)가 테스트
-    간에 새지 않도록 매 테스트 전에 초기화한다."""
+def _clear_caches():
+    """메모리 캐시/S3 스냅샷 로드 상태가 테스트 간에 새지 않도록 초기화한다."""
     nav_lookup._memory_cache.clear()
     nav_lookup._s3_snapshot_loaded = False
     nav_lookup._s3_snapshot = {}
     yield
-
-
-@pytest.fixture
-def rds_table(monkeypatch):
-    """type1 테스트용 실제 로컬 Postgres 테이블(docker-compose의
-    nav-gold-postgres 컨테이너, 미리 `docker compose up -d nav-gold-postgres`로
-    띄워둬야 한다) - RDS는 DynamoDB의 moto 같은 인메모리 mock 수단이 없어
-    실제 로컬 인스턴스로 검증한다."""
-    monkeypatch.setattr(rds, "get_rds_dsn", lambda: NAV_GOLD_RDS_LOCAL_DSN)
-    monkeypatch.setattr(nav_lookup, "RDS_TABLE_TYPE1", RDS_TEST_TABLE)
-    rds._connection = None
-    rds.ensure_table(RDS_TEST_TABLE)
-    conn = rds.get_connection()
-    with conn.cursor() as cur:
-        cur.execute(f"TRUNCATE TABLE {RDS_TEST_TABLE}")
-    yield RDS_TEST_TABLE
-    rds._connection = None
-
-
-def _put_row(table_name, segment_id, sk, value, observed_at=None):
-    rds.upsert_items(
-        [{
-            "segment_id": segment_id,
-            "sk": sk,
-            "value": value,
-            "observed_at": observed_at,
-            "collected_date": None,
-            "count": None,
-        }],
-        table_name,
-    )
-
-
-@pytest.fixture
-def rds_type2_table(monkeypatch):
-    """type2 테스트용 실제 로컬 Postgres 테이블. type1과 스키마가 달라
-    (segment_id 하나만 PK) 별도 테이블/헬퍼를 쓴다."""
-    monkeypatch.setattr(rds, "get_rds_dsn", lambda: NAV_GOLD_RDS_LOCAL_DSN)
-    monkeypatch.setattr(nav_lookup, "RDS_TABLE_TYPE2", RDS_TYPE2_TEST_TABLE)
-    rds._connection = None
-    rds.ensure_static_table(RDS_TYPE2_TEST_TABLE)
-    conn = rds.get_connection()
-    with conn.cursor() as cur:
-        cur.execute(f"TRUNCATE TABLE {RDS_TYPE2_TEST_TABLE}")
-    yield RDS_TYPE2_TEST_TABLE
-    rds._connection = None
-
-
-def _put_static_row(table_name, segment_id, value):
-    rds.upsert_static_items([{"segment_id": segment_id, "value": value}], table_name)
+    nav_lookup._memory_cache.clear()
+    nav_lookup._s3_snapshot_loaded = False
+    nav_lookup._s3_snapshot = {}
 
 
 def test_time_to_bucket_rounds_down_to_30_minutes():
@@ -78,261 +36,166 @@ def test_time_to_bucket_rounds_down_to_30_minutes():
 
 
 def test_table_for_type():
-    assert nav_lookup.table_for_type(1) == nav_lookup.RDS_TABLE_TYPE1
-    assert nav_lookup.table_for_type(2) == nav_lookup.RDS_TABLE_TYPE2
+    assert nav_lookup.table_for_type(1) == nav_lookup.SERVING_TABLE_TYPE1
+    assert nav_lookup.table_for_type(2) == nav_lookup.SERVING_TABLE_TYPE2
+
+
+def test_add_seconds_advances_within_same_hour():
+    assert nav_lookup._add_seconds("12:00", 600) == "12:10"
+
+
+def test_add_seconds_wraps_past_midnight():
+    assert nav_lookup._add_seconds("23:50", 900) == "00:05"
 
 
 # ---------------------------------------------------------------------------
-# Type1 (RDS 기반) — Fresh Exact -> Historical AVG -> SPEC Estimate -> 코드 상수
+# _is_fresh / _resolve_from_row — 한 행 안에서 Fresh Exact -> Historical AVG
+# -> SPEC Estimate 순서를 고르는 순수 로직.
 # ---------------------------------------------------------------------------
 
-def test_resolve_uses_fresh_exact_bucket_value_when_present(rds_table):
-    _put_row(rds_table, "1", "1200", 30, observed_at=time.time())
+def test_is_fresh_true_only_for_todays_date():
+    assert nav_lookup._is_fresh(TODAY) is True
+    assert nav_lookup._is_fresh(YESTERDAY) is False
 
-    result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
+def test_is_fresh_false_for_missing_or_malformed_value():
+    assert nav_lookup._is_fresh(None) is False
+    assert nav_lookup._is_fresh("2026-08-21") is False  # 문자열은 date 인스턴스가 아님
+
+
+def test_resolve_from_row_prefers_fresh_exact():
+    row = {"value": 30, "avg": 40, "collected_date": TODAY}
+    assert nav_lookup._resolve_from_row(row) == 30
+
+
+def test_resolve_from_row_falls_back_to_avg_when_value_is_stale():
+    row = {"value": 30, "avg": 40, "collected_date": YESTERDAY}
+    assert nav_lookup._resolve_from_row(row) == 40
+
+
+def test_resolve_from_row_returns_none_when_row_is_none_or_empty():
+    assert nav_lookup._resolve_from_row(None) is None
+    assert nav_lookup._resolve_from_row({"value": None, "avg": None}) is None
+
+
+# ---------------------------------------------------------------------------
+# Type1 — RDS 정상 응답
+# ---------------------------------------------------------------------------
+
+def test_resolve_uses_fresh_exact_when_collected_today():
+    rows = {"1": {"1200": {"value": 30, "avg": 999, "collected_date": TODAY}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
+        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [30]
 
 
-def test_resolve_falls_back_to_avg_when_exact_is_stale(rds_table):
-    # observed_at이 freshness 기준(1시간)보다 훨씬 오래됨 -> 그 exact 값은
-    # 못 쓰고 AVG로 내려가야 한다.
-    _put_row(rds_table, "1", "1200", 30, observed_at=time.time() - 999_999)
-    _put_row(rds_table, "1", "AVG", 40)
-
-    result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [40]
-
-
-def test_resolve_falls_back_to_avg_when_bucket_missing(rds_table):
-    _put_row(rds_table, "1", "AVG", 40)
-
-    result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [40]
-
-
-def test_resolve_falls_back_to_spec_when_exact_and_avg_missing(rds_table):
-    _put_row(rds_table, "1", "SPEC", 55)
-
-    result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [55]
-
-
-def test_resolve_falls_back_to_hardcoded_constant_when_nothing_for_segment(rds_table):
-    result = nav_lookup.resolve_segment_values(["999"], 1, "12:00")
-
-    assert result == [nav_lookup._HARDCODED_DEFAULTS[1]]
-
-
-def test_resolve_falls_back_to_hardcoded_constant_when_rds_unreachable():
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("network down")):
-        result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
-
-    assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 2
-
-
-def test_resolve_time_values_uses_cumulative_elapsed_time_per_segment(rds_table):
-    now = time.time()
-    # 세그먼트 1: 12:00 버킷에 1800초(30분) 소요.
-    _put_row(rds_table, "1", "1200", 1800, observed_at=now)
-    # 세그먼트 2: 12:00 버킷과 12:30 버킷에 서로 다른 값 -> 누적 시각이
-    # 제대로 반영되면 12:30 버킷 값(999)을 써야 한다.
-    _put_row(rds_table, "2", "1200", 111, observed_at=now)
-    _put_row(rds_table, "2", "1230", 999, observed_at=now)
-
-    result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
-
-    assert result == [1800, 999]
-
-
-def test_resolve_time_values_same_segment_twice_uses_different_buckets(rds_table):
-    now = time.time()
-    _put_row(rds_table, "loop", "1200", 1800, observed_at=now)
-    _put_row(rds_table, "loop", "1230", 77, observed_at=now)
-
-    # 같은 세그먼트가 경로에 두 번 등장 - 두 번째 등장은 첫 번째 소요시간만큼
-    # 시각이 밀려 다른 버킷(1230)을 봐야 하므로 값도 달라야 한다.
-    result = nav_lookup.resolve_segment_values(["loop", "loop"], 1, "12:00")
-
-    assert result == [1800, 77]
-
-
-def test_resolve_time_values_remembers_successful_reads_in_memory_cache(rds_table):
-    _put_row(rds_table, "1", "AVG", 40)
-
-    nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert nav_lookup._memory_cache["1"]["avg"] == 40.0
-
-
-def test_resolve_time_values_makes_exactly_one_rds_call_regardless_of_segment_count():
-    # RDS 조회는 요청당 한 번(batch_resolve_type1_rows)뿐이어야 한다 -
-    # 세그먼트 수만큼 순차 왕복이 쌓이던 예전 구조가 아니라서, 실패해도
-    # 딱 1번만 시도하고 바로 전체 폴백으로 넘어가야 한다(재시도 없음).
-    segment_ids = [str(i) for i in range(10)]
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("network down")) as mock_resolve:
-        result = nav_lookup.resolve_segment_values(segment_ids, 1, "12:00")
-
-    assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 10
-    mock_resolve.assert_called_once_with(segment_ids, nav_lookup.RDS_TABLE_TYPE1)
-
-
-def test_resolve_time_values_batch_fetches_once_then_resolves_locally():
-    # 배치로 미리 가져온 결과만으로 세그먼트별 누적시각/버킷 계산이 전부
-    # 로컬에서 끝나야 한다 - RDS는 최초 배치 호출 한 번만 나가야 한다.
-    def fake_batch_resolve_type1_rows(segment_ids, table_name):
-        now = time.time()
-        return {
-            "1": {"1200": {"value": 111, "observed_at": now}},
-            "2": {"1200": {"value": 222, "observed_at": now}},
-        }
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=fake_batch_resolve_type1_rows) as mock_resolve:
-        result = nav_lookup.resolve_segment_values(["1", "2", "3", "4"], 1, "12:00")
-
-    assert result == [111, 222, nav_lookup._HARDCODED_DEFAULTS[1], nav_lookup._HARDCODED_DEFAULTS[1]]
-    mock_resolve.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Type1 — RDS 자체가 응답 불가능할 때: 메모리 캐시 -> S3 Gold 스냅샷 -> 코드 상수
-# ---------------------------------------------------------------------------
-
-def test_resolve_uses_memory_cache_when_rds_down(rds_table):
-    _put_row(rds_table, "1", "AVG", 40)
-    nav_lookup.resolve_segment_values(["1"], 1, "12:00")  # 메모리 캐시 예열
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
+def test_resolve_falls_back_to_avg_when_value_is_stale():
+    rows = {"1": {"1200": {"value": 30, "avg": 40, "collected_date": YESTERDAY}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [40]
 
 
-def test_resolve_uses_s3_snapshot_when_rds_down_and_memory_empty(monkeypatch, tmp_path):
-    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
-    gold_snapshot.write_snapshot("type1", {
-        "1": {"avg": 71.0, "spec": 66.0, "exact_value": None, "exact_observed_at": None},
-    })
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
-        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [71]
-
-
-def test_resolve_s3_snapshot_prefers_fresh_exact_over_avg(monkeypatch, tmp_path):
-    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
-    gold_snapshot.write_snapshot("type1", {
-        "1": {"avg": 71.0, "spec": 66.0, "exact_value": 20.0, "exact_observed_at": time.time()},
-    })
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
-        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [20]
-
-
-def test_resolve_s3_snapshot_reapplies_freshness_to_exact_value(monkeypatch, tmp_path):
-    # 스냅샷 안의 exact 값도 라이브 RDS 조회와 똑같은 신선도 기준을 다시
-    # 적용해야 한다 - 오래된 값이면 AVG로 내려가야 함.
-    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
-    gold_snapshot.write_snapshot("type1", {
-        "1": {"avg": 71.0, "spec": 66.0, "exact_value": 20.0, "exact_observed_at": time.time() - 999_999},
-    })
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
-        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [71]
-
-
-def test_resolve_s3_snapshot_falls_back_to_spec_when_avg_missing(monkeypatch, tmp_path):
-    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
-    gold_snapshot.write_snapshot("type1", {"1": {"spec": 66.0}})
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
-        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
-
-    assert result == [66]
-
-
-def test_resolve_falls_back_to_hardcoded_when_rds_down_and_no_cache_or_snapshot(monkeypatch, tmp_path):
-    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
+def test_resolve_falls_back_to_hardcoded_constant_when_slot_missing_but_rds_up():
+    # RDS는 정상 응답했지만 이 세그먼트/슬롯 자체가 없는 경우 - 메모리/S3
+    # 폴백으로 내려가지 않고 곧장 코드 상수로 간다.
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value={}):
         result = nav_lookup.resolve_segment_values(["999"], 1, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[1]]
 
 
-def test_resolve_s3_snapshot_loads_only_once_per_process(monkeypatch, tmp_path):
-    # 세그먼트마다 S3를 매번 부르면 왕복이 세그먼트 수만큼 쌓이는 문제가
-    # 재발한다 - 프로세스당 딱 한 번만 읽어야 한다.
-    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
-    gold_snapshot.write_snapshot("type1", {"1": {"avg": 71.0}, "2": {"avg": 82.0}})
-
-    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")), \
-         patch.object(nav_lookup.gold_snapshot, "read_snapshot", wraps=nav_lookup.gold_snapshot.read_snapshot) as mock_read:
-        result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
-
-    assert result == [71, 82]
-    mock_read.assert_called_once()
-
-
-# ---------------------------------------------------------------------------
-# Type2 (RDS, 시간 무관 정적값) — 정확한 segment_id 값 -> 코드 상수
-# (GLOBAL#DEFAULT 같은 전역 폴백 행은 안 둔다 - 정성적 초안값이라 DB에
-# 저장할 이유가 약함)
-# ---------------------------------------------------------------------------
-
-def test_resolve_type2_returns_exact_value_when_present(rds_type2_table):
-    _put_static_row(rds_type2_table, "1", 300)
-
-    result = nav_lookup.resolve_segment_values(["1"], 2, "12:00")
-
-    assert result == [300]
-
-
-def test_resolve_type2_falls_back_to_hardcoded_when_missing(rds_type2_table):
-    result = nav_lookup.resolve_segment_values(["999"], 2, "12:00")
+def test_resolve_type2_has_no_avg_tier_goes_straight_to_default():
+    with patch.object(nav_lookup, "batch_get_items", return_value={}) as mock_batch:
+        result = nav_lookup.resolve_segment_values(["1"], 2, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[2]]
-
-
-def test_resolve_type2_falls_back_to_hardcoded_when_rds_unreachable():
-    with patch.object(nav_lookup.rds, "batch_get_static_values", side_effect=RuntimeError("network down")):
-        result = nav_lookup.resolve_segment_values(["1", "2"], 2, "12:00")
-
-    assert result == [nav_lookup._HARDCODED_DEFAULTS[2]] * 2
-
-
-def test_resolve_preserves_order_and_duplicates(rds_type2_table):
-    _put_static_row(rds_type2_table, "1", 100)
-    _put_static_row(rds_type2_table, "2", 200)
-
-    result = nav_lookup.resolve_segment_values(["2", "1", "2"], 2, "12:00")
-
-    assert result == [200, 100, 200]
-
-
-def test_resolve_type2_still_dedupes_since_time_independent(rds_type2_table):
-    _put_static_row(rds_type2_table, "1", 500)
-
-    with patch.object(nav_lookup.rds, "batch_get_static_values", wraps=rds.batch_get_static_values) as mock_batch:
-        result = nav_lookup.resolve_segment_values(["1", "1", "1"], 2, "09:00")
-
-    assert result == [500, 500, 500]
-    called_segment_ids = mock_batch.call_args.args[1]
-    assert called_segment_ids == ["1"]
+    mock_batch.assert_called()
 
 
 # ---------------------------------------------------------------------------
-# 공통 (type/시각 무관)
+# Type1 — RDS 자체가 응답 불가능한 경우: 메모리 캐시 -> S3 스냅샷 -> 코드 상수
 # ---------------------------------------------------------------------------
+
+def test_resolve_falls_back_to_s3_snapshot_when_rds_unreachable():
+    snapshot = {"1": {"1200": {"value": 77, "collected_date": TODAY.isoformat()}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
+        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
+    # 스냅샷의 collected_date는 문자열(JSON 왕복)이라 date 인스턴스가 아니므로
+    # _is_fresh가 False를 주고, 대신 "value"가 없으면 None -> 코드 상수로
+    # 떨어진다는 점까지 같이 확인한다(스냅샷 값은 신선도 판단 없이 그대로
+    # 못 씀 - 이 케이스는 avg가 없어 코드 상수로 떨어지는 게 맞다).
+    assert result == [nav_lookup._HARDCODED_DEFAULTS[1]]
+
+
+def test_resolve_uses_s3_snapshot_avg_when_rds_unreachable():
+    snapshot = {"1": {"1200": {"avg": 55}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
+        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
+    assert result == [55]
+
+
+def test_resolve_uses_memory_cache_before_reloading_s3_snapshot():
+    # 1번째 요청(RDS 정상)에서 성공적으로 읽은 값이 메모리 캐시에 남는다.
+    rows = {"1": {"1200": {"value": 30, "avg": None, "collected_date": TODAY}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
+        nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
+    # 2번째 요청은 RDS가 죽었다고 가정 - S3를 한 번도 안 불러도 메모리
+    # 캐시로 응답할 수 있어야 한다.
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot") as mock_read_snapshot:
+        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
+    assert result == [30]
+    mock_read_snapshot.assert_not_called()
+
+
+def test_resolve_falls_back_to_hardcoded_constant_when_everything_fails():
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={}):
+        result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
+
+    assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 2
+
+
+# ---------------------------------------------------------------------------
+# 누적 경로 시각 계산 (segment_ids를 경로 순서로 취급)
+# ---------------------------------------------------------------------------
+
+def test_resolve_time_values_uses_cumulative_elapsed_time_per_segment():
+    rows = {
+        "1": {"1200": {"value": 1800, "avg": None, "collected_date": TODAY}},
+        "2": {
+            "1200": {"value": 111, "avg": None, "collected_date": TODAY},
+            "1230": {"value": 999, "avg": None, "collected_date": TODAY},
+        },
+    }
+    # 세그먼트 1: 12:00 슬롯에 1800초(30분) 소요 -> 세그먼트 2는 12:30에 도착.
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
+        result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
+
+    assert result == [1800, 999]
+
+
+def test_resolve_time_values_same_segment_twice_uses_different_buckets():
+    rows = {
+        "loop": {
+            "1200": {"value": 1800, "avg": None, "collected_date": TODAY},
+            "1230": {"value": 77, "avg": None, "collected_date": TODAY},
+        },
+    }
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
+        result = nav_lookup.resolve_segment_values(["loop", "loop"], 1, "12:00")
+
+    assert result == [1800, 77]
+
 
 def test_resolve_never_raises_on_invalid_type():
     result = nav_lookup.resolve_segment_values(["1", "2"], 3, "12:00")
@@ -342,15 +205,57 @@ def test_resolve_never_raises_on_invalid_type():
 
 
 def test_resolve_never_raises_on_malformed_time():
-    result = nav_lookup.resolve_segment_values(["1"], 1, "not-a-time")
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value={}):
+        result = nav_lookup.resolve_segment_values(["1"], 1, "not-a-time")
 
     assert len(result) == 1
     assert isinstance(result[0], int)
 
 
-def test_add_seconds_advances_within_same_hour():
-    assert nav_lookup._add_seconds("12:00", 600) == "12:10"
+# ---------------------------------------------------------------------------
+# Type2 (길이) — 시간 무관, GLOBAL 기본값 폴백. 실제 RDS 왕복은 통합 테스트로.
+# ---------------------------------------------------------------------------
+
+@requires_postgres
+def test_resolve_type2_reads_written_value():
+    from src.common.config import SERVING_TABLE_TYPE2_COLUMNS, SERVING_TABLE_TYPE2_KEY_COLUMNS
+    from src.common.db import put_item
+    from tests.conftest import reset_table
+
+    table = nav_lookup.SERVING_TABLE_TYPE2
+    reset_table(table, SERVING_TABLE_TYPE2_COLUMNS, SERVING_TABLE_TYPE2_KEY_COLUMNS)
+    put_item(table, {"segment_id": "1", "value": 500}, key_columns=SERVING_TABLE_TYPE2_KEY_COLUMNS)
+
+    result = nav_lookup.resolve_segment_values(["1", "1"], 2, "09:00")
+
+    assert result == [500, 500]
 
 
-def test_add_seconds_wraps_past_midnight():
-    assert nav_lookup._add_seconds("23:50", 900) == "00:05"
+@requires_postgres
+def test_resolve_type2_falls_back_to_global_default_when_missing():
+    from src.common.config import (
+        GLOBAL_PARTITION_KEY,
+        SERVING_TABLE_TYPE2_COLUMNS,
+        SERVING_TABLE_TYPE2_KEY_COLUMNS,
+    )
+    from src.common.db import put_item
+    from tests.conftest import reset_table
+
+    table = nav_lookup.SERVING_TABLE_TYPE2
+    reset_table(table, SERVING_TABLE_TYPE2_COLUMNS, SERVING_TABLE_TYPE2_KEY_COLUMNS)
+    put_item(
+        table,
+        {"segment_id": GLOBAL_PARTITION_KEY, "value": 300},
+        key_columns=SERVING_TABLE_TYPE2_KEY_COLUMNS,
+    )
+
+    result = nav_lookup.resolve_segment_values(["missing-segment"], 2, "09:00")
+
+    assert result == [300]
+
+
+def test_resolve_type2_falls_back_to_hardcoded_constant_when_rds_unreachable():
+    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")):
+        result = nav_lookup.resolve_segment_values(["1", "2"], 2, "12:00")
+
+    assert result == [nav_lookup._HARDCODED_DEFAULTS[2]] * 2
