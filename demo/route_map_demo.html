@@ -251,11 +251,15 @@ window.addEventListener("resize", resize);
 
 // ---------- 실제 서빙 계약과 동일한 모양의 조회 함수 ----------
 // POST /api/navigation/values { segment_ids, type, date, time } -> { value: [...] }
-// 라이브 서버 연결 전까지는 route.values[type]에 미리 계산해둔 값을 같은 모양으로 반환한다.
-// 실제 연결 시 이 함수 안 Promise.resolve(...)만 fetch(...)로 바꾸면 된다.
+const API_BASE = 'https://gv37o51ey6.execute-api.ap-northeast-2.amazonaws.com';
+
 function fetchValues(request) {
-  const route = DATA.routes.find(r => r.label === request._label);
-  return Promise.resolve({ value: route.values[String(request.type)] });
+  const { segment_ids, type, date, time } = request; // _label은 화면 표시용이라 실제 요청엔 안 보냄
+  return fetch(`${API_BASE}/api/navigation/values`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ segment_ids, type, date, time }),
+  }).then(r => r.json());
 }
 
 function fmtTime(sec) {
@@ -342,10 +346,14 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
   btn.disabled = true;
   status.textContent = "요청 중...";
 
+  const now = new Date();
+  const today = now.toISOString().slice(0, 10);
+  const nowTime = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+
   const exchanges = {};
   const results = [];
   for (const r of DATA.routes) {
-    const request = { segment_ids: r.segment_ids, type: selectedType, date: "2026-08-23", time: "12:00", _label: r.label };
+    const request = { segment_ids: r.segment_ids, type: selectedType, date: today, time: nowTime, _label: r.label };
     const response = await fetchValues(request);
     exchanges[r.label] = { request, response };
     results.push({ label: r.label, value: aggregate(response.value, TYPE_CONFIG[selectedType].agg) });
