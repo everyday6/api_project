@@ -1,6 +1,6 @@
 fastapi
 mangum
-boto3
+psycopg2-binary
 python-dotenv
 cloudpathlib[s3]
 s3fs

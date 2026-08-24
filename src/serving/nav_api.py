@@ -48,7 +48,7 @@ def health() -> dict[str, str]:
 class SegmentValuesRequest(BaseModel):
     segment_ids: list[str] = Field(
         min_length=1,
-        # type=1은 세그먼트마다 순차로 DynamoDB를 조회한다(누적시각 때문에
+        # type=1은 세그먼트마다 순차로 RDS를 조회한다(누적시각 때문에
         # 배치 불가) - 상한이 없으면 요청 하나가 임의로 많은 순차 호출을
         # 유발할 수 있다. 500은 NYC 전역을 가로지르는 경로도 넉넉히 담을
         # 정성적 초안이다(TODO, 팀 검토 필요).

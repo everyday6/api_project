@@ -12,8 +12,8 @@ RDS 조회 하나뿐이라 그 의존성이 전혀 필요 없는데, nav_api.py�
 
 from __future__ import annotations
 
-from src.common import rds
-from src.common.config import RDS_TABLE_TYPE4
+from src.common import db
+from src.common.config import SERVING_TABLE_TYPE4
 
 TYPE_TOLL = 4
 
@@ -24,24 +24,32 @@ def get_toll_value(segment_id: str) -> float:
     호환용으로 남겨둔다 — 여러 세그먼트를 한 번에 조회할 때는
     get_toll_values()를 쓴다(RDS 호출 횟수를 줄임)."""
 
-    found = rds.batch_get_static_values(RDS_TABLE_TYPE4, [segment_id])
-    row = found.get(segment_id)
-    return float(row["value"]) if row is not None else 0.0
+    return db.get_value(
+        SERVING_TABLE_TYPE4,
+        {"segment_id": segment_id},
+        "value",
+        default=0,
+    )
 
 
 def get_toll_values(segment_ids: list[str]) -> list[float]:
     """서빙 조회 함수(배치). segment_ids 순서/중복을 그대로 유지해서
     반환한다 - 중복 제거 후 한 번에 조회하고 원래 순서로 다시 매핑한다.
 
-    RDS 호출 자체가 실패하면(권한/네트워크 등) 전부 0으로 응답한다
+    RDS 호출 자체가 실패하면(커넥션/네트워크 등) 전부 0으로 응답한다
     - 무조건 응답 원칙, 통행료 하나 때문에 전체 요청이 죽으면 안 된다."""
 
     unique_ids = list(dict.fromkeys(segment_ids))
+    keys = [{"segment_id": segment_id} for segment_id in unique_ids]
 
     try:
-        found = rds.batch_get_static_values(RDS_TABLE_TYPE4, unique_ids)
+        found = db.batch_get_items(SERVING_TABLE_TYPE4, keys)
     except Exception:
         return [0.0] * len(segment_ids)
 
-    values = {segment_id: float(row["value"]) for segment_id, row in found.items()}
+    values = {
+        segment_id: float(found[(segment_id,)].get("value", 0))
+        for segment_id in unique_ids
+        if (segment_id,) in found
+    }
     return [values.get(segment_id, 0.0) for segment_id in segment_ids]

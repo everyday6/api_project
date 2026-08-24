@@ -1,6 +1,5 @@
 from datetime import date, datetime, timedelta
-from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pyspark.sql import SparkSession
@@ -16,17 +15,18 @@ from src.tlc.gold2 import (
     expand_zone_values_to_segments,
     validate_daily_zone_month,
     validate_segment_values,
-    write_type3_rolling_to_dynamodb,
+    write_type3_rolling_to_rds,
 )
 from src.tlc.type3_pipeline import (
     _complete_silver_paths_for_month,
     _find_pending_type3_months,
     _month_success_marker,
+    _read_type3_publish_state,
     _staging_run_path,
     _type3_metadata_is_current,
     _type3_reference_exists,
+    _write_type3_publish_state,
 )
-
 
 @pytest.fixture(scope="module")
 def spark():
@@ -55,50 +55,22 @@ def _rolling_daily_frame(spark, days=98):
     ])
 
 
-class _FakeBatchWriter:
-    def __init__(self, table):
-        self.table = table
+class _FakeBatchWriteItems:
+    """db.batch_write_items를 대체해 실제로 넘어온 items를 기록한다.
 
-    def __enter__(self):
-        return self
+    _write_type3_partition은 스레드 여러 개가 동시에 호출하므로(성능을 위해),
+    list.append는 GIL 덕에 개별 호출은 원자적이라 별도 락 없이도 안전하다."""
 
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-    def put_item(self, Item):
-        if self.table.fail_batch:
-            raise RuntimeError("DynamoDB batch failure")
-        self.table.items.append(Item)
-
-
-class _FakeTable:
-    """batch_writer로 실제 항목이 쓰이는지 확인하는 가짜 테이블.
-
-    _write_type3_partition은 executor 프로세스 안에서 실행되므로,
-    write_type3_rolling_to_dynamodb를 통째로 호출하는 테스트에는 못 쓴다
-    (mock은 프로세스 경계를 못 넘음) — _write_type3_partition이 반환하는
-    함수를 같은 프로세스에서 직접 호출하는 테스트에만 쓴다.
-    """
-
-    def __init__(self, fail_batch=False):
-        self.fail_batch = fail_batch
+    def __init__(self, fail=False):
+        self.fail = fail
         self.items = []
-        self.overwrite_by_pkeys = None
+        self.table_name = None
 
-    def batch_writer(self, overwrite_by_pkeys):
-        self.overwrite_by_pkeys = overwrite_by_pkeys
-        return _FakeBatchWriter(self)
-
-
-class _FakeMetaTable:
-    """write_type3_rolling_to_dynamodb의 완료 메타데이터 기록만 확인하는
-    가짜 테이블. driver에서 직접 호출되므로 monkeypatch로 주입해도 된다."""
-
-    def __init__(self):
-        self.metadata = []
-
-    def put_item(self, Item):
-        self.metadata.append(Item)
+    def __call__(self, table_name, items, key_columns=None, conn=None):
+        if self.fail:
+            raise RuntimeError("RDS batch failure")
+        self.table_name = table_name
+        self.items.extend(items)
 
 
 def test_complete_silver_paths_require_all_taxi_types(tmp_path):
@@ -184,6 +156,21 @@ def test_type3_metadata_is_current_only_after_completed_publish():
     ), "zone-segment 매핑이 바뀌면(mapping_version 불일치) 최신으로 보면 안 된다"
 
 
+def test_type3_publish_state_round_trip(tmp_path):
+    state_path = tmp_path / "_rds_publish_state.json"
+    metadata = {
+        "status": "COMPLETED",
+        "window_start": "2026-05-04",
+        "window_end": "2026-05-31",
+        "rolling_weeks": 12,
+        "mapping_version": "map-v1",
+    }
+
+    assert _read_type3_publish_state(state_path) == {}
+    _write_type3_publish_state(metadata, state_path)
+    assert _read_type3_publish_state(state_path) == metadata
+
+
 def test_type3_reference_exists_is_false_until_mapping_is_published(tmp_path):
     """zone_segment_pipeline이 아직 안 돌았을 때(최초 배포/재부트스트랩)
     DAG를 실패시키는 대신 조용히 False를 반환해야 한다."""
@@ -234,106 +221,123 @@ def test_build_weekday_rolling_frame_rejects_missing_date(spark):
         build_weekday_rolling_frame(daily, rolling_weeks=12)
 
 
-def test_write_type3_partition_builds_expected_sk_and_decimal_value():
+class _FixedDate(date):
+    """date.today()를 고정값으로 바꿔치기하기 위한 서브클래스(updated_date
+    검증용) - src.tlc.gold2._write_rows_chunk가 date.today()를 직접 부른다."""
+
+    @classmethod
+    def today(cls):
+        return date(2026, 8, 24)
+
+
+def test_write_type3_partition_builds_flat_rows_per_slot(monkeypatch):
     """executor에서 실제로 도는 부분만 떼어내 같은 프로세스에서 직접 검증한다.
 
-    파티션 안에서 여러 스레드가 청크를 나눠 동시에 쓰므로(성능을 위해),
-    items가 입력 순서 그대로 쌓인다는 보장은 없다 — segment_id로 정렬해
-    내용만 비교한다."""
+    row 하나가 (segment_id, dow, time) 슬롯 하나다(flat 스키마 - 2026-08-24
+    개편). 파티션 안에서 여러 스레드가 청크를 나눠 동시에 쓰므로(성능을
+    위해), items가 입력 순서 그대로 쌓인다는 보장은 없다 — segment_id/dow/
+    time으로 정렬해 내용만 비교한다. db.new_connection()/
+    db.batch_write_items()를 대체해서 실제 RDS 없이 검증한다(스레드마다 새
+    커넥션을 여는 구조라 conn.close()가 호출되므로 fake 커넥션도 그
+    메서드가 있어야 한다)."""
 
-    table = _FakeTable()
+    monkeypatch.setattr("src.tlc.gold2.date", _FixedDate)
+    fake_write = _FakeBatchWriteItems()
 
-    with patch("src.tlc.gold2.get_table", return_value=table):
-        write_partition = _write_type3_partition("nav-segment-metrics")
+    with patch("src.tlc.gold2.db.new_connection", return_value=MagicMock()), \
+         patch("src.tlc.gold2.db.batch_write_items", fake_write):
+        write_partition = _write_type3_partition("nav-segment-metrics", date(2026, 8, 20))
         write_partition([
             {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
+            {"segment_id": "0000001", "dow": "MON", "time": "0900", "value": 3.0},
             {"segment_id": "0000002", "dow": "MON", "time": "1230", "value": 2.5},
         ])
 
-    assert table.overwrite_by_pkeys == ["segment_id", "sk"]
-    assert sorted(table.items, key=lambda item: item["segment_id"]) == [
-        {"segment_id": "0000001", "sk": "3#FRI#1200", "value": Decimal("1.5")},
-        {"segment_id": "0000002", "sk": "3#MON#1230", "value": Decimal("2.5")},
+    assert fake_write.table_name == "nav-segment-metrics"
+    assert sorted(
+        fake_write.items, key=lambda item: (item["segment_id"], item["dow"], item["time"])
+    ) == [
+        {
+            "segment_id": "0000001",
+            "dow": "FRI",
+            "time": "1200",
+            "value": 1.5,
+            "collected_date": "2026-08-20",
+            "updated_date": "2026-08-24",
+        },
+        {
+            "segment_id": "0000001",
+            "dow": "MON",
+            "time": "0900",
+            "value": 3.0,
+            "collected_date": "2026-08-20",
+            "updated_date": "2026-08-24",
+        },
+        {
+            "segment_id": "0000002",
+            "dow": "MON",
+            "time": "1230",
+            "value": 2.5,
+            "collected_date": "2026-08-20",
+            "updated_date": "2026-08-24",
+        },
     ]
 
 
 def test_write_type3_partition_propagates_batch_failure():
-    table = _FakeTable(fail_batch=True)
+    fake_write = _FakeBatchWriteItems(fail=True)
 
-    with patch("src.tlc.gold2.get_table", return_value=table):
-        write_partition = _write_type3_partition("nav-segment-metrics")
+    with patch("src.tlc.gold2.db.new_connection", return_value=MagicMock()), \
+         patch("src.tlc.gold2.db.batch_write_items", fake_write):
+        write_partition = _write_type3_partition("nav-segment-metrics", date(2026, 8, 20))
         with pytest.raises(RuntimeError, match="batch failure"):
             write_partition([
                 {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
             ])
 
 
-def test_write_type3_rolling_to_dynamodb_writes_metadata_after_success(spark, monkeypatch):
-    """실제 파티션 쓰기는 no-op으로 바꿔치기하고, 오케스트레이션(개수 집계 +
-    완료 메타데이터 기록)만 검증한다."""
+def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
+    """실제 파티션 쓰기는 no-op으로 바꿔치기하고 적재 개수 집계만 검증한다."""
 
     rolling = spark.createDataFrame([
         {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
         {"segment_id": "0000002", "dow": "MON", "time": "1230", "value": 2.5},
     ])
-    table = _FakeMetaTable()
-    monkeypatch.setattr("src.tlc.gold2.get_table", lambda _name: table)
     monkeypatch.setattr(
         "src.tlc.gold2._write_type3_partition",
-        lambda _table_name: (lambda rows: None),
+        lambda _table_name, _collected_date: (lambda rows: None),
     )
 
-    written = write_type3_rolling_to_dynamodb(
+    written = write_type3_rolling_to_rds(
         "nav-segment-metrics",
         rolling,
-        date(2026, 5, 4),
-        date(2026, 5, 31),
-        12,
-        "map-v1",
+        date(2026, 8, 20),
     )
 
     assert written == 2
-    assert len(table.metadata) == 1
-    assert table.metadata[0] | {"updated_at": "ignored"} == {
-        "segment_id": "__META__",
-        "sk": "TYPE#3",
-        "status": "COMPLETED",
-        "window_start": "2026-05-04",
-        "window_end": "2026-05-31",
-        "rolling_weeks": 12,
-        "mapping_version": "map-v1",
-        "updated_at": "ignored",
-    }
 
 
-def test_write_type3_rolling_to_dynamodb_does_not_complete_after_partition_failure(
+def test_write_type3_rolling_to_rds_propagates_partition_failure(
     spark, monkeypatch,
 ):
     rolling = spark.createDataFrame([
         {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
     ])
-    table = _FakeMetaTable()
-
-    def _always_fail(_table_name):
+    def _always_fail(_table_name, _collected_date):
         def _write(_rows):
-            raise RuntimeError("DynamoDB batch failure")
+            raise RuntimeError("RDS batch failure")
         return _write
 
-    monkeypatch.setattr("src.tlc.gold2.get_table", lambda _name: table)
     monkeypatch.setattr("src.tlc.gold2._write_type3_partition", _always_fail)
 
     # foreachPartition은 executor 예외를 Spark 자체 예외 타입으로 감싸서
     # driver에 전파하므로, 원래 예외 타입이 아니라 메시지만으로 확인한다.
     with pytest.raises(Exception, match="batch failure"):
-        write_type3_rolling_to_dynamodb(
+        write_type3_rolling_to_rds(
             "nav-segment-metrics",
             rolling,
-            date(2026, 5, 4),
-            date(2026, 5, 31),
-            12,
+            date(2026, 8, 20),
         )
-
-    assert table.metadata == []
 
 
 def _write_staged_month(spark, stage_path, dates, zone_ids=(1, 2)):
