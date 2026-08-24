@@ -31,6 +31,10 @@ COPY requirements.txt .
 #   - python-dotenv : src/common/config.py의 load_dotenv() (거의 모든
 #     src.* import 시점에 실행됨)
 #   - boto3 : src/common/dynamodb.py 및 cloudpathlib의 s3 백엔드
+#   - psycopg2-binary : src/common/rds.py(type1 RDS 서빙) - nav_time_job.py가
+#     이제 DynamoDB 대신 RDS에 쓴다. -binary라 libpq를 따로 안 깔아도 되고,
+#     C 확장이 있어서 다른 패키지와 마찬가지로 반드시 이 Amazon Linux
+#     빌드 환경 안에서 설치해야 한다(로컬 arm64/Mac wheel은 EMR에서 못 씀).
 #   - pyarrow : spark_jobs/nav_time_job.py, spark_jobs/nav_length_job.py의
 #     pd.read_parquet()가 실제로 쓰는 파케이 엔진. pandas가 있다고 자동으로
 #     같이 오지 않는다 — 없으면 "Unable to find a usable engine" ImportError.
@@ -49,6 +53,7 @@ RUN python3.11 -m venv /build/environment && \
         "cloudpathlib[s3]" \
         python-dotenv==1.2.2 \
         boto3 \
+        psycopg2-binary \
         "great_expectations>=1.20.0"
 
 # venv-pack의 check_prefix()는 prefix가 명시적으로 주어지지 않으면 오직

@@ -1,14 +1,14 @@
 """
-Gold2 — type1(시간) 최종 산출물 계산 + DynamoDB 포맷/upsert
+Gold2 — type1(시간) 최종 산출물 계산 + RDS 포맷/upsert
 
 30분 버킷 하나엔 그 30분 동안 들어온 5분 단위 판독값이 최대 6개 있다.
 시간순으로 1,2,...,n번째 판독값에 1:2:...:n 비율로 증가하는 가중치(최근
 값이 가장 큰 비중)를 준 가중평균 속도를 구하고, LION 길이(length_ft)로
 나눠 세그먼트별 통행시간(초)을 구한다. 세그먼트 전체 평균(AVG)은 세그먼트당
 버킷을 한 번에 하나씩만 계산하는 구조에 맞춰, 이번 실행에서 바뀐 버킷 하나
-만큼만 증분 갱신한다(설계 문서 7절). DynamoDB에는 버킷 값과 AVG를 모두
-upsert한다 — 버킷 값에는 원본 데이터 날짜(collected_date)와 신선도 판단용
-타임스탬프(observed_at)도 함께 저장한다.
+만큼만 증분 갱신한다(설계 문서 7절). RDS(src/common/rds.py)에는 버킷 값과
+AVG를 모두 upsert한다 — 버킷 값에는 원본 데이터 날짜(collected_date)와
+신선도 판단용 타임스탬프(observed_at)도 함께 저장한다.
 
 compute_spec_travel_seconds/spec_estimate_items는 별개 흐름이다 - 실시간
 속도 판독값이 아니라 LION 도로 스펙(길이/제한속도)만으로 통과시간을
@@ -37,8 +37,8 @@ from pyspark.sql.functions import (
     to_date,
 )
 
+from src.common import gold_snapshot, rds
 from src.common.config import AVG_SORT_KEY, BUCKET_MINUTES, SPEC_SORT_KEY
-from src.common.dynamodb import batch_get_items, batch_write_items
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_time_gold2")
@@ -114,8 +114,8 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
     )
 
 
-def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
-    """버킷별 값 + 세그먼트별 평균(AVG, 증분 갱신)을 DynamoDB 항목 리스트로 변환한다.
+def to_type1_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
+    """버킷별 값 + 세그먼트별 평균(AVG, 증분 갱신)을 RDS 행 리스트로 변환한다.
 
     bucket_df는 compute_time_seconds의 반환값이어야 한다 — segment_id/bucket/
     time_seconds뿐 아니라 collected_date(DateType), observed_at(TimestampType)
@@ -158,8 +158,7 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
         (item["segment_id"], AVG_SORT_KEY)
         for item in bucket_items
     })
-    lookup_keys = [{"segment_id": sid, "sk": sk} for sid, sk in lookup_keys]
-    existing = batch_get_items(table_name, lookup_keys)
+    existing = rds.batch_get_rows(table_name, lookup_keys)
 
     # 세그먼트별 현재 (avg, count) 상태 — 한 배치 안에 같은 세그먼트의 버킷이
     # 여러 개 섞여 있어도(예: 수집 구간 경계 겹침) 순차적으로 접어(fold) 반영한다.
@@ -169,8 +168,16 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
         if sid in running_state:
             return running_state[sid]
         old_avg_item = existing.get((sid, AVG_SORT_KEY))
-        old_avg = float(old_avg_item.get("value", 0)) if old_avg_item else 0.0
-        old_count = int(old_avg_item.get("count", 0)) if old_avg_item else 0
+        old_avg = float(old_avg_item["value"]) if old_avg_item else 0.0
+        # RDS(Postgres)에서 count는 NULL 가능 컬럼이라, 레거시 AVG 행은 키가
+        # 아예 없는 게 아니라 값이 None으로 들어온다(dict.get(key, default)는
+        # 키가 있고 값이 None이면 default를 안 돌려주므로 명시적으로 확인해야
+        # int(None)에서 안 터진다).
+        old_count = (
+            int(old_avg_item["count"])
+            if old_avg_item and old_avg_item.get("count") is not None
+            else 0
+        )
         return old_avg, old_count
 
     for item in bucket_items:
@@ -209,10 +216,22 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     return bucket_items + avg_items
 
 
-def write_to_dynamodb(items: list[dict], table_name: str) -> int:
-    batch_write_items(table_name, items)
-    logger.info(f"[nav_time_gold2] DynamoDB upsert 완료: table={table_name} count={len(items)}")
-    return len(items)
+def write_to_rds(items: list[dict], table_name: str) -> int:
+    """RDS에 upsert하고, 성공하면 S3 Gold 스냅샷도 최신 상태로 다시
+    내보낸다(src/serving/nav_lookup.py의 RDS 장애 폴백이 읽는 것).
+    스냅샷 갱신 자체가 실패해도 RDS 쓰기는 이미 끝난 뒤라 파이프라인을
+    실패시키지 않는다 - 다음 정상 실행 때 다시 시도되면 충분하다."""
+    rds.ensure_table(table_name)
+    count = rds.upsert_items(items, table_name)
+    logger.info(f"[nav_time_gold2] RDS upsert 완료: table={table_name} count={count}")
+
+    try:
+        snapshot = rds.export_snapshot_source(table_name)
+        gold_snapshot.write_snapshot("type1", snapshot)
+    except Exception:
+        logger.exception("[nav_time_gold2] S3 Gold 스냅샷 갱신 실패(RDS 쓰기 자체는 성공)")
+
+    return count
 
 
 def compute_spec_travel_seconds(dim_segment_df: pd.DataFrame) -> pd.DataFrame:
@@ -244,7 +263,7 @@ def compute_spec_travel_seconds(dim_segment_df: pd.DataFrame) -> pd.DataFrame:
 
 
 def spec_estimate_items(spec_df: pd.DataFrame) -> list[dict]:
-    """SPEC Estimate를 DynamoDB 아이템으로 변환한다. type2(길이)처럼 시간과
+    """SPEC Estimate를 RDS 행으로 변환한다. type2(길이)처럼 시간과
     무관한 정적 값이라 세그먼트당 항목 1개, sort key는 고정 SPEC_SORT_KEY다."""
 
     return [

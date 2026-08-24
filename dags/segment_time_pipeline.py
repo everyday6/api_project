@@ -2,8 +2,10 @@
 DAG: segment_time_pipeline (type1 — 시간)
 
 NYC DOT 실시간 속도 데이터를 30분마다 수집해서, LION 세그먼트별 30분 버킷
-평균 통행시간을 계산해 DynamoDB(SegmentMetricsType1)에 upsert한다(설계
-문서 8절).
+평균 통행시간을 계산해 RDS(segment_metrics_type1)에 upsert한다(설계
+문서 8절). DynamoDB에서 RDS로 옮기며 생긴 가용성 손실을 보완하려고
+Gold job이 성공할 때마다 S3 Gold 스냅샷도 같이 갱신한다(src/common/rds.py,
+src/serving/nav_lookup.py 참고).
 
 Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 하나의 EMR
 Serverless Spark job으로 묶어서 제출한다.
@@ -16,7 +18,7 @@ from datetime import datetime, timedelta
 from airflow.decorators import dag, task
 
 from src.common.alerts import notify_slack_failure
-from src.common.config import DYNAMODB_TABLE_TYPE1, EMR_JOBS_DIR, PROJECT_ROOT
+from src.common.config import EMR_JOBS_DIR, PROJECT_ROOT, RDS_TABLE_TYPE1
 from src.common.emr_serverless import read_json_result, run_spark_job
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.speed.bronze import collect_speed_data, has_new_speed_data
@@ -77,7 +79,7 @@ def segment_time_pipeline():
             entry_point_args=[
                 "--speed-bronze-path", speed_bronze_path,
                 "--dim-segment-path", str(DIM_SEGMENT_PATH),
-                "--dynamodb-table", DYNAMODB_TABLE_TYPE1,
+                "--rds-table", RDS_TABLE_TYPE1,
                 "--output-s3", str(output_s3),
             ],
         )

@@ -2,22 +2,34 @@
 세그먼트 지표 조회 + fallback 체인
 
 "무조건 응답"(설계 문서 7절)을 구현하는 핵심 모듈. 키가 없는 경우와
-DynamoDB 호출 자체가 실패(예외)하는 경우를 구분하지 않고 똑같이 다음
-fallback 단계로 넘어간다.
+DB 호출 자체가 실패(예외)하는 경우를 구분하지 않고 똑같이 다음 fallback
+단계로 넘어간다.
 
-Type1 체인 순서(고정):
+Type1(시간)은 RDS Postgres(src/common/rds.py)로 서빙한다. DynamoDB에서
+RDS로 옮기며 멀티 AZ 자동 failover(가용성)를 잃은 걸 보완하려고, RDS
+"자체가 응답 불가능한" 경우를 위한 별도 폴백 계층(메모리 캐시 -> S3
+Gold 스냅샷)을 추가로 둔다:
+
+  [RDS 정상 응답]
   1. Fresh Exact — 정확한 (segment_id, bucket) 값. observed_at이
-     freshness 기준(_FRESHNESS_THRESHOLD_SECONDS) 이내인 경우만 채택하고,
-     오래된 값이면 다음 단계로 내려간다(TTL로 지우지 않고 조회 시점에
-     판단 — _is_fresh 참고).
+     freshness 기준(_FRESHNESS_THRESHOLD_SECONDS) 이내인 경우만 채택.
   2. Historical AVG — (segment_id, "AVG")
   3. SPEC Estimate — (segment_id, "SPEC"). 도로 스펙(length_ft / speed_limit_mph)
-     으로 계산한 추정 통과시간 — src/nav_time/gold2.py의 compute_spec_travel_seconds가
-     계산하고, segment_length_pipeline이 LION 갱신 때마다(quarterly) 다시 써둔다.
-  4. 코드 상수 — 외부 호출이 전혀 없는 최후의 보루
+     으로 계산한 추정 통과시간 — segment_length_pipeline이 LION 갱신 때마다
+     (quarterly) 다시 써둔다.
+  4. 코드 상수
 
-Type2(길이) 체인은 별개다: 정확한 (segment_id, "LENGTH") → (GLOBAL,
-"DEFAULT") → 코드 상수. 시간과 무관해 순서/중복에 영향받지 않는다.
+  [RDS 자체가 응답 불가능 — 연결 실패/타임아웃]
+  1. 메모리 캐시(이 프로세스가 이전에 RDS에서 성공적으로 읽은 값)
+  2. S3 Gold 스냅샷(src/common/gold_snapshot.py) — RDS가 정상일 때 Gold
+     파이프라인이 미리 내보내둔 세그먼트별 (exact, avg, spec) 스냅샷을
+     처음 미스가 날 때 한 번만 통째로 로드해 메모리에 얹는다. 이 안에서도
+     exact -> avg -> spec 순서로, 같은 freshness 기준을 재적용한다.
+  3. 코드 상수
+
+Type2(길이)는 여전히 DynamoDB 체인이다(별개): 정확한 (segment_id,
+"LENGTH") → (GLOBAL, "DEFAULT") → 코드 상수. 시간과 무관해 순서/중복에
+영향받지 않는다.
 
 Type1(소요시간)의 segment_ids는 경로를 순서대로 나열한 것으로 간주한다.
 요청 시각은 첫 세그먼트에만 그대로 쓰고, 이후 세그먼트는 앞 세그먼트들의
@@ -28,40 +40,40 @@ from __future__ import annotations
 
 import time
 
+from src.common import gold_snapshot, rds
 from src.common.config import (
-    AVG_SORT_KEY,
     BUCKET_MINUTES,
     DEFAULT_SORT_KEY,
-    DYNAMODB_TABLE_TYPE1,
     DYNAMODB_TABLE_TYPE2,
     GLOBAL_PARTITION_KEY,
     LENGTH_SORT_KEY,
-    SPEC_SORT_KEY,
+    RDS_TABLE_TYPE1,
 )
 from src.common.dynamodb import batch_get_items
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
 
-# DynamoDB/GLOBAL#DEFAULT까지 전부 실패했을 때 쓰는 최후의 상수. 외부 호출이
-# 전혀 없어 DynamoDB 리전 자체가 완전히 응답 불가능한 상황에서도 동작한다.
+# RDS/DynamoDB/GLOBAL#DEFAULT까지 전부 실패했을 때 쓰는 최후의 상수. 외부
+# 호출이 전혀 없어 어떤 저장소도 완전히 응답 불가능한 상황에서도 동작한다.
 # TODO(팀 검토 필요): scripts/seed_dynamodb_defaults.py의 기본값과 동일한
 # 정성적 초안.
 _HARDCODED_DEFAULTS = {1: 45, 2: 300}
 
 # type1 exact(segment_id, bucket) 값의 신선도 기준(초). observed_at이 이보다
 # 오래되면 그 bucket이 갱신을 멈췄다고 보고(파이프라인 중단 등) Historical
-# AVG로 내려간다. DynamoDB TTL로 삭제하지 않고 조회 시점에 매번 판단한다.
+# AVG로 내려간다. DB TTL로 삭제하지 않고 조회 시점에 매번 판단한다. RDS
+# 폴백(S3 스냅샷) 안 exact 값에도 같은 기준을 그대로 적용한다.
 # TODO(팀 검토 필요): 아직 기준 미확정 - 30분 수집 주기의 2배인 1시간으로
 # 잡은 정성적 초안. observed_at은 그 bucket 값을 마지막으로 계산한 시각
-# (epoch seconds) - src/nav_time/gold2.py의 to_dynamodb_items가 기록한다.
+# (epoch seconds) - src/nav_time/gold2.py가 기록한다.
 _FRESHNESS_THRESHOLD_SECONDS = 3600.0
 
-# type1은 세그먼트마다 순차로 DynamoDB를 조회하므로(누적시각 때문에 배치 불가),
-# DynamoDB 리전 전체가 응답 불가능한 상황에서는 세그먼트 수만큼 호출이 전부
-# 느리게 실패하며 쌓여 응답 자체가 타임아웃날 수 있다. 연속으로 이 횟수만큼
-# 호출 자체가 실패하면 남은 세그먼트는 DynamoDB를 더 안 건드리고 곧바로
-# 코드 상수로 채운다.
+# type1은 세그먼트마다 순차로 RDS를 조회하므로(누적시각 때문에 배치 불가),
+# RDS가 응답 불가능한 상황에서는 세그먼트 수만큼 호출이 전부 느리게 실패하며
+# 쌓여 응답 자체가 타임아웃날 수 있다. 연속으로 이 횟수만큼 호출 자체가
+# 실패하면 남은 세그먼트는 RDS를 더 안 건드리고 메모리/S3 폴백으로 바로
+# 넘어간다.
 _CIRCUIT_BREAKER_THRESHOLD = 3
 
 # 실패가 아니라 "다 성공은 하는데 순차 호출이 너무 많이 쌓이는" 경우를 막는
@@ -69,7 +81,8 @@ _CIRCUIT_BREAKER_THRESHOLD = 3
 # 10초)을 실제로 넘겨서 500 Internal Server Error가 나는 걸 확인했다 -
 # 실패 기반 circuit breaker만으로는 이 경우(호출은 다 성공하지만 느림)를
 # 못 막는다. 남은 시간이 얼마 안 되면 성공/실패와 무관하게 회로를 열어
-# 남은 세그먼트를 코드 상수로 채운다 - 정확도보다 "무조건 응답"이 우선이다.
+# 남은 세그먼트를 메모리/S3 폴백으로 채운다 - 정확도보다 "무조건 응답"이
+# 우선이다.
 #
 # 이 값은 Lambda 콘솔의 타임아웃 설정과 자동으로 연동되지 않는다 - 타임아웃을
 # 바꾸면 이 값도 사람이 직접 같이 조정해야 한다. Lambda 타임아웃을 10초 ->
@@ -77,6 +90,19 @@ _CIRCUIT_BREAKER_THRESHOLD = 3
 # 시간(실측 약 0.3초) 감안해서 4초 버퍼를 남기고 11초로 올렸다.
 # TODO(팀 검토 필요): 정성적 값 - Lambda 타임아웃을 또 바꾸면 이 값도 같이 검토.
 _TIME_BUDGET_SECONDS = 11.0
+
+# RDS 장애 시 쓰는 메모리 캐시. segment_id -> {"avg", "spec", "exact_value",
+# "exact_observed_at"}. 상한을 안 걸면 Lambda 인스턴스가 오래 켜져 있을 때
+# 계속 커져서 OOM으로 함수 자체가 죽을 수 있어(관측값이 없는 것보다 훨씬
+# 나쁜 실패) 개수 상한 + 가장 오래된 것부터 제거한다.
+_MEMORY_CACHE_MAX_SIZE = 50_000
+_memory_cache: dict[str, dict] = {}
+
+# S3 Gold 스냅샷은 이 프로세스(Lambda 웜 인스턴스)에서 처음 필요할 때
+# 딱 한 번만 통째로 읽는다 - 세그먼트마다 매번 S3를 부르면 RDS 순차 조회가
+# 느려서 겪었던 것과 같은 문제(_TIME_BUDGET_SECONDS 주석 참고)가 재발한다.
+_s3_snapshot_loaded = False
+_s3_snapshot: dict[str, dict] = {}
 
 
 def time_to_bucket(time_str: str) -> str:
@@ -99,34 +125,28 @@ def _add_seconds(time_str: str, seconds: int) -> str:
 
 def table_for_type(type_: int) -> str:
     if type_ == 1:
-        return DYNAMODB_TABLE_TYPE1
+        return RDS_TABLE_TYPE1
     if type_ == 2:
         return DYNAMODB_TABLE_TYPE2
     raise ValueError(f"알 수 없는 type: {type_}")
 
 
-def _is_fresh(item: dict) -> bool:
-    """exact bucket 값의 observed_at이 freshness 기준 이내인지 확인한다.
-    observed_at이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로
-    "신선하지 않음"으로 처리해 Historical AVG로 내려가게 한다."""
+def _is_fresh(observed_at) -> bool:
+    """observed_at(epoch seconds)이 freshness 기준 이내인지 확인한다.
+    없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로 "신선하지
+    않음"으로 처리해 다음 단계로 내려가게 한다."""
     try:
-        observed_at = float(item["observed_at"])
-    except (KeyError, ValueError, TypeError):
+        observed_at = float(observed_at)
+    except (TypeError, ValueError):
         return False
     return (time.time() - observed_at) <= _FRESHNESS_THRESHOLD_SECONDS
 
 
-def _resolve_tier(
-    resolved: dict[str, int], ids: list[str], table_name: str, sk: str, require_fresh: bool = False
-) -> bool:
-    """아직 못 찾은 segment_id들에 대해 (segment_id, sk) 키로 조회해서
-    찾은 만큼 resolved에 채운다. DynamoDB 호출 자체가 실패해도 예외를
-    삼키고 로그만 남긴다(호출부가 다음 fallback 단계로 계속 진행).
-
-    require_fresh=True면 item의 observed_at이 freshness 기준보다 오래된
-    값은 채택하지 않는다(호출부가 다음 fallback 단계로 넘어가게) - type1의
-    exact(segment_id, bucket) 조회에서만 쓴다. 다른 호출부(AVG, type2)는
-    기본값(False)이라 기존 동작 그대로다.
+def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk: str) -> bool:
+    """(DynamoDB, type2 전용) 아직 못 찾은 segment_id들에 대해 (segment_id, sk)
+    키로 조회해서 찾은 만큼 resolved에 채운다. DynamoDB 호출 자체가
+    실패해도 예외를 삼키고 로그만 남긴다(호출부가 다음 fallback 단계로
+    계속 진행).
 
     반환값은 "값을 찾았는지"가 아니라 "DynamoDB 호출 자체가 성공했는지"다
     (circuit breaker가 장애와 단순 미스를 구분하는 데 씀)."""
@@ -144,9 +164,6 @@ def _resolve_tier(
     for sid in ids:
         item = items.get((sid, sk))
         if item is None:
-            continue
-        if require_fresh and not _is_fresh(item):
-            logger.info(f"stale exact 값 건너뜀(Historical AVG로 폴백): segment_id={sid} sk={sk}")
             continue
         try:
             resolved[sid] = int(item["value"])
@@ -170,24 +187,6 @@ def _lookup_global_default(table_name: str, type_: int) -> int:
 
     logger.warning(f"GLOBAL#DEFAULT까지 실패 -> 코드 상수 사용: type={type_}")
     return _HARDCODED_DEFAULTS[type_]
-
-
-def _lookup_spec_estimate(segment_id: str, table_name: str) -> int | None:
-    """type1의 3단계(SPEC Estimate) 폴백. Exact/Historical AVG가 둘 다 없을
-    때 (segment_id, "SPEC")을 조회한다 - GLOBAL#DEFAULT와 달리 segment마다
-    다른 값(도로 스펙 기반 추정 통과시간)이라 세그먼트별로 조회한다.
-    GLOBAL#DEFAULT 조회와 동일하게 이 조회 자체의 실패는 circuit breaker에
-    반영하지 않는다("그다음 폴백 단계를 위한 보조 조회"라는 성격이 같음) -
-    실패하거나 값이 없으면 None을 반환해 호출부가 코드 상수로 넘어가게 한다."""
-    try:
-        items = batch_get_items(table_name, [{"segment_id": segment_id, "sk": SPEC_SORT_KEY}])
-        item = items.get((segment_id, SPEC_SORT_KEY))
-        if item is not None:
-            return int(item["value"])
-    except Exception:
-        logger.exception(f"DynamoDB SPEC 조회 실패: table={table_name} segment_id={segment_id}")
-
-    return None
 
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
@@ -215,7 +214,7 @@ def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: 
 
 def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]:
     """Type2(길이)는 시간과 무관해 세그먼트당 값이 하나뿐이다 - 중복
-    segment_id는 한 번만 조회해서 재사용해도 안전하다."""
+    segment_id는 한 번만 조회해서 재사용해도 안전하다. (여전히 DynamoDB.)"""
     unique_ids = list(dict.fromkeys(segment_ids))
     resolved: dict[str, int] = {}
 
@@ -230,6 +229,46 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
     return [resolved[sid] for sid in segment_ids]
 
 
+def _remember_in_memory(segment_id: str, entry: dict) -> None:
+    _memory_cache[segment_id] = entry
+    if len(_memory_cache) > _MEMORY_CACHE_MAX_SIZE:
+        oldest_key = next(iter(_memory_cache))
+        del _memory_cache[oldest_key]
+
+
+def _load_s3_snapshot_once() -> None:
+    global _s3_snapshot_loaded, _s3_snapshot
+    if _s3_snapshot_loaded:
+        return
+    _s3_snapshot = gold_snapshot.read_snapshot("type1")
+    _s3_snapshot_loaded = True
+
+
+def _resolve_from_fallback(segment_id: str) -> int:
+    """RDS 자체가 응답 불가능할 때: 메모리 캐시 -> S3 스냅샷(최초 미스 때
+    한 번만 로드) -> 코드 상수 순서로 내려간다. 스냅샷 안에서도 exact(신선한
+    경우만) -> avg -> spec 순서를 그대로 재현한다."""
+    entry = _memory_cache.get(segment_id)
+
+    if entry is None:
+        _load_s3_snapshot_once()
+        entry = _s3_snapshot.get(segment_id)
+        if entry:
+            _remember_in_memory(segment_id, entry)
+
+    if entry:
+        exact_value = entry.get("exact_value")
+        if exact_value is not None and _is_fresh(entry.get("exact_observed_at")):
+            return round(exact_value)
+        if entry.get("avg") is not None:
+            return round(entry["avg"])
+        if entry.get("spec") is not None:
+            return round(entry["spec"])
+
+    logger.warning(f"메모리 캐시/S3 스냅샷에도 값 없음 -> 코드 상수 사용: segment_id={segment_id}")
+    return _HARDCODED_DEFAULTS[1]
+
+
 def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str) -> list[int]:
     """Type1(소요시간)은 segment_ids를 경로 순서로 간주한다. 세그먼트 k의
     조회 시각은 "요청 시각 + 세그먼트 1..k-1의 소요시간 합"이다 - 그
@@ -238,63 +277,68 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
     하고, 같은 segment_id가 경로에 두 번 나와도(루프) 등장 위치의 누적
     시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다.
 
-    SPEC Estimate(3단계)는 GLOBAL#DEFAULT와 달리 segment마다 다른 값이라
-    (도로 스펙 기반 추정치) 세그먼트별로 조회한다 - 요청 전체에서 캐싱하지
-    않는다. 또한 DynamoDB 호출이 연속으로 실패하면(circuit breaker) 남은
-    세그먼트는 더 이상 DynamoDB를 건드리지 않고 코드 상수로 바로 채운다 -
-    안 그러면 리전 전체 장애 시 세그먼트 수만큼 느린 실패가 순차로 쌓여
-    응답이 타임아웃날 수 있다."""
+    RDS 호출이 연속으로 실패하거나(circuit breaker) 시간 예산을 넘기면,
+    남은 세그먼트는 더 이상 RDS를 건드리지 않고 메모리/S3 폴백으로 채운다
+    - 안 그러면 RDS 장애 시 세그먼트 수만큼 느린 실패가 순차로 쌓여 응답이
+    타임아웃날 수 있다."""
     values: list[int] = []
     elapsed_seconds = 0
     consecutive_failures = 0
     circuit_open = False
     start_time = time.monotonic()
 
-    def get_fallback_value(sid: str) -> int:
-        spec_value = _lookup_spec_estimate(sid, table_name)
-        if spec_value is not None:
-            return spec_value
-        logger.warning(f"SPEC까지 실패 -> 코드 상수 사용: segment_id={sid}")
-        return _HARDCODED_DEFAULTS[1]
-
     for sid in segment_ids:
         if not circuit_open and time.monotonic() - start_time >= _TIME_BUDGET_SECONDS:
             circuit_open = True
             logger.warning(
                 f"시간 예산({_TIME_BUDGET_SECONDS}초) 초과 -> circuit open, "
-                f"남은 세그먼트는 코드 상수로 응답: table={table_name}"
+                f"남은 세그먼트는 메모리/S3 폴백으로 응답: table={table_name}"
             )
-
-        if circuit_open:
-            value = _HARDCODED_DEFAULTS[1]
-            values.append(value)
-            elapsed_seconds += value
-            continue
 
         lookup_time = _add_seconds(time_str, elapsed_seconds)
         bucket = time_to_bucket(lookup_time)
 
-        resolved: dict[str, int] = {}
-        call_ok = _resolve_tier(resolved, [sid], table_name, bucket, require_fresh=True)
+        if circuit_open:
+            value = _resolve_from_fallback(sid)
+            values.append(value)
+            elapsed_seconds += value
+            continue
 
-        if sid not in resolved:
-            call_ok = _resolve_tier(resolved, [sid], table_name, AVG_SORT_KEY) and call_ok
-
-        if sid in resolved:
-            consecutive_failures = 0
-            value = resolved[sid]
+        try:
+            tiers = rds.resolve_type1_tiers(sid, bucket, table_name)
+        except Exception:
+            logger.exception(f"RDS 조회 실패: segment_id={sid}")
+            consecutive_failures += 1
+            if consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
+                circuit_open = True
+                logger.warning(
+                    f"RDS 호출 {_CIRCUIT_BREAKER_THRESHOLD}회 연속 실패 -> "
+                    f"circuit open, 남은 세그먼트는 메모리/S3 폴백으로 응답: table={table_name}"
+                )
+            value = _resolve_from_fallback(sid)
         else:
-            if call_ok:
-                consecutive_failures = 0
+            consecutive_failures = 0
+            exact = tiers.get(bucket)
+            avg = tiers.get("AVG")
+            spec = tiers.get("SPEC")
+
+            if exact is not None and _is_fresh(exact["observed_at"]):
+                value = round(exact["value"])
+            elif avg is not None:
+                value = round(avg["value"])
+            elif spec is not None:
+                value = round(spec["value"])
             else:
-                consecutive_failures += 1
-                if consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
-                    circuit_open = True
-                    logger.warning(
-                        f"DynamoDB 호출 {_CIRCUIT_BREAKER_THRESHOLD}회 연속 실패 -> "
-                        f"circuit open, 남은 세그먼트는 코드 상수로 응답: table={table_name}"
-                    )
-            value = get_fallback_value(sid)
+                value = _HARDCODED_DEFAULTS[1]
+
+            # RDS가 정상 응답했으니, 다음 장애에 대비해 이 세그먼트의 최신
+            # 상태를 메모리 캐시에 남겨둔다(폴백 경로와 같은 모양의 항목).
+            _remember_in_memory(sid, {
+                "avg": avg["value"] if avg is not None else None,
+                "spec": spec["value"] if spec is not None else None,
+                "exact_value": exact["value"] if exact is not None else None,
+                "exact_observed_at": exact["observed_at"] if exact is not None else None,
+            })
 
         values.append(value)
         elapsed_seconds += value

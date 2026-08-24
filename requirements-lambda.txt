@@ -4,3 +4,4 @@ boto3
 python-dotenv
 cloudpathlib[s3]
 s3fs
+psycopg2-binary
