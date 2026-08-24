@@ -40,4 +40,4 @@ def test_copy_file_to_bronze_uses_upload_for_remote_path(tmp_path):
 
     _copy_file_to_bronze(str(source), remote_path)
 
-    remote_path.upload_from.assert_called_once_with(Path(source))
+    remote_path.upload_from.assert_called_once_with(Path(source), force_overwrite_to_cloud=True)

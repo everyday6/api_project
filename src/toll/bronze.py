@@ -31,13 +31,22 @@ CBD_GEOFENCE_URL = "https://data.ny.gov/resource/srxy-5nxn.geojson"
 
 
 def _copy_file_to_bronze(source_path: str, out_path) -> None:
-    """로컬 목적지는 파일 복사, S3 목적지는 객체 업로드로 저장한다."""
+    """로컬 목적지는 파일 복사, S3 목적지는 객체 업로드로 저장한다.
+
+    force_overwrite_to_cloud=True가 필요하다 - cloudpathlib은 로컬 파일
+    mtime이 S3 객체의 최종 수정 시각보다 오래되면 "클라우드 쪽이 더
+    최신인데 덮어쓰려 한다"고 보고 OverwriteNewerCloudError를 던진다.
+    근데 git으로 체크아웃한 로컬 config/*.yaml은 내용이 안 바뀌면 mtime이
+    안 갱신되는 반면 S3 객체의 최종 수정 시각은 매 업로드마다 갱신되므로,
+    내용이 그대로여도 재실행할 때마다 이 에러가 났다(실제로 겪음). 여기는
+    항상 로컬 파일(git 원본)이 진실 소스인 단방향 Bronze 적재라 클라우드
+    쪽이 "더 최신"이라는 판단 자체가 의미가 없어 무조건 덮어쓴다."""
 
     source = Path(source_path)
     if isinstance(out_path, Path):
         shutil.copyfile(source, out_path)
     else:
-        out_path.upload_from(source)
+        out_path.upload_from(source, force_overwrite_to_cloud=True)
 
 
 def upload_rates(source_path: str = "config/toll_rates.yaml", bronze_root: Path = BRONZE_ROOT) -> Path:
