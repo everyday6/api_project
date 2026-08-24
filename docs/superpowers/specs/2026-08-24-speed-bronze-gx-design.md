@@ -56,6 +56,16 @@ null 체크(`mostly=0.90`)는 컬럼별로 독립 적용된다 — 예를 들어
 
 `data_as_of` 날짜 범위 검증은 브레인스토밍 중 실제로 라이브 API에서 `1930-12-09` 같은 이상치를 발견해서 추가한 항목이다(`min_value="2017-01-01"`은 이 데이터셋 생성일자 `createdAt=2017-04-17` 기준). `max_value`는 검증 실행 시점 기준 오늘+1일로 동적으로 계산한다(먼 미래 타임스탬프도 같은 종류의 이상치이므로).
 
+**주의(실제로 재현 확인한 버그) — `speed`/`data_as_of`는 Bronze에 문자열로 저장된다.** Socrata API가 모든 필드를 문자열로 주기 때문에(`"speed":"29.82"`), `collect_speed_data()`가 만드는 Bronze parquet은 `speed`/`data_as_of` 컬럼이 전부 `object`(string) dtype이다(실제 파일로 확인함). `ExpectColumnValuesToBeBetween`을 문자열 컬럼에 그대로 돌리면 GX가 `TypeError: Column values, min_value, and max_value must either be None or of the same type`를 내부적으로 삼켜서 `success=False, result={}`만 남기고 진짜 원인은 `exception_info`에만 남는다(실제로 재현해서 확인함 — `src/common/gx.py`의 docstring이 경고하는 바로 그 실패 모드). 그래서 검증 직전에 **검증용 복사본**에서만 캐스팅한다:
+
+```python
+validation_df = df.copy()
+validation_df["speed"] = pd.to_numeric(validation_df["speed"], errors="coerce")
+validation_df["data_as_of"] = pd.to_datetime(validation_df["data_as_of"], errors="coerce")
+```
+
+`errors="coerce"`로 파싱 안 되는 값은 예외 대신 null(NaN/NaT)로 만든다 — 그러면 그 값은 not-null 체크(위 2~5번)에서 자연스럽게 잡힌다. 원본 Bronze parquet 파일 자체는 이 캐스팅과 무관하게 그대로 문자열로 저장된다(Bronze 원칙 — 변환 없음).
+
 ## 실행 위치 — DAG 변경
 
 `dags/segment_time_pipeline.py`에 새 task 추가:
