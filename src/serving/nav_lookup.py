@@ -5,16 +5,23 @@
 DynamoDB 호출 자체가 실패(예외)하는 경우를 구분하지 않고 똑같이 다음
 fallback 단계로 넘어간다.
 
-체인 순서(고정):
-  1. 정확한 (segment_id, bucket) 값
-  2. (type1만) (segment_id, "AVG")
-  3. (GLOBAL, "DEFAULT") — 배포 시점에 수동으로 심어둔 고정값
+Type1 체인 순서(고정):
+  1. Fresh Exact — 정확한 (segment_id, bucket) 값. observed_at이
+     freshness 기준(_FRESHNESS_THRESHOLD_SECONDS) 이내인 경우만 채택하고,
+     오래된 값이면 다음 단계로 내려간다(TTL로 지우지 않고 조회 시점에
+     판단 — _is_fresh 참고).
+  2. Historical AVG — (segment_id, "AVG")
+  3. SPEC Estimate — (segment_id, "SPEC"). Silver2가 도로 스펙
+     (segment_length / speed_limit)으로 미리 계산해둔 추정 통과시간
+     (spec_travel_time_sec)이 Gold에 저장돼 있다고 가정한다.
   4. 코드 상수 — 외부 호출이 전혀 없는 최후의 보루
+
+Type2(길이) 체인은 별개다: 정확한 (segment_id, "LENGTH") → (GLOBAL,
+"DEFAULT") → 코드 상수. 시간과 무관해 순서/중복에 영향받지 않는다.
 
 Type1(소요시간)의 segment_ids는 경로를 순서대로 나열한 것으로 간주한다.
 요청 시각은 첫 세그먼트에만 그대로 쓰고, 이후 세그먼트는 앞 세그먼트들의
 누적 소요시간만큼 시각을 이동해서 조회한다(_resolve_time_values 참고).
-Type2(길이)는 시간과 무관해 순서/중복에 영향받지 않는다.
 """
 
 from __future__ import annotations
@@ -40,6 +47,19 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
 # TODO(팀 검토 필요): scripts/seed_dynamodb_defaults.py의 기본값과 동일한
 # 정성적 초안.
 _HARDCODED_DEFAULTS = {1: 45, 2: 300}
+
+# type1 exact(segment_id, bucket) 값의 신선도 기준(초). observed_at이 이보다
+# 오래되면 그 bucket이 갱신을 멈췄다고 보고(파이프라인 중단 등) Historical
+# AVG로 내려간다. DynamoDB TTL로 삭제하지 않고 조회 시점에 매번 판단한다.
+# TODO(팀 검토 필요): 아직 기준 미확정 - 30분 수집 주기의 2배인 1시간으로
+# 잡은 정성적 초안. observed_at은 Gold가 그 bucket 값을 마지막으로 계산한
+# 시각(epoch seconds)이라고 가정한다.
+_FRESHNESS_THRESHOLD_SECONDS = 3600.0
+
+# type1 3단계(SPEC Estimate) 조회에 쓰는 sort key. Silver2가 도로 스펙
+# (segment_length / speed_limit)으로 미리 계산해둔 추정 통과시간이
+# (segment_id, "SPEC")으로 Gold에 저장돼 있다고 가정한다.
+SPEC_SORT_KEY = "SPEC"
 
 # type1은 세그먼트마다 순차로 DynamoDB를 조회하므로(누적시각 때문에 배치 불가),
 # DynamoDB 리전 전체가 응답 불가능한 상황에서는 세그먼트 수만큼 호출이 전부
@@ -89,10 +109,28 @@ def table_for_type(type_: int) -> str:
     raise ValueError(f"알 수 없는 type: {type_}")
 
 
-def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk: str) -> bool:
+def _is_fresh(item: dict) -> bool:
+    """exact bucket 값의 observed_at이 freshness 기준 이내인지 확인한다.
+    observed_at이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로
+    "신선하지 않음"으로 처리해 Historical AVG로 내려가게 한다."""
+    try:
+        observed_at = float(item["observed_at"])
+    except (KeyError, ValueError, TypeError):
+        return False
+    return (time.time() - observed_at) <= _FRESHNESS_THRESHOLD_SECONDS
+
+
+def _resolve_tier(
+    resolved: dict[str, int], ids: list[str], table_name: str, sk: str, require_fresh: bool = False
+) -> bool:
     """아직 못 찾은 segment_id들에 대해 (segment_id, sk) 키로 조회해서
     찾은 만큼 resolved에 채운다. DynamoDB 호출 자체가 실패해도 예외를
     삼키고 로그만 남긴다(호출부가 다음 fallback 단계로 계속 진행).
+
+    require_fresh=True면 item의 observed_at이 freshness 기준보다 오래된
+    값은 채택하지 않는다(호출부가 다음 fallback 단계로 넘어가게) - type1의
+    exact(segment_id, bucket) 조회에서만 쓴다. 다른 호출부(AVG, type2)는
+    기본값(False)이라 기존 동작 그대로다.
 
     반환값은 "값을 찾았는지"가 아니라 "DynamoDB 호출 자체가 성공했는지"다
     (circuit breaker가 장애와 단순 미스를 구분하는 데 씀)."""
@@ -110,6 +148,9 @@ def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk:
     for sid in ids:
         item = items.get((sid, sk))
         if item is None:
+            continue
+        if require_fresh and not _is_fresh(item):
+            logger.info(f"stale exact 값 건너뜀(Historical AVG로 폴백): segment_id={sid} sk={sk}")
             continue
         try:
             resolved[sid] = int(item["value"])
@@ -133,6 +174,24 @@ def _lookup_global_default(table_name: str, type_: int) -> int:
 
     logger.warning(f"GLOBAL#DEFAULT까지 실패 -> 코드 상수 사용: type={type_}")
     return _HARDCODED_DEFAULTS[type_]
+
+
+def _lookup_spec_estimate(segment_id: str, table_name: str) -> int | None:
+    """type1의 3단계(SPEC Estimate) 폴백. Exact/Historical AVG가 둘 다 없을
+    때 (segment_id, "SPEC")을 조회한다 - GLOBAL#DEFAULT와 달리 segment마다
+    다른 값(도로 스펙 기반 추정 통과시간)이라 세그먼트별로 조회한다.
+    GLOBAL#DEFAULT 조회와 동일하게 이 조회 자체의 실패는 circuit breaker에
+    반영하지 않는다("그다음 폴백 단계를 위한 보조 조회"라는 성격이 같음) -
+    실패하거나 값이 없으면 None을 반환해 호출부가 코드 상수로 넘어가게 한다."""
+    try:
+        items = batch_get_items(table_name, [{"segment_id": segment_id, "sk": SPEC_SORT_KEY}])
+        item = items.get((segment_id, SPEC_SORT_KEY))
+        if item is not None:
+            return int(item["value"])
+    except Exception:
+        logger.exception(f"DynamoDB SPEC 조회 실패: table={table_name} segment_id={segment_id}")
+
+    return None
 
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
@@ -183,23 +242,24 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
     하고, 같은 segment_id가 경로에 두 번 나와도(루프) 등장 위치의 누적
     시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다.
 
-    GLOBAL#DEFAULT는 요청 전체에서 값이 불변이므로 한 번만 조회해서
-    재사용한다(세그먼트마다 다시 조회하지 않음). 또한 DynamoDB 호출이
-    연속으로 실패하면(circuit breaker) 남은 세그먼트는 더 이상 DynamoDB를
-    건드리지 않고 코드 상수로 바로 채운다 - 안 그러면 리전 전체 장애 시
-    세그먼트 수만큼 느린 실패가 순차로 쌓여 응답이 타임아웃날 수 있다."""
+    SPEC Estimate(3단계)는 GLOBAL#DEFAULT와 달리 segment마다 다른 값이라
+    (도로 스펙 기반 추정치) 세그먼트별로 조회한다 - 요청 전체에서 캐싱하지
+    않는다. 또한 DynamoDB 호출이 연속으로 실패하면(circuit breaker) 남은
+    세그먼트는 더 이상 DynamoDB를 건드리지 않고 코드 상수로 바로 채운다 -
+    안 그러면 리전 전체 장애 시 세그먼트 수만큼 느린 실패가 순차로 쌓여
+    응답이 타임아웃날 수 있다."""
     values: list[int] = []
     elapsed_seconds = 0
     consecutive_failures = 0
     circuit_open = False
-    cached_default: int | None = None
     start_time = time.monotonic()
 
-    def get_default() -> int:
-        nonlocal cached_default
-        if cached_default is None:
-            cached_default = _lookup_global_default(table_name, 1)
-        return cached_default
+    def get_fallback_value(sid: str) -> int:
+        spec_value = _lookup_spec_estimate(sid, table_name)
+        if spec_value is not None:
+            return spec_value
+        logger.warning(f"SPEC까지 실패 -> 코드 상수 사용: segment_id={sid}")
+        return _HARDCODED_DEFAULTS[1]
 
     for sid in segment_ids:
         if not circuit_open and time.monotonic() - start_time >= _TIME_BUDGET_SECONDS:
@@ -219,7 +279,7 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
         bucket = time_to_bucket(lookup_time)
 
         resolved: dict[str, int] = {}
-        call_ok = _resolve_tier(resolved, [sid], table_name, bucket)
+        call_ok = _resolve_tier(resolved, [sid], table_name, bucket, require_fresh=True)
 
         if sid not in resolved:
             call_ok = _resolve_tier(resolved, [sid], table_name, AVG_SORT_KEY) and call_ok
@@ -238,7 +298,7 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
                         f"DynamoDB 호출 {_CIRCUIT_BREAKER_THRESHOLD}회 연속 실패 -> "
                         f"circuit open, 남은 세그먼트는 코드 상수로 응답: table={table_name}"
                     )
-            value = get_default()
+            value = get_fallback_value(sid)
 
         values.append(value)
         elapsed_seconds += value
