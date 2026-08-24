@@ -70,15 +70,35 @@ def segment_time_pipeline():
         return exists
 
     @task
-    def submit_nav_time_job(speed_bronze_path: str) -> dict:
+    def submit_silver_job(speed_bronze_path: str) -> dict:
         run_id = uuid.uuid4().hex
-        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_{run_id}.json"
+        silver2_path = EMR_JOBS_DIR / "outputs" / f"nav_time_silver2_{run_id}.parquet"
+        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_silver_{run_id}.json"
 
         run_spark_job(
-            job_name=f"nav-time-{run_id}",
-            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_job.py",
+            job_name=f"nav-time-silver-{run_id}",
+            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_silver_job.py",
             entry_point_args=[
                 "--speed-bronze-path", speed_bronze_path,
+                "--dim-segment-path", str(DIM_SEGMENT_PATH),
+                "--silver2-output", str(silver2_path),
+                "--output-s3", str(output_s3),
+            ],
+        )
+
+        result = read_json_result(str(output_s3))
+        return {"silver2_path": str(silver2_path), **result}
+
+    @task
+    def submit_gold_job(silver_result: dict) -> dict:
+        run_id = uuid.uuid4().hex
+        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_gold_{run_id}.json"
+
+        run_spark_job(
+            job_name=f"nav-time-gold-{run_id}",
+            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_gold_job.py",
+            entry_point_args=[
+                "--silver2-path", silver_result["silver2_path"],
                 "--dim-segment-path", str(DIM_SEGMENT_PATH),
                 "--serving-table", SERVING_TABLE_TYPE1,
                 "--output-s3", str(output_s3),
@@ -95,9 +115,11 @@ def segment_time_pipeline():
 
     dim_segment_ready = check_dim_segment_exists()
 
-    submit_result = submit_nav_time_job(bronze_path)
-    submit_result.set_upstream(dim_segment_ready)
-    submit_result.set_upstream(bronze_valid)
+    silver_result = submit_silver_job(bronze_path)
+    silver_result.set_upstream(dim_segment_ready)
+    silver_result.set_upstream(bronze_valid)
+
+    gold_result = submit_gold_job(silver_result)
 
 
 segment_time_pipeline()
