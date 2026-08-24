@@ -7,7 +7,7 @@ Gold2 — type1(시간) 최종 산출물 계산 + DynamoDB 포맷/upsert
 나눠 세그먼트별 통행시간(초)을 구한다. 세그먼트 전체 평균(AVG)은 세그먼트당
 버킷을 한 번에 하나씩만 계산하는 구조에 맞춰, 이번 실행에서 바뀐 버킷 하나
 만큼만 증분 갱신한다(설계 문서 7절). DynamoDB에는 버킷 값과 AVG를 모두
-upsert한다.
+upsert한다 — 버킷 값에는 원본 데이터 날짜(collected_date)도 함께 저장한다.
 
 단위: SPEED는 mph, length_ft는 feet. 시간(초) = (길이_ft / 5280) / 속도_mph * 3600.
 """
@@ -23,9 +23,11 @@ from pyspark.sql.functions import (
     floor,
     hour,
     lpad,
+    max as spark_max,
     minute,
     row_number,
     sum as spark_sum,
+    to_date,
 )
 
 from src.common.config import AVG_SORT_KEY, BUCKET_MINUTES
@@ -55,6 +57,10 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
 
     한 버킷 안에서 시간순으로 매긴 순위(rank)를 가중치로 쓴다 — n개 판독값이면
     1:2:...:n 비율(최근 값일수록 크게), 삼각수 n*(n+1)/2로 정규화한다.
+
+    collected_date는 그 버킷을 구성한 판독값들의 observed_at 중 가장 최근 값의
+    날짜다 — DynamoDB에 저장된 버킷 값이 며칠자 원본 데이터로 계산됐는지 표시하기
+    위함(docs/superpowers/specs/2026-08-24-type1-collected-date-design.md).
     """
 
     spark = silver2_df.sparkSession
@@ -75,7 +81,10 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
 
     bucket_avg_speed = (
         weighted.groupBy("segment_id", "bucket")
-        .agg(spark_sum("weighted_speed").alias("avg_speed"))
+        .agg(
+            spark_sum("weighted_speed").alias("avg_speed"),
+            to_date(spark_max("observed_at")).alias("collected_date"),
+        )
         .filter(col("avg_speed") > 0)
     )
 
@@ -84,6 +93,7 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
     return joined.select(
         "segment_id",
         "bucket",
+        "collected_date",
         (
             (col("length_ft") / _FEET_PER_MILE) / col("avg_speed") * _SECONDS_PER_HOUR
         ).alias("time_seconds"),
@@ -92,6 +102,10 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
 
 def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     """버킷별 값 + 세그먼트별 평균(AVG, 증분 갱신)을 DynamoDB 항목 리스트로 변환한다.
+
+    bucket_df는 compute_time_seconds의 반환값이어야 한다 — segment_id/bucket/
+    time_seconds뿐 아니라 collected_date(DateType) 컬럼도 필수다. 버킷 항목에는
+    collected_date를 ISO 날짜 문자열로 실어 보내고, AVG 항목에는 붙이지 않는다.
 
     AVG는 세그먼트의 (최대 BUCKETS_PER_DAY개) 버킷 전체 평균이어야 하는데,
     이번 실행은 세그먼트당 버킷을 하나만 계산한다. 48개를 매번 다 읽는 대신,
@@ -108,7 +122,12 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     rows = bucket_df.collect()
 
     bucket_items = [
-        {"segment_id": row["segment_id"], "sk": row["bucket"], "value": round(row["time_seconds"])}
+        {
+            "segment_id": row["segment_id"],
+            "sk": row["bucket"],
+            "value": round(row["time_seconds"]),
+            "collected_date": row["collected_date"].isoformat(),
+        }
         for row in rows
     ]
 

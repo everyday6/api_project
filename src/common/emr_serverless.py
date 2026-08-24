@@ -19,6 +19,7 @@ spark.archives로 같이 실어서 드라이버/executor가 그 환경의 python
 
 from __future__ import annotations
 
+import gzip
 import json
 import time
 import uuid
@@ -45,6 +46,14 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="emr_serverless")
 # 자주 조회해서 API를 낭비할 필요가 없다.
 _POLL_INTERVAL_SECONDS = 15
 _TERMINAL_STATES = {"SUCCESS", "FAILED", "CANCELLED"}
+
+# EMR Serverless 잡의 드라이버 stdout/stderr를 여기로 떨어뜨리도록 매
+# start_job_run에 지정한다. EMR Studio/콘솔 접근 권한이 없어도, 실패 시
+# 이 경로에서 로그를 직접 읽어 Airflow 태스크 로그에 그대로 찍어줄 수 있다.
+_EMR_LOGS_DIR = EMR_JOBS_DIR / "logs"
+
+# 태스크 로그가 너무 길어지는 걸 막기 위해 드라이버 로그 마지막 N줄만 찍는다.
+_LOG_TAIL_LINES = 200
 
 
 def _upload_src_bundle() -> str:
@@ -88,6 +97,35 @@ def _upload_script(local_path: Path, job_name: str) -> str:
     return str(dest)
 
 
+def _fetch_driver_log_tail(job_run_id: str, stream: str) -> str:
+    """실패한 잡의 드라이버 로그(stdout/stderr) 마지막 부분을 S3에서 읽어온다.
+
+    EMR Serverless는 s3MonitoringConfiguration으로 지정한 경로 아래
+    applications/{appId}/jobs/{jobRunId}/SPARK_DRIVER/{stream}.gz로
+    로그를 gzip 압축해 저장한다. 콘솔 접근 권한이 없어도 이 함수 하나로
+    Airflow 태스크 로그에서 바로 원인을 볼 수 있게 한다. 로그 자체를
+    못 가져와도(아직 안 올라왔거나 권한 문제) 잡 실패 보고 자체는 막지
+    않도록 예외를 삼키고 안내 메시지를 대신 돌려준다."""
+    log_path = (
+        _EMR_LOGS_DIR
+        / "applications"
+        / EMR_APPLICATION_ID
+        / "jobs"
+        / job_run_id
+        / "SPARK_DRIVER"
+        / f"{stream}.gz"
+    )
+    try:
+        text = gzip.decompress(log_path.read_bytes()).decode("utf-8", errors="replace")
+    except Exception as exc:  # noqa: BLE001 - 로그 조회 실패가 잡 실패 처리를 막으면 안 됨
+        return f"(드라이버 {stream} 로그를 가져오지 못했습니다: {exc})"
+
+    lines = text.splitlines()
+    tail = lines[-_LOG_TAIL_LINES:]
+    prefix = f"... (총 {len(lines)}줄 중 마지막 {len(tail)}줄)\n" if len(lines) > len(tail) else ""
+    return prefix + "\n".join(tail)
+
+
 def run_spark_job(
     job_name: str,
     entry_point_script: Path,
@@ -127,6 +165,11 @@ def run_spark_job(
                 ),
             }
         },
+        configurationOverrides={
+            "monitoringConfiguration": {
+                "s3MonitoringConfiguration": {"logUri": str(_EMR_LOGS_DIR)},
+            }
+        },
     )
 
     job_run_id = response["jobRunId"]
@@ -147,6 +190,18 @@ def run_spark_job(
             break
 
     if state != "SUCCESS":
+        # EMR Studio 콘솔에 접근할 수 없어도 실패 원인을 바로 볼 수 있게,
+        # 드라이버 stdout/stderr 마지막 부분을 Airflow 태스크 로그에 그대로 찍는다.
+        logger.error(
+            "EMR Serverless 드라이버 stdout(%s):\n%s",
+            job_run_id,
+            _fetch_driver_log_tail(job_run_id, "stdout"),
+        )
+        logger.error(
+            "EMR Serverless 드라이버 stderr(%s):\n%s",
+            job_run_id,
+            _fetch_driver_log_tail(job_run_id, "stderr"),
+        )
         raise RuntimeError(
             f"EMR Serverless 잡 실패: {job_name} "
             f"(jobRunId={job_run_id}, state={state}, "

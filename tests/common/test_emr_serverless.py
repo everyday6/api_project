@@ -68,7 +68,52 @@ def test_run_spark_job_raises_on_failure(tmp_script):
     with patch.object(emr_serverless, "_upload_src_bundle", return_value="s3://bucket/src.zip"), \
          patch.object(emr_serverless, "_upload_script", return_value="s3://bucket/job.py"), \
          patch.object(emr_serverless.boto3, "client", return_value=mock_client), \
+         patch.object(emr_serverless, "_fetch_driver_log_tail", return_value="mock log"), \
          patch.object(emr_serverless.time, "sleep"):
 
         with pytest.raises(RuntimeError, match="boom"):
             emr_serverless.run_spark_job("test-job", tmp_script, [])
+
+
+def test_run_spark_job_configures_s3_log_destination(tmp_script):
+    """EMR Studio 콘솔 접근 권한이 없어도 실패 시 드라이버 로그를 직접
+    읽어올 수 있도록, 잡 제출 시 s3MonitoringConfiguration을 지정해야 한다."""
+    mock_client = MagicMock()
+    mock_client.start_job_run.return_value = {"jobRunId": "run-1"}
+    mock_client.get_job_run.return_value = {"jobRun": {"state": "SUCCESS"}}
+
+    with patch.object(emr_serverless, "_upload_src_bundle", return_value="s3://bucket/src.zip"), \
+         patch.object(emr_serverless, "_upload_script", return_value="s3://bucket/job.py"), \
+         patch.object(emr_serverless.boto3, "client", return_value=mock_client), \
+         patch.object(emr_serverless.time, "sleep"):
+
+        emr_serverless.run_spark_job("test-job", tmp_script, [])
+
+    call_kwargs = mock_client.start_job_run.call_args.kwargs
+    log_uri = call_kwargs["configurationOverrides"]["monitoringConfiguration"]["s3MonitoringConfiguration"]["logUri"]
+    assert log_uri == str(emr_serverless._EMR_LOGS_DIR)
+
+
+def test_run_spark_job_logs_driver_output_on_failure(tmp_script):
+    """실패 시 드라이버 stdout/stderr 마지막 부분을 Airflow 태스크 로그에
+    직접 찍어서, EMR Studio 콘솔 없이도 원인을 바로 볼 수 있어야 한다."""
+    mock_client = MagicMock()
+    mock_client.start_job_run.return_value = {"jobRunId": "run-1"}
+    mock_client.get_job_run.return_value = {
+        "jobRun": {"state": "FAILED", "stateDetails": "boom"}
+    }
+
+    with patch.object(emr_serverless, "_upload_src_bundle", return_value="s3://bucket/src.zip"), \
+         patch.object(emr_serverless, "_upload_script", return_value="s3://bucket/job.py"), \
+         patch.object(emr_serverless.boto3, "client", return_value=mock_client), \
+         patch.object(emr_serverless, "_fetch_driver_log_tail", return_value="the actual traceback") as mock_fetch, \
+         patch.object(emr_serverless.time, "sleep"), \
+         patch.object(emr_serverless.logger, "error") as mock_log_error:
+
+        with pytest.raises(RuntimeError):
+            emr_serverless.run_spark_job("test-job", tmp_script, [])
+
+    mock_fetch.assert_any_call("run-1", "stdout")
+    mock_fetch.assert_any_call("run-1", "stderr")
+    logged_text = "\n".join(str(call.args) for call in mock_log_error.call_args_list)
+    assert "the actual traceback" in logged_text

@@ -3,7 +3,9 @@ import pytest
 from shapely.geometry import LineString, Polygon
 
 from src.silver2.zone_segment import (
+    _content_hash,
     _map_segments_to_zones,
+    current_mapping_version,
     publish_map_zone_segment,
     validate_reference_inputs,
     validate_staged_map_zone_segment,
@@ -113,19 +115,48 @@ def test_validated_staging_is_published_and_cleaned(tmp_path):
         "distance_ft": [0.0, 1.0],
     })
     expected.to_parquet(stage_path, index=False)
-    stage_result = {"run_id": run_id, "stage_path": str(stage_path)}
+    mapping_version = _content_hash(expected)
+    stage_result = {
+        "run_id": run_id,
+        "stage_path": str(stage_path),
+        "mapping_version": mapping_version,
+    }
 
     validated = validate_staged_map_zone_segment(
         stage_result,
         lion_segment_path=lion_path,
         staging_root=staging_root,
     )
+    version_path = tmp_path / "silver2" / "map_zone_segment_version.txt"
     result = publish_map_zone_segment(
         validated,
         output_path=output_path,
         staging_root=staging_root,
+        version_path=version_path,
     )
 
     assert result == str(output_path)
     pd.testing.assert_frame_equal(pd.read_parquet(output_path), expected)
     assert not run_path.exists()
+    assert current_mapping_version(version_path) == mapping_version
+
+
+def test_current_mapping_version_returns_none_when_marker_missing(tmp_path):
+    assert current_mapping_version(tmp_path / "map_zone_segment_version.txt") is None
+
+
+def test_content_hash_is_stable_regardless_of_row_order():
+    mapping_a = pd.DataFrame({
+        "segment_id": ["0000001", "0000002"],
+        "zone_id": [1, 2],
+    })
+    mapping_b = mapping_a.iloc[::-1].reset_index(drop=True)
+
+    assert _content_hash(mapping_a) == _content_hash(mapping_b)
+
+
+def test_content_hash_changes_when_values_change():
+    mapping_a = pd.DataFrame({"segment_id": ["0000001"], "zone_id": [1]})
+    mapping_b = pd.DataFrame({"segment_id": ["0000001"], "zone_id": [2]})
+
+    assert _content_hash(mapping_a) != _content_hash(mapping_b)

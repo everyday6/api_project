@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 
@@ -44,10 +45,22 @@ DATE_PARTITION_PATTERN = re.compile(r"^date=(\d{4}-\d{2}-\d{2})$")
 # 쓰게 해서, driver가 toLocalIterator()로 한 줄씩 순차 처리할 때보다
 # wall-clock을 파티션 수만큼 나눈다(Airflow heartbeat timeout 예방 — segment
 # 수가 많으면 순차 처리가 5분을 넘겨 태스크가 강제 종료되는 사고가 있었다).
-# DynamoDB가 PAY_PER_REQUEST(온디맨드)라 동시 쓰기 자체는 감당하지만,
-# 파티션이 너무 잘게 쪼개지면 파티션마다 boto3 리소스를 새로 만드는 오버헤드가
-# 커지므로 적당한 값으로 고정한다.
-TYPE3_DYNAMODB_WRITE_PARTITIONS = 32
+# 원래 32로 뒀었는데, PAY_PER_REQUEST(온디맨드) 테이블도 최근 트래픽 기준으로
+# 순간 처리량 한도가 정해져 있어서 32-way로 한꺼번에 몰아치면
+# RequestLimitExceeded로 죽는 사고가 실제로 있었다(get_dynamodb_resource의
+# adaptive 재시도와 별개로, 애초에 순간 부하 자체를 낮춰서 두 겹으로 방어).
+TYPE3_DYNAMODB_WRITE_PARTITIONS = 10
+
+# 파티션 하나(executor 하나) 안에서 batch_writer를 몇 개의 스레드로 나눠 돌릴지.
+# DynamoDB 쓰기는 CPU가 아니라 네트워크 왕복 대기가 지배적인 I/O bound
+# 작업이라, 파티션 내부도 스레드로 쪼개면 wall-clock을 줄일 수 있다(세그먼트
+# 수가 늘어나 파티션당 수백만 건을 순차로 쓰면 시간이 선형으로 늘어나는 걸
+# 완화하기 위함).
+# 동시 요청 수는 대략 TYPE3_DYNAMODB_WRITE_PARTITIONS × 이 값에 비례하므로,
+# 32-way(파티션만으로 32 동시)에서 RequestLimitExceeded로 죽었던 사고(위 주석
+# 참고)를 감안해 그 값보다 낮게 유지한다(기본 10 × 2 = 20). 안전이 확인되면
+# CloudWatch의 WriteThrottleEvents를 보면서 조심스럽게 올릴 것.
+TYPE3_DYNAMODB_WRITE_THREADS_PER_PARTITION = 2
 TAXI_ZONE_IDS = tuple(range(1, 264))
 DOW_NAMES = TLC_TYPE3_DOW_NAMES
 SPARK_DOW_NAMES = (DOW_NAMES[-1], *DOW_NAMES[:-1])
@@ -402,22 +415,53 @@ def validate_segment_values(
     return {"segments": actual_segments, "rows": actual_rows}
 
 
-def _write_type3_partition(table_name: str):
-    """executor 파티션 하나를 자기만의 boto3 리소스로 DynamoDB에 쓴다.
+def _write_rows_chunk(table_name: str, rows_chunk: list) -> None:
+    """행 묶음 하나를 자기만의 boto3 리소스/batch_writer로 DynamoDB에 쓴다.
 
-    driver에서 만든 boto3 리소스는 executor로 직렬화해서 보낼 수 없으므로
-    (네트워크 커넥션을 포함한 객체라 pickle 불가/안전하지 않음), 파티션마다
-    executor 안에서 새로 만든다."""
+    boto3 리소스(내부 커넥션 포함)는 스레드 간에 안전하게 공유할 수 없으므로,
+    청크마다(=스레드마다) 새로 만든다 — get_table 자체가 매번 새 리소스를
+    반환하므로 별도 락 없이 이렇게 쓰면 된다."""
+
+    if not rows_chunk:
+        return
+    table = get_table(table_name)
+    with table.batch_writer(overwrite_by_pkeys=["segment_id", "sk"]) as batch:
+        for row in rows_chunk:
+            batch.put_item(Item={
+                "segment_id": str(row["segment_id"]),
+                "sk": f"{TYPE_ID}#{row['dow']}#{str(row['time']).zfill(4)}",
+                "value": Decimal(str(row["value"])),
+            })
+
+
+def _write_type3_partition(table_name: str):
+    """executor 파티션 하나를 다시 스레드 여러 개로 쪼개 DynamoDB에 쓴다.
+
+    DynamoDB 쓰기는 네트워크 왕복 대기가 대부분인 I/O bound 작업이라, 파티션
+    하나를 한 스레드가 순차로(for row in rows) 처리하면 세그먼트 수가 많을 때
+    wall-clock이 그대로 늘어난다. 파티션 안에서도 TYPE3_DYNAMODB_WRITE_THREADS_PER_PARTITION개
+    스레드로 나눠 동시에 batch_writer를 돌려 이걸 완화한다.
+
+    청크 중 하나에서 예외가 나면 as_completed 루프에서 future.result()가 그
+    예외를 다시 던져서 write_type3_rolling_to_dynamodb까지 전파된다(다른
+    청크가 이미 일부 써놓았더라도 COMPLETED 메타데이터는 안 남으므로, 다음
+    DAG 실행이 워터마크를 보고 다시 처리한다)."""
 
     def _write(rows) -> None:
-        table = get_table(table_name)
-        with table.batch_writer(overwrite_by_pkeys=["segment_id", "sk"]) as batch:
-            for row in rows:
-                batch.put_item(Item={
-                    "segment_id": str(row["segment_id"]),
-                    "sk": f"{TYPE_ID}#{row['dow']}#{str(row['time']).zfill(4)}",
-                    "value": Decimal(str(row["value"])),
-                })
+        rows = list(rows)
+        if not rows:
+            return
+
+        thread_count = min(TYPE3_DYNAMODB_WRITE_THREADS_PER_PARTITION, len(rows))
+        chunks = [rows[i::thread_count] for i in range(thread_count)]
+
+        with ThreadPoolExecutor(max_workers=thread_count) as executor:
+            futures = [
+                executor.submit(_write_rows_chunk, table_name, chunk)
+                for chunk in chunks
+            ]
+            for future in as_completed(futures):
+                future.result()
 
     return _write
 
@@ -428,6 +472,7 @@ def write_type3_rolling_to_dynamodb(
     window_start: date,
     window_end: date,
     rolling_weeks: int,
+    mapping_version: str | None = None,
 ) -> int:
     """검증된 Spark 롤링 결과를 executor 병렬로 저장한 뒤 완료 메타데이터를 기록한다.
 
@@ -454,6 +499,7 @@ def write_type3_rolling_to_dynamodb(
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
         "rolling_weeks": rolling_weeks,
+        "mapping_version": mapping_version,
         "updated_at": datetime.now(timezone.utc).isoformat(),
     })
     return written

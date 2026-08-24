@@ -23,6 +23,7 @@ from src.common.dynamodb import get_table
 from src.common.logger import get_logger
 from src.common.downloader import get_recent_service_months
 from src.common.spark import to_spark_path
+from src.silver2.zone_segment import MAP_ZONE_SEGMENT_VERSION_PATH, current_mapping_version
 from src.tlc.emr import run_tlc_emr_operation
 from src.tlc.gold2 import (
     TYPE3_META_SEGMENT_ID,
@@ -83,26 +84,31 @@ def _find_pending_type3_months(
     return sorted(pending)
 
 
-def _type3_metadata_is_current(item: dict, window_start: date, window_end: date) -> bool:
-    """DynamoDB 메타데이터가 현재 S3 롤링 윈도우를 가리키는지 확인한다."""
+def _type3_metadata_is_current(
+    item: dict,
+    window_start: date,
+    window_end: date,
+    mapping_version: str | None,
+) -> bool:
+    """DynamoDB 메타데이터가 현재 S3 롤링 윈도우와 zone-segment 매핑을
+    모두 가리키는지 확인한다.
+
+    날짜 범위만 보면, LION/Taxi Zone이 갱신돼 zone-segment 매핑이
+    바뀌었는데도 TLC 날짜 범위가 그대로라는 이유로 DynamoDB Type 3 값이
+    조용히 갱신되지 않는 문제가 있었다 - 매핑 버전도 함께 비교한다."""
 
     return (
         item.get("status") == "COMPLETED"
         and item.get("window_start") == window_start.isoformat()
         and item.get("window_end") == window_end.isoformat()
+        and item.get("mapping_version") == mapping_version
     )
 
 
-def validate_type3_reference(map_zone_segment_path=MAP_ZONE_SEGMENT_PATH) -> str:
-    """운영 Type 3에 필요한 Zone-Segment 매핑의 존재를 확인한다."""
+def _type3_reference_exists(map_zone_segment_path=MAP_ZONE_SEGMENT_PATH) -> bool:
+    """운영 Type 3에 필요한 Zone-Segment 매핑이 있는지 확인한다(순수 함수)."""
 
-    if not map_zone_segment_path.exists():
-        raise FileNotFoundError(
-            f"Type 3 필수 입력인 zone-segment 매핑이 없습니다: "
-            f"{map_zone_segment_path}"
-        )
-    logger.info("Type 3 zone-segment 매핑 확인 완료: %s", map_zone_segment_path)
-    return str(map_zone_segment_path)
+    return map_zone_segment_path.exists()
 
 
 @task(trigger_rule="none_failed")
@@ -202,28 +208,55 @@ def check_type3_publish_needed(_published_result=None) -> dict:
         TYPE3_DAILY_ROOT.glob("date=*"),
         TLC_TYPE3_ROLLING_WEEKS * 7,
     )
+    mapping_version = current_mapping_version()
     table = get_table(DYNAMODB_TABLE_TYPE3)
     response = table.get_item(
         Key={"segment_id": TYPE3_META_SEGMENT_ID, "sk": TYPE3_META_SK},
         ConsistentRead=True,
     )
     metadata = response.get("Item", {})
-    if _type3_metadata_is_current(metadata, window_start, window_end):
+    if _type3_metadata_is_current(metadata, window_start, window_end, mapping_version):
         raise AirflowSkipException(
-            f"DynamoDB Type 3가 이미 최신입니다: {window_start}~{window_end}"
+            f"DynamoDB Type 3가 이미 최신입니다: {window_start}~{window_end} "
+            f"(mapping_version={mapping_version})"
         )
 
     logger.info(
-        "DynamoDB Type 3 갱신 필요: current_window_end=%s target=%s~%s",
+        "DynamoDB Type 3 갱신 필요: current_window_end=%s current_mapping_version=%s "
+        "target=%s~%s target_mapping_version=%s",
         metadata.get("window_end"),
+        metadata.get("mapping_version"),
         window_start,
         window_end,
+        mapping_version,
     )
     return {
         "daily_path": str(TYPE3_DAILY_ROOT),
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
+        "mapping_version": mapping_version,
     }
+
+
+@task.short_circuit
+def check_type3_reference_ready(_publish_plan=None) -> bool:
+    """운영 Type 3에 필요한 Zone-Segment 매핑이 있는지 확인한다.
+
+    zone_segment_pipeline이 아직 한 번도 안 돌았거나(최초 배포) 재부트스트랩
+    중이면 이 매핑이 없을 수 있다. 예전엔 이 경우 FileNotFoundError를 던져서
+    DAG run 전체가 실패로 확정됐는데(재시도 3회 소진 후), segment_time_
+    pipeline의 check_dim_segment_exists와 같은 이유로 - 의존 파일이 아직
+    없다고 DAG 전체를 실패시키는 대신, 이번 실행의 DynamoDB 갱신만 조용히
+    건너뛴다."""
+
+    exists = _type3_reference_exists()
+    if not exists:
+        logger.warning(
+            "%s 없음 - zone_segment_pipeline이 아직 매핑을 만들지 않았거나 "
+            "수동 부트스트랩이 필요함. 이번 실행은 Type 3 DynamoDB 갱신을 건너뛴다.",
+            MAP_ZONE_SEGMENT_PATH,
+        )
+    return exists
 
 
 @task(pool="silver_pool")
@@ -243,7 +276,14 @@ def publish_type3_rolling_values(publish_plan: dict) -> dict:
             "publish_plan": publish_plan,
             "daily_root": str(TYPE3_DAILY_ROOT),
             "mapping_path": str(MAP_ZONE_SEGMENT_PATH),
+            # EMR Serverless 컨테이너는 Airflow와 별개 환경이라 S3_BUCKET_DATA
+            # 같은 .env 값이 안 넘어간다 - EMR 쪽에서 current_mapping_version()을
+            # 인자 없이 부르면 SILVER2_DIR가 버킷명 없이(None) 잘못 계산돼서
+            # "s3://None/..." 경로로 타임아웃난다(실제로 겪은 장애). Airflow
+            # 쪽에서 이미 올바르게 계산된 경로를 문자열로 그대로 넘긴다.
+            "mapping_version_path": str(MAP_ZONE_SEGMENT_VERSION_PATH),
             "table_name": DYNAMODB_TABLE_TYPE3,
             "rolling_weeks": TLC_TYPE3_ROLLING_WEEKS,
+            "mapping_version": publish_plan.get("mapping_version"),
         },
     )

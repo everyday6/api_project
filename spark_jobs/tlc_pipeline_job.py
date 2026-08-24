@@ -20,6 +20,7 @@ from src.common.config import TLC_TYPE3_ROLLING_WEEKS
 from src.common.gx import validate_spark_dataframe
 from src.common.logger import get_logger
 from src.common.spark import to_spark_path
+from src.silver2.zone_segment import current_mapping_version
 from src.tlc.expectations import critical_expectations, log_only_expectations
 from src.tlc.gold2 import (
     TYPE_ID,
@@ -196,6 +197,16 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
     ):
         raise ValueError("DynamoDB 적재 계획 이후 Type 3 날짜 범위가 변경됐습니다")
 
+    # Airflow 쪽에서 이미 올바르게 계산된 경로를 그대로 쓴다 - EMR 컨테이너
+    # 안에서 current_mapping_version()을 인자 없이 부르면 SILVER2_DIR가
+    # S3_BUCKET_DATA 없이(None) 계산돼서 "s3://None/..." 경로로 타임아웃난다.
+    mapping_version = current_mapping_version(S3Path(payload["mapping_version_path"]))
+    if plan.get("mapping_version") != mapping_version:
+        raise ValueError(
+            "DynamoDB 적재 계획 이후 zone-segment 매핑 버전이 변경됐습니다: "
+            f"plan={plan.get('mapping_version')} current={mapping_version}"
+        )
+
     cached = rolling_with_count.persist(StorageLevel.DISK_ONLY)
     try:
         sample_stats = cached.agg(
@@ -232,6 +243,7 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
                 window_start,
                 window_end,
                 rolling_weeks,
+                mapping_version,
             )
         finally:
             segment_values.unpersist()
@@ -245,6 +257,7 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
         "rolling_weeks": rolling_weeks,
         "window_start": window_start.isoformat(),
         "window_end": window_end.isoformat(),
+        "mapping_version": mapping_version,
     }
 
 
