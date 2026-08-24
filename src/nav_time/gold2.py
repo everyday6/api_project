@@ -61,6 +61,11 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
     collected_date는 그 버킷을 구성한 판독값들의 observed_at 중 가장 최근 값의
     날짜다 — DynamoDB에 저장된 버킷 값이 며칠자 원본 데이터로 계산됐는지 표시하기
     위함(docs/superpowers/specs/2026-08-24-type1-collected-date-design.md).
+
+    observed_at(타임스탬프 그대로, 날짜로 안 자름)은 별개 목적이다 — 서빙
+    쪽(nav_lookup._is_fresh)이 "이 버킷 값이 지금으로부터 몇 초 전 데이터인지"를
+    자동으로 판단하는 데 쓴다. collected_date(날짜, 사람이 보는 디버깅용)와
+    같은 원본 컬럼에서 나오지만 용도가 달라 둘 다 남긴다.
     """
 
     spark = silver2_df.sparkSession
@@ -83,6 +88,7 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
         weighted.groupBy("segment_id", "bucket")
         .agg(
             spark_sum("weighted_speed").alias("avg_speed"),
+            spark_max("observed_at").alias("observed_at"),
             to_date(spark_max("observed_at")).alias("collected_date"),
         )
         .filter(col("avg_speed") > 0)
@@ -94,6 +100,7 @@ def compute_time_seconds(silver2_df: DataFrame, dim_segment_length_df: pd.DataFr
         "segment_id",
         "bucket",
         "collected_date",
+        "observed_at",
         (
             (col("length_ft") / _FEET_PER_MILE) / col("avg_speed") * _SECONDS_PER_HOUR
         ).alias("time_seconds"),
@@ -104,8 +111,10 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
     """버킷별 값 + 세그먼트별 평균(AVG, 증분 갱신)을 DynamoDB 항목 리스트로 변환한다.
 
     bucket_df는 compute_time_seconds의 반환값이어야 한다 — segment_id/bucket/
-    time_seconds뿐 아니라 collected_date(DateType) 컬럼도 필수다. 버킷 항목에는
-    collected_date를 ISO 날짜 문자열로 실어 보내고, AVG 항목에는 붙이지 않는다.
+    time_seconds뿐 아니라 collected_date(DateType), observed_at(TimestampType)
+    컬럼도 필수다. 버킷 항목에는 collected_date를 ISO 날짜 문자열로,
+    observed_at을 epoch seconds로 같이 실어 보내고, AVG 항목에는 둘 다
+    안 붙인다(AVG는 여러 버킷의 누적값이라 특정 시각으로 대표할 수 없음).
 
     AVG는 세그먼트의 (최대 BUCKETS_PER_DAY개) 버킷 전체 평균이어야 하는데,
     이번 실행은 세그먼트당 버킷을 하나만 계산한다. 48개를 매번 다 읽는 대신,
@@ -127,6 +136,7 @@ def to_dynamodb_items(bucket_df: DataFrame, table_name: str) -> list[dict]:
             "sk": row["bucket"],
             "value": round(row["time_seconds"]),
             "collected_date": row["collected_date"].isoformat(),
+            "observed_at": row["observed_at"].timestamp(),
         }
         for row in rows
     ]
