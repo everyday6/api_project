@@ -148,3 +148,65 @@ def test_connection_failure_propagates_as_operational_error(monkeypatch):
         rds.batch_resolve_type1_rows(["1"], "irrelevant_table")
 
     rds._connection = None
+
+
+# ---------------------------------------------------------------------------
+# type2(길이)/type4(통행료) 공용 — 시간 무관 정적값
+# ---------------------------------------------------------------------------
+
+STATIC_TABLE_NAME = "test_segment_metrics_static"
+
+
+@pytest.fixture
+def static_rds_table(monkeypatch):
+    monkeypatch.setattr(rds, "get_rds_dsn", lambda: NAV_GOLD_RDS_LOCAL_DSN)
+    rds._connection = None
+    rds.ensure_static_table(STATIC_TABLE_NAME)
+    conn = rds.get_connection()
+    with conn.cursor() as cur:
+        cur.execute(f"TRUNCATE TABLE {STATIC_TABLE_NAME}")
+    yield STATIC_TABLE_NAME
+    rds._connection = None
+
+
+def test_ensure_static_table_is_idempotent(static_rds_table):
+    rds.ensure_static_table(static_rds_table)
+
+
+def test_upsert_static_items_then_batch_get(static_rds_table):
+    rds.upsert_static_items([
+        {"segment_id": "1", "value": 300, "collected_date": "2026-08-24", "updated_date": "2026-08-24"},
+        {"segment_id": "2", "value": 500},
+    ], static_rds_table)
+
+    result = rds.batch_get_static_values(static_rds_table, ["1", "2", "999"])
+
+    assert result["1"]["value"] == 300.0
+    assert str(result["1"]["collected_date"]) == "2026-08-24"
+    assert result["2"]["value"] == 500.0
+    assert "999" not in result
+
+
+def test_upsert_static_items_updates_existing_row_on_conflict(static_rds_table):
+    rds.upsert_static_items([{"segment_id": "1", "value": 100}], static_rds_table)
+    rds.upsert_static_items([{"segment_id": "1", "value": 200}], static_rds_table)
+
+    result = rds.batch_get_static_values(static_rds_table, ["1"])
+
+    assert result["1"]["value"] == 200.0
+
+
+def test_upsert_static_items_empty_list_returns_zero(static_rds_table):
+    assert rds.upsert_static_items([], static_rds_table) == 0
+
+
+def test_batch_get_static_values_empty_list_returns_empty_dict(static_rds_table):
+    assert rds.batch_get_static_values(static_rds_table, []) == {}
+
+
+def test_batch_get_static_values_dedupes_segment_ids(static_rds_table):
+    rds.upsert_static_items([{"segment_id": "1", "value": 100}], static_rds_table)
+
+    result = rds.batch_get_static_values(static_rds_table, ["1", "1"])
+
+    assert result["1"]["value"] == 100.0

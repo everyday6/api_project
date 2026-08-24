@@ -237,3 +237,94 @@ def export_snapshot_source(table_name: str) -> dict[str, dict]:
         entry["exact_observed_at"] = observed_at
 
     return snapshot
+
+
+# ==========================
+# type2(길이)/type4(통행료) 공용 — 시간 무관 정적값
+# ==========================
+#
+# type1과 달리 세그먼트당 값이 하나뿐이라(길이/통행료 모두 시간에 따라
+# 안 바뀜) PK가 segment_id 하나뿐이다. 두 타입이 스키마가 완전히 같아서
+# (segment_id, value, collected_date, updated_date) 함수를 공용으로 쓴다.
+
+
+def ensure_static_table(table_name: str) -> None:
+    """테이블이 없으면 만든다. ensure_table과 동일한 원칙(로컬 개발
+    편의용, 운영 중엔 안 씀) - 스키마만 다르다."""
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(f"""
+                CREATE TABLE IF NOT EXISTS {table_name} (
+                    segment_id TEXT NOT NULL,
+                    value NUMERIC NOT NULL,
+                    collected_date DATE,
+                    updated_date DATE,
+                    PRIMARY KEY (segment_id)
+                )
+            """)
+    except psycopg2.OperationalError:
+        _reset_connection()
+        raise
+
+
+def batch_get_static_values(table_name: str, segment_ids: list[str]) -> dict[str, dict]:
+    """segment_id 목록으로 정적값 행을 한 번에 조회한다. 없는 segment_id는
+    키 자체가 없다. RDS 연결/쿼리 실패는 삼키지 않고 그대로 던진다 -
+    호출부가 이걸로 "RDS 자체가 죽었다"를 판단해서 코드 상수로 넘어간다."""
+    if not segment_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(segment_ids))
+    conn = get_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                f"SELECT segment_id, value, collected_date, updated_date FROM {table_name} "
+                f"WHERE segment_id = ANY(%s)",
+                (unique_ids,),
+            )
+            rows = cur.fetchall()
+    except psycopg2.OperationalError:
+        _reset_connection()
+        raise
+
+    return {
+        segment_id: {"value": float(value), "collected_date": collected_date, "updated_date": updated_date}
+        for segment_id, value, collected_date, updated_date in rows
+    }
+
+
+def upsert_static_items(items: list[dict], table_name: str) -> int:
+    """정적값 행을 upsert한다. item은 최소 {segment_id, value}를 포함해야
+    하고, collected_date/updated_date는 선택이다."""
+    if not items:
+        return 0
+
+    from psycopg2.extras import execute_values
+
+    conn = get_connection()
+    rows = [
+        (item["segment_id"], item["value"], item.get("collected_date"), item.get("updated_date"))
+        for item in items
+    ]
+
+    try:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                f"""
+                INSERT INTO {table_name} (segment_id, value, collected_date, updated_date)
+                VALUES %s
+                ON CONFLICT (segment_id) DO UPDATE SET
+                    value = EXCLUDED.value,
+                    collected_date = EXCLUDED.collected_date,
+                    updated_date = EXCLUDED.updated_date
+                """,
+                rows,
+            )
+    except psycopg2.OperationalError:
+        _reset_connection()
+        raise
+
+    return len(items)

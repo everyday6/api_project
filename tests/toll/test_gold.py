@@ -1,13 +1,34 @@
 import pandas as pd
+import pytest
 import yaml
 
+from src.common import rds
+from src.common.config import NAV_GOLD_RDS_LOCAL_DSN
 from src.toll.gold import (
-    TYPE_TOLL,
     build_gold_items,
     get_toll_value,
     load_rate_table,
     write_gold_items,
 )
+
+TEST_TABLE = "test_segment_metrics_type4"
+
+
+@pytest.fixture
+def rds_table(monkeypatch):
+    """실제 로컬 Postgres(docker-compose의 nav-gold-postgres 컨테이너,
+    미리 `docker compose up -d nav-gold-postgres`로 띄워둬야 한다)로
+    검증한다 - RDS는 DynamoDB의 moto 같은 인메모리 mock 수단이 없다."""
+    monkeypatch.setattr(rds, "get_rds_dsn", lambda: NAV_GOLD_RDS_LOCAL_DSN)
+    monkeypatch.setattr("src.toll.gold.RDS_TABLE_TYPE4", TEST_TABLE)
+    monkeypatch.setattr("src.toll.serving.RDS_TABLE_TYPE4", TEST_TABLE)
+    rds._connection = None
+    rds.ensure_static_table(TEST_TABLE)
+    conn = rds.get_connection()
+    with conn.cursor() as cur:
+        cur.execute(f"TRUNCATE TABLE {TEST_TABLE}")
+    yield TEST_TABLE
+    rds._connection = None
 
 
 def _write_rate_table(tmp_path):
@@ -36,7 +57,6 @@ def test_build_gold_items_creates_congestion_only_items_for_zone_segments():
     items = build_gold_items(rate_table, zone_map, facility_map)
 
     assert {i["segment_id"]: i["value"] for i in items} == {"Z1": 0.75, "Z2": 0.75}
-    assert all(i["sk"] == f"TYPE#{TYPE_TOLL}" for i in items)
 
 
 def test_build_gold_items_creates_road_toll_only_items():
@@ -83,8 +103,9 @@ def test_build_gold_items_skips_facility_without_rate():
 def test_build_gold_items_dedupes_same_segment_appearing_twice_in_zone_map():
     rate_table = {"congestion": {"taxi_flat_rate": 0.75}, "road": {}}
     # 같은 segment_id가 zone_map에 두 번 들어와도(예: 상류 데이터 중복)
-    # 최종 아이템은 (segment_id, sk) 기준으로 하나만 남아야 한다 —
-    # DynamoDB batch_write_item이 같은 배치 안 중복 키에 에러를 내기 때문.
+    # 최종 아이템은 segment_id 기준으로 하나만 남아야 한다 — RDS upsert가
+    # 같은 배치(execute_values) 안에서 같은 충돌 키를 두 번 건드리면
+    # "ON CONFLICT DO UPDATE command cannot affect row a second time" 에러가 나기 때문.
     zone_map = pd.DataFrame({"segment_id": ["Z1", "Z1"]})
     facility_map = pd.DataFrame(columns=["segment_id", "facility_key"])
 
@@ -117,14 +138,14 @@ def test_build_gold_items_keeps_first_match_when_segment_matches_two_facilities(
     assert items[0]["value"] == 17.00
 
 
-def test_get_toll_value_returns_zero_when_not_found():
+def test_get_toll_value_returns_zero_when_not_found(rds_table):
     result = get_toll_value("NO_SUCH_SEGMENT")
 
     assert result == 0
 
 
-def test_get_toll_value_returns_written_value():
-    write_gold_items([{"segment_id": "S99", "sk": f"TYPE#{TYPE_TOLL}", "value": 12.34}])
+def test_get_toll_value_returns_written_value(rds_table):
+    write_gold_items([{"segment_id": "S99", "value": 12.34}])
 
     result = get_toll_value("S99")
 
