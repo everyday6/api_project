@@ -22,6 +22,7 @@ from src.common.config import EMR_JOBS_DIR, PROJECT_ROOT, RDS_TABLE_TYPE1
 from src.common.emr_serverless import read_json_result, run_spark_job
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.speed.bronze import collect_speed_data, has_new_speed_data
+from src.speed.bronze_validation import validate_bronze
 
 logger = logging.getLogger(__name__)
 
@@ -90,10 +91,13 @@ def segment_time_pipeline():
     bronze_path = collect_bronze()
     bronze_path.set_upstream(new_data)
 
+    bronze_valid = validate_bronze(bronze_path)
+
     dim_segment_ready = check_dim_segment_exists()
 
     submit_result = submit_nav_time_job(bronze_path)
     submit_result.set_upstream(dim_segment_ready)
+    submit_result.set_upstream(bronze_valid)
 
 
 segment_time_pipeline()
