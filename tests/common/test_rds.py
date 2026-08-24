@@ -29,38 +29,48 @@ def test_ensure_table_is_idempotent(rds_table):
     rds.ensure_table(rds_table)
 
 
-def test_upsert_then_resolve_type1_tiers_returns_all_three_tiers(rds_table):
+def test_batch_resolve_type1_rows_returns_all_rows_grouped_by_segment(rds_table):
     now = time.time()
     rds.upsert_items([
         {"segment_id": "1", "sk": "1200", "value": 30.0, "observed_at": now, "collected_date": None, "count": None},
         {"segment_id": "1", "sk": "AVG", "value": 40.0, "observed_at": None, "collected_date": None, "count": 5},
         {"segment_id": "1", "sk": "SPEC", "value": 50.0, "observed_at": None, "collected_date": None, "count": None},
+        {"segment_id": "2", "sk": "AVG", "value": 60.0, "observed_at": None, "collected_date": None, "count": 1},
     ], rds_table)
 
-    tiers = rds.resolve_type1_tiers("1", "1200", rds_table)
+    rows_by_segment = rds.batch_resolve_type1_rows(["1", "2"], rds_table)
 
-    assert tiers["1200"]["value"] == 30.0
-    assert tiers["1200"]["observed_at"] == pytest.approx(now)
-    assert tiers["AVG"]["value"] == 40.0
-    assert tiers["SPEC"]["value"] == 50.0
+    assert rows_by_segment["1"]["1200"]["value"] == 30.0
+    assert rows_by_segment["1"]["1200"]["observed_at"] == pytest.approx(now)
+    assert rows_by_segment["1"]["AVG"]["value"] == 40.0
+    assert rows_by_segment["1"]["SPEC"]["value"] == 50.0
+    assert rows_by_segment["2"]["AVG"]["value"] == 60.0
 
 
-def test_resolve_type1_tiers_omits_missing_tiers(rds_table):
+def test_batch_resolve_type1_rows_omits_unknown_segments(rds_table):
     rds.upsert_items([
         {"segment_id": "1", "sk": "AVG", "value": 40.0, "observed_at": None, "collected_date": None, "count": 5},
     ], rds_table)
 
-    tiers = rds.resolve_type1_tiers("1", "1200", rds_table)
+    rows_by_segment = rds.batch_resolve_type1_rows(["1", "no-such-segment"], rds_table)
 
-    assert "1200" not in tiers
-    assert "SPEC" not in tiers
-    assert tiers["AVG"]["value"] == 40.0
+    assert "no-such-segment" not in rows_by_segment
+    assert rows_by_segment["1"]["AVG"]["value"] == 40.0
 
 
-def test_resolve_type1_tiers_returns_empty_dict_for_unknown_segment(rds_table):
-    tiers = rds.resolve_type1_tiers("no-such-segment", "1200", rds_table)
+def test_batch_resolve_type1_rows_dedupes_segment_ids_appearing_twice(rds_table):
+    # 같은 세그먼트가 경로에 두 번 등장해도(루프) 쿼리는 한 번만 나가야 한다.
+    rds.upsert_items([
+        {"segment_id": "loop", "sk": "AVG", "value": 40.0, "observed_at": None, "collected_date": None, "count": 5},
+    ], rds_table)
 
-    assert tiers == {}
+    rows_by_segment = rds.batch_resolve_type1_rows(["loop", "loop"], rds_table)
+
+    assert rows_by_segment["loop"]["AVG"]["value"] == 40.0
+
+
+def test_batch_resolve_type1_rows_empty_list_returns_empty_dict(rds_table):
+    assert rds.batch_resolve_type1_rows([], rds_table) == {}
 
 
 def test_upsert_items_updates_existing_row_on_conflict(rds_table):
@@ -71,9 +81,9 @@ def test_upsert_items_updates_existing_row_on_conflict(rds_table):
         {"segment_id": "1", "sk": "AVG", "value": 20.0, "observed_at": None, "collected_date": None, "count": 2},
     ], rds_table)
 
-    tiers = rds.resolve_type1_tiers("1", "AVG", rds_table)
+    rows_by_segment = rds.batch_resolve_type1_rows(["1"], rds_table)
 
-    assert tiers["AVG"]["value"] == 20.0
+    assert rows_by_segment["1"]["AVG"]["value"] == 20.0
 
 
 def test_upsert_items_empty_list_returns_zero(rds_table):
@@ -135,6 +145,6 @@ def test_connection_failure_propagates_as_operational_error(monkeypatch):
     rds._connection = None
 
     with pytest.raises(psycopg2.OperationalError):
-        rds.resolve_type1_tiers("1", "1200", "irrelevant_table")
+        rds.batch_resolve_type1_rows(["1"], "irrelevant_table")
 
     rds._connection = None

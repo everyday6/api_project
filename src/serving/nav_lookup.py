@@ -33,7 +33,14 @@ Type2(길이)는 여전히 DynamoDB 체인이다(별개): 정확한 (segment_id,
 
 Type1(소요시간)의 segment_ids는 경로를 순서대로 나열한 것으로 간주한다.
 요청 시각은 첫 세그먼트에만 그대로 쓰고, 이후 세그먼트는 앞 세그먼트들의
-누적 소요시간만큼 시각을 이동해서 조회한다(_resolve_time_values 참고).
+누적 소요시간만큼 시각을 이동해서 조회한다. 다만 어떤 버킷(sk)이 필요할지는
+그 누적시각을 계산해봐야 알 수 있어서, RDS 조회 자체는 요청당 딱 한 번만
+한다 - segment_id별로 존재 가능한 행이 PK(segment_id, sk) 특성상 최대
+50개(버킷 48개+AVG+SPEC, sk가 날짜가 아니라 시간대라서)로 정해져 있어
+필요할지 모르는 버킷까지 전부 미리 배치로 가져와도 데이터량이 작다. 그
+결과로 순차 누적시각 계산 자체는 이 로컬 dict만 보고 끝나서(RDS를 더
+안 건드림), "세그먼트 수만큼 RDS 왕복이 쌓여 응답이 느려지거나 타임아웃
+나는" 문제 자체가 없어진다(_resolve_time_values 참고).
 """
 
 from __future__ import annotations
@@ -69,28 +76,6 @@ _HARDCODED_DEFAULTS = {1: 45, 2: 300}
 # (epoch seconds) - src/nav_time/gold2.py가 기록한다.
 _FRESHNESS_THRESHOLD_SECONDS = 3600.0
 
-# type1은 세그먼트마다 순차로 RDS를 조회하므로(누적시각 때문에 배치 불가),
-# RDS가 응답 불가능한 상황에서는 세그먼트 수만큼 호출이 전부 느리게 실패하며
-# 쌓여 응답 자체가 타임아웃날 수 있다. 연속으로 이 횟수만큼 호출 자체가
-# 실패하면 남은 세그먼트는 RDS를 더 안 건드리고 메모리/S3 폴백으로 바로
-# 넘어간다.
-_CIRCUIT_BREAKER_THRESHOLD = 3
-
-# 실패가 아니라 "다 성공은 하는데 순차 호출이 너무 많이 쌓이는" 경우를 막는
-# 시간 예산. 세그먼트 500개(허용 상한)로 실측했을 때 Lambda 타임아웃(당시
-# 10초)을 실제로 넘겨서 500 Internal Server Error가 나는 걸 확인했다 -
-# 실패 기반 circuit breaker만으로는 이 경우(호출은 다 성공하지만 느림)를
-# 못 막는다. 남은 시간이 얼마 안 되면 성공/실패와 무관하게 회로를 열어
-# 남은 세그먼트를 메모리/S3 폴백으로 채운다 - 정확도보다 "무조건 응답"이
-# 우선이다.
-#
-# 이 값은 Lambda 콘솔의 타임아웃 설정과 자동으로 연동되지 않는다 - 타임아웃을
-# 바꾸면 이 값도 사람이 직접 같이 조정해야 한다. Lambda 타임아웃을 10초 ->
-# 15초로 올린 뒤, 회로를 연 다음 나머지 세그먼트 채우기+응답 직렬화에 걸리는
-# 시간(실측 약 0.3초) 감안해서 4초 버퍼를 남기고 11초로 올렸다.
-# TODO(팀 검토 필요): 정성적 값 - Lambda 타임아웃을 또 바꾸면 이 값도 같이 검토.
-_TIME_BUDGET_SECONDS = 11.0
-
 # RDS 장애 시 쓰는 메모리 캐시. segment_id -> {"avg", "spec", "exact_value",
 # "exact_observed_at"}. 상한을 안 걸면 Lambda 인스턴스가 오래 켜져 있을 때
 # 계속 커져서 OOM으로 함수 자체가 죽을 수 있어(관측값이 없는 것보다 훨씬
@@ -99,8 +84,8 @@ _MEMORY_CACHE_MAX_SIZE = 50_000
 _memory_cache: dict[str, dict] = {}
 
 # S3 Gold 스냅샷은 이 프로세스(Lambda 웜 인스턴스)에서 처음 필요할 때
-# 딱 한 번만 통째로 읽는다 - 세그먼트마다 매번 S3를 부르면 RDS 순차 조회가
-# 느려서 겪었던 것과 같은 문제(_TIME_BUDGET_SECONDS 주석 참고)가 재발한다.
+# 딱 한 번만 통째로 읽는다 - 세그먼트마다 매번 S3를 부르면 RDS가 죽어있는
+# 동안 세그먼트 수만큼 S3 호출이 쌓이는 문제가 재발한다.
 _s3_snapshot_loaded = False
 _s3_snapshot: dict[str, dict] = {}
 
@@ -277,68 +262,47 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
     하고, 같은 segment_id가 경로에 두 번 나와도(루프) 등장 위치의 누적
     시각이 다르면 값도 다를 수 있어 중복 제거를 하지 않는다.
 
-    RDS 호출이 연속으로 실패하거나(circuit breaker) 시간 예산을 넘기면,
-    남은 세그먼트는 더 이상 RDS를 건드리지 않고 메모리/S3 폴백으로 채운다
-    - 안 그러면 RDS 장애 시 세그먼트 수만큼 느린 실패가 순차로 쌓여 응답이
-    타임아웃날 수 있다."""
+    RDS 조회는 요청당 딱 한 번(batch_resolve_type1_rows)만 하고, 이후
+    누적시각 계산은 그 결과 dict만 보고 순수 로컬 연산으로 끝낸다 - 그
+    한 번의 호출이 실패하면(RDS 자체 장애) 모든 세그먼트를 메모리/S3
+    폴백으로 채운다. RDS 호출이 요청당 하나뿐이라 "연속 실패"나 "순차
+    호출이 쌓여 느려짐" 같은 문제 자체가 없어져 별도 circuit
+    breaker/시간 예산이 필요 없다."""
+    try:
+        rows_by_segment = rds.batch_resolve_type1_rows(segment_ids, table_name)
+    except Exception:
+        logger.exception(f"RDS 배치 조회 실패 -> 전체 세그먼트 메모리/S3 폴백으로 응답: table={table_name}")
+        return [_resolve_from_fallback(sid) for sid in segment_ids]
+
     values: list[int] = []
     elapsed_seconds = 0
-    consecutive_failures = 0
-    circuit_open = False
-    start_time = time.monotonic()
 
     for sid in segment_ids:
-        if not circuit_open and time.monotonic() - start_time >= _TIME_BUDGET_SECONDS:
-            circuit_open = True
-            logger.warning(
-                f"시간 예산({_TIME_BUDGET_SECONDS}초) 초과 -> circuit open, "
-                f"남은 세그먼트는 메모리/S3 폴백으로 응답: table={table_name}"
-            )
-
         lookup_time = _add_seconds(time_str, elapsed_seconds)
         bucket = time_to_bucket(lookup_time)
 
-        if circuit_open:
-            value = _resolve_from_fallback(sid)
-            values.append(value)
-            elapsed_seconds += value
-            continue
+        rows = rows_by_segment.get(sid, {})
+        exact = rows.get(bucket)
+        avg = rows.get("AVG")
+        spec = rows.get("SPEC")
 
-        try:
-            tiers = rds.resolve_type1_tiers(sid, bucket, table_name)
-        except Exception:
-            logger.exception(f"RDS 조회 실패: segment_id={sid}")
-            consecutive_failures += 1
-            if consecutive_failures >= _CIRCUIT_BREAKER_THRESHOLD:
-                circuit_open = True
-                logger.warning(
-                    f"RDS 호출 {_CIRCUIT_BREAKER_THRESHOLD}회 연속 실패 -> "
-                    f"circuit open, 남은 세그먼트는 메모리/S3 폴백으로 응답: table={table_name}"
-                )
-            value = _resolve_from_fallback(sid)
+        if exact is not None and _is_fresh(exact["observed_at"]):
+            value = round(exact["value"])
+        elif avg is not None:
+            value = round(avg["value"])
+        elif spec is not None:
+            value = round(spec["value"])
         else:
-            consecutive_failures = 0
-            exact = tiers.get(bucket)
-            avg = tiers.get("AVG")
-            spec = tiers.get("SPEC")
+            value = _HARDCODED_DEFAULTS[1]
 
-            if exact is not None and _is_fresh(exact["observed_at"]):
-                value = round(exact["value"])
-            elif avg is not None:
-                value = round(avg["value"])
-            elif spec is not None:
-                value = round(spec["value"])
-            else:
-                value = _HARDCODED_DEFAULTS[1]
-
-            # RDS가 정상 응답했으니, 다음 장애에 대비해 이 세그먼트의 최신
-            # 상태를 메모리 캐시에 남겨둔다(폴백 경로와 같은 모양의 항목).
-            _remember_in_memory(sid, {
-                "avg": avg["value"] if avg is not None else None,
-                "spec": spec["value"] if spec is not None else None,
-                "exact_value": exact["value"] if exact is not None else None,
-                "exact_observed_at": exact["observed_at"] if exact is not None else None,
-            })
+        # RDS가 정상 응답했으니, 다음 장애에 대비해 이 세그먼트의 최신
+        # 상태를 메모리 캐시에 남겨둔다(폴백 경로와 같은 모양의 항목).
+        _remember_in_memory(sid, {
+            "avg": avg["value"] if avg is not None else None,
+            "spec": spec["value"] if spec is not None else None,
+            "exact_value": exact["value"] if exact is not None else None,
+            "exact_observed_at": exact["observed_at"] if exact is not None else None,
+        })
 
         values.append(value)
         elapsed_seconds += value
