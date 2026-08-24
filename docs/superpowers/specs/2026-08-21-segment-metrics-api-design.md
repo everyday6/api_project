@@ -181,3 +181,62 @@ API가 값을 조회할 때, **키가 없는 경우와 DynamoDB 호출 자체가
 - type3(통행량) 추가 — 동일 패턴으로 `SegmentMetricsType3` 테이블 신설
 - DynamoDB Global Tables를 통한 리전 이중화 (규모가 커지면 재검토)
 - Silver(S3/Parquet) 데이터를 Athena로 연결한 애드혹 분석
+
+## 12. 전체 스키마 현황 (2026-08-24 갱신)
+
+이 문서 작성 이후 type3/type4가 실제로 구현됐고, type1 fallback 체인도
+바뀌었다. 이 절이 현재 4개 타입의 스키마를 전부 모아놓은 최신 기준이다.
+
+### type1 (시간) — `SegmentMetricsType1`
+
+| segment_id (PK) | sk | value | 비고 |
+|---|---|---|---|
+| 0077356 | `1200` | 30 | 30분 버킷. **`observed_at`(epoch seconds) 필드 필요 — 아직 Gold(`src/nav_time/gold2.py`)가 안 씀, TODO** |
+| 0077356 | `AVG` | 29 | 세그먼트 전체 평균, `count` 필드 동반 |
+| 0077356 | `SPEC` | 32 | **신규.** Silver2가 `segment_length / speed_limit`으로 미리 계산한 추정 통과시간. Gold 쪽 실제 저장 로직은 아직 미구현 — 서빙(`nav_lookup.py`)만 이 키를 읽도록 먼저 짜둔 상태 |
+| GLOBAL | `DEFAULT` | 45 | **type1에서는 더 이상 안 씀** (2026-08-24부로 SPEC이 대체). type2는 계속 씀 |
+
+**Fallback 체인(2026-08-24 변경)**: Fresh Exact(`observed_at`이 기준 이내인 경우만) → Historical AVG → SPEC Estimate → 코드 상수. GLOBAL#DEFAULT는 type1 체인에서 빠졌다.
+
+### type2 (길이) — `SegmentMetricsType2`
+
+변경 없음. `(segment_id, "LENGTH")` → `(GLOBAL, "DEFAULT")` → 코드 상수. 섹션 6/7 그대로 유효.
+
+### type3 (택시 수요) — 테이블명 `DYNAMODB_NAV_TABLE` (env, **기본값 없음 — 배포 전 확정 필요**)
+
+| segment_id (PK) | sk | value | 비고 |
+|---|---|---|---|
+| 0077356 | `3#MON#0900` | 23 | `{type}#{요일 3글자}#{HHMM}`. 최근 `TLC_TYPE3_ROLLING_WEEKS`(기본 8주) 요일별 평균 |
+| `__META__` | `TYPE#3` | - | 마지막 갱신 window 기록용 메타 아이템(퍼블리시 필요 여부 판단에만 씀, 실제 수요값 아님) |
+
+type1/2와 달리 GLOBAL#DEFAULT/AVG 개념이 없다 — 값이 없으면 서빙 쪽(`src/serving/api.py`)이 캐시 또는 `0.0`으로 대체.
+
+### type4 (통행료) — 테이블 `NAV_GOLD_TABLE`(기본값 `"nav_gold_values"`)
+
+| segment_id (PK) | sk | value |
+|---|---|---|
+| 0033502 | `TYPE#4` | 17.54 |
+
+혼잡통행료+도로통행료를 Gold 계산 시점에 이미 합산해서 저장(`src/toll/gold.py`). 시간/요일 무관, 세그먼트당 항목 1개. 클라이언트가 여러 세그먼트 값을 합칠 때는 **경로 전체를 sum이 아니라 max로 집계**해야 한다(혼잡통행료는 트립당 1회 정액이라 zone 통과 세그먼트 수만큼 중복 청구되면 안 됨 — `demo/route_map_demo.html`의 `TYPE_CONFIG[4].agg` 참고).
+
+### 스키마 자체는 저장소 중립적이다 — DynamoDB를 못 쓰게 되는 경우 대비
+
+4개 타입 전부 결국 같은 모양이다: **(segment_id, sk) 복합키 → value (+ observed_at/count 같은 부가 메타데이터)**. 이건 DynamoDB의 partition key/sort key 개념을 빌려서 설명했을 뿐, 관계형 DB로 옮겨도 그대로 옮겨간다:
+
+```sql
+CREATE TABLE segment_metrics_type1 (
+  segment_id TEXT NOT NULL,
+  sk TEXT NOT NULL,          -- "1200" | "AVG" | "SPEC"
+  value NUMERIC NOT NULL,
+  observed_at TIMESTAMPTZ,   -- exact 버킷만 사용
+  count INTEGER,             -- AVG만 사용
+  PRIMARY KEY (segment_id, sk)
+);
+```
+타입별로 테이블 하나씩 두는 지금 구조(6절 "왜 타입별 별도 테이블인가" 참고)도 관계형 DB에서 그대로 유지 가능 — 오히려 스키마가 다른 타입을 억지로 한 테이블에 우겨넣지 않아도 되니 관계형 DB에서는 이 분리가 더 자연스럽다.
+
+**따라서 AWS 비용/계정 문제로 DynamoDB를 못 쓰게 되더라도, 이 스키마 자체(키 구조·타입별 필드)는 안 바뀐다.** 실제로 바뀌어야 하는 건 `src/common/dynamodb.py`(와 type3/4가 각자 만든 저수준 조회 코드) 하나뿐이다 — `get_value`/`batch_get_items`/`put_item`/`batch_write_items`와 같은 시그니처를 유지하는 Postgres/SQLite 어댑터로 교체하면, `nav_lookup.py`/Gold 파이프라인 쪽 코드는 한 줄도 안 바꿔도 된다. 이 경계(공용 저장소 클라이언트 모듈)를 지금처럼 얇게 유지하는 게, 나중에 실제로 엔진을 바꿔야 할 때 드는 비용을 결정한다.
+
+**지금 결정해두면 좋을 것 (엔진과 무관하게)**:
+- 타입별 sk 네이밍 컨벤션을 하나로 통일할지(`TYPE#{n}`/`{n}#{...}`/고정 문자열이 타입마다 제각각인 상태) — 지금은 안 급하지만 나중에 어댑터 교체 시 이 불일치가 그대로 관계형 스키마의 불일치로 옮겨간다.
+- type3 테이블명(`DYNAMODB_NAV_TABLE`)에 기본값이 없는 것 — 엔진이 뭐가 되든 이건 먼저 확정해야 함.
