@@ -1,15 +1,14 @@
 import time
 from unittest.mock import patch
 
-import boto3
 import pytest
-from moto import mock_aws
 
 from src.common import gold_snapshot, rds
-from src.common.config import AWS_REGION, NAV_GOLD_RDS_LOCAL_DSN
+from src.common.config import NAV_GOLD_RDS_LOCAL_DSN
 from src.serving import nav_lookup
 
 RDS_TEST_TABLE = "test_segment_metrics_type1_lookup"
+RDS_TYPE2_TEST_TABLE = "test_segment_metrics_type2_lookup"
 
 
 @pytest.fixture(autouse=True)
@@ -53,6 +52,25 @@ def _put_row(table_name, segment_id, sk, value, observed_at=None):
     )
 
 
+@pytest.fixture
+def rds_type2_table(monkeypatch):
+    """type2 테스트용 실제 로컬 Postgres 테이블. type1과 스키마가 달라
+    (segment_id 하나만 PK) 별도 테이블/헬퍼를 쓴다."""
+    monkeypatch.setattr(rds, "get_rds_dsn", lambda: NAV_GOLD_RDS_LOCAL_DSN)
+    monkeypatch.setattr(nav_lookup, "RDS_TABLE_TYPE2", RDS_TYPE2_TEST_TABLE)
+    rds._connection = None
+    rds.ensure_static_table(RDS_TYPE2_TEST_TABLE)
+    conn = rds.get_connection()
+    with conn.cursor() as cur:
+        cur.execute(f"TRUNCATE TABLE {RDS_TYPE2_TEST_TABLE}")
+    yield RDS_TYPE2_TEST_TABLE
+    rds._connection = None
+
+
+def _put_static_row(table_name, segment_id, value):
+    rds.upsert_static_items([{"segment_id": segment_id, "value": value}], table_name)
+
+
 def test_time_to_bucket_rounds_down_to_30_minutes():
     assert nav_lookup.time_to_bucket("12:03") == "1200"
     assert nav_lookup.time_to_bucket("12:47") == "1230"
@@ -61,7 +79,7 @@ def test_time_to_bucket_rounds_down_to_30_minutes():
 
 def test_table_for_type():
     assert nav_lookup.table_for_type(1) == nav_lookup.RDS_TABLE_TYPE1
-    assert nav_lookup.table_for_type(2) == nav_lookup.DYNAMODB_TABLE_TYPE2
+    assert nav_lookup.table_for_type(2) == nav_lookup.RDS_TABLE_TYPE2
 
 
 # ---------------------------------------------------------------------------
@@ -266,82 +284,50 @@ def test_resolve_s3_snapshot_loads_only_once_per_process(monkeypatch, tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# Type2 (여전히 DynamoDB) — 정확한 (segment_id, LENGTH) -> GLOBAL#DEFAULT -> 코드 상수
+# Type2 (RDS, 시간 무관 정적값) — 정확한 segment_id 값 -> 코드 상수
+# (GLOBAL#DEFAULT 같은 전역 폴백 행은 안 둔다 - 정성적 초안값이라 DB에
+# 저장할 이유가 약함)
 # ---------------------------------------------------------------------------
 
-def _create_table(table_name, region=AWS_REGION):
-    client = boto3.client("dynamodb", region_name=region)
-    client.create_table(
-        TableName=table_name,
-        KeySchema=[
-            {"AttributeName": "segment_id", "KeyType": "HASH"},
-            {"AttributeName": "sk", "KeyType": "RANGE"},
-        ],
-        AttributeDefinitions=[
-            {"AttributeName": "segment_id", "AttributeType": "S"},
-            {"AttributeName": "sk", "AttributeType": "S"},
-        ],
-        BillingMode="PAY_PER_REQUEST",
-    )
-
-
-@mock_aws
-def test_resolve_type2_has_no_avg_tier_goes_straight_to_default():
-    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE2)
-    from src.common.dynamodb import put_item
-
-    put_item(
-        nav_lookup.DYNAMODB_TABLE_TYPE2,
-        {"segment_id": nav_lookup.GLOBAL_PARTITION_KEY, "sk": nav_lookup.DEFAULT_SORT_KEY, "value": 300},
-    )
-    # type2는 sk가 항상 "LENGTH"라, "AVG" 항목이 있어도 안 쓰여야 한다.
-    put_item(nav_lookup.DYNAMODB_TABLE_TYPE2, {"segment_id": "1", "sk": "AVG", "value": 999})
+def test_resolve_type2_returns_exact_value_when_present(rds_type2_table):
+    _put_static_row(rds_type2_table, "1", 300)
 
     result = nav_lookup.resolve_segment_values(["1"], 2, "12:00")
 
     assert result == [300]
 
 
-@mock_aws
-def test_resolve_preserves_order_and_duplicates():
-    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE2)
-    from src.common.dynamodb import put_item
+def test_resolve_type2_falls_back_to_hardcoded_when_missing(rds_type2_table):
+    result = nav_lookup.resolve_segment_values(["999"], 2, "12:00")
 
-    put_item(nav_lookup.DYNAMODB_TABLE_TYPE2, {"segment_id": "1", "sk": "LENGTH", "value": 100})
-    put_item(nav_lookup.DYNAMODB_TABLE_TYPE2, {"segment_id": "2", "sk": "LENGTH", "value": 200})
+    assert result == [nav_lookup._HARDCODED_DEFAULTS[2]]
+
+
+def test_resolve_type2_falls_back_to_hardcoded_when_rds_unreachable():
+    with patch.object(nav_lookup.rds, "batch_get_static_values", side_effect=RuntimeError("network down")):
+        result = nav_lookup.resolve_segment_values(["1", "2"], 2, "12:00")
+
+    assert result == [nav_lookup._HARDCODED_DEFAULTS[2]] * 2
+
+
+def test_resolve_preserves_order_and_duplicates(rds_type2_table):
+    _put_static_row(rds_type2_table, "1", 100)
+    _put_static_row(rds_type2_table, "2", 200)
 
     result = nav_lookup.resolve_segment_values(["2", "1", "2"], 2, "12:00")
 
     assert result == [200, 100, 200]
 
 
-@mock_aws
-def test_resolve_type2_still_dedupes_since_time_independent():
-    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE2)
-    from src.common.dynamodb import put_item
+def test_resolve_type2_still_dedupes_since_time_independent(rds_type2_table):
+    _put_static_row(rds_type2_table, "1", 500)
 
-    put_item(nav_lookup.DYNAMODB_TABLE_TYPE2, {"segment_id": "1", "sk": "LENGTH", "value": 500})
-
-    result = nav_lookup.resolve_segment_values(["1", "1", "1"], 2, "09:00")
+    with patch.object(nav_lookup.rds, "batch_get_static_values", wraps=rds.batch_get_static_values) as mock_batch:
+        result = nav_lookup.resolve_segment_values(["1", "1", "1"], 2, "09:00")
 
     assert result == [500, 500, 500]
-
-
-@mock_aws
-def test_resolve_skips_malformed_item_and_falls_through():
-    _create_table(nav_lookup.DYNAMODB_TABLE_TYPE2)
-    from src.common.dynamodb import get_table, put_item
-
-    # "value" 필드가 없는 깨진 항목을 직접 DynamoDB에 넣음(put_item 헬퍼로는 못 만드니 저수준으로)
-    get_table(nav_lookup.DYNAMODB_TABLE_TYPE2).put_item(Item={"segment_id": "1", "sk": "LENGTH"})
-    put_item(
-        nav_lookup.DYNAMODB_TABLE_TYPE2,
-        {"segment_id": nav_lookup.GLOBAL_PARTITION_KEY, "sk": nav_lookup.DEFAULT_SORT_KEY, "value": 300},
-    )
-
-    result = nav_lookup.resolve_segment_values(["1"], 2, "12:00")
-
-    assert result == [300]
+    called_segment_ids = mock_batch.call_args.args[1]
+    assert called_segment_ids == ["1"]
 
 
 # ---------------------------------------------------------------------------

@@ -27,9 +27,11 @@ Gold 스냅샷)을 추가로 둔다:
      exact -> avg -> spec 순서로, 같은 freshness 기준을 재적용한다.
   3. 코드 상수
 
-Type2(길이)는 여전히 DynamoDB 체인이다(별개): 정확한 (segment_id,
-"LENGTH") → (GLOBAL, "DEFAULT") → 코드 상수. 시간과 무관해 순서/중복에
-영향받지 않는다.
+Type2(길이)도 RDS(segment_metrics_type2)로 서빙한다(별개 테이블,
+시간 무관 정적값): 정확한 segment_id 값 → 코드 상수. 길이는 시간과
+무관해 순서/중복에 영향받지 않고, GLOBAL#DEFAULT 같은 전역 폴백 행도
+따로 안 둔다(정성적 초안값일 뿐이라 DB에 둘 이유가 약함 - type1처럼
+멀티 AZ 손실을 보완하는 메모리/S3 폴백 계층도 아직은 안 둔다).
 
 Type1(소요시간)의 segment_ids는 경로를 순서대로 나열한 것으로 간주한다.
 요청 시각은 첫 세그먼트에만 그대로 쓰고, 이후 세그먼트는 앞 세그먼트들의
@@ -48,15 +50,7 @@ from __future__ import annotations
 import time
 
 from src.common import gold_snapshot, rds
-from src.common.config import (
-    BUCKET_MINUTES,
-    DEFAULT_SORT_KEY,
-    DYNAMODB_TABLE_TYPE2,
-    GLOBAL_PARTITION_KEY,
-    LENGTH_SORT_KEY,
-    RDS_TABLE_TYPE1,
-)
-from src.common.dynamodb import batch_get_items
+from src.common.config import BUCKET_MINUTES, RDS_TABLE_TYPE1, RDS_TABLE_TYPE2
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
@@ -112,7 +106,7 @@ def table_for_type(type_: int) -> str:
     if type_ == 1:
         return RDS_TABLE_TYPE1
     if type_ == 2:
-        return DYNAMODB_TABLE_TYPE2
+        return RDS_TABLE_TYPE2
     raise ValueError(f"알 수 없는 type: {type_}")
 
 
@@ -125,53 +119,6 @@ def _is_fresh(observed_at) -> bool:
     except (TypeError, ValueError):
         return False
     return (time.time() - observed_at) <= _FRESHNESS_THRESHOLD_SECONDS
-
-
-def _resolve_tier(resolved: dict[str, int], ids: list[str], table_name: str, sk: str) -> bool:
-    """(DynamoDB, type2 전용) 아직 못 찾은 segment_id들에 대해 (segment_id, sk)
-    키로 조회해서 찾은 만큼 resolved에 채운다. DynamoDB 호출 자체가
-    실패해도 예외를 삼키고 로그만 남긴다(호출부가 다음 fallback 단계로
-    계속 진행).
-
-    반환값은 "값을 찾았는지"가 아니라 "DynamoDB 호출 자체가 성공했는지"다
-    (circuit breaker가 장애와 단순 미스를 구분하는 데 씀)."""
-    if not ids:
-        return True
-
-    keys = [{"segment_id": sid, "sk": sk} for sid in ids]
-
-    try:
-        items = batch_get_items(table_name, keys)
-    except Exception:
-        logger.exception(f"DynamoDB batch_get_items 실패: table={table_name} sk={sk}")
-        return False
-
-    for sid in ids:
-        item = items.get((sid, sk))
-        if item is None:
-            continue
-        try:
-            resolved[sid] = int(item["value"])
-        except (KeyError, ValueError, TypeError):
-            logger.exception(
-                f"DynamoDB 항목 형식 오류(다음 fallback 단계로 넘어감): "
-                f"table={table_name} sk={sk} segment_id={sid}"
-            )
-
-    return True
-
-
-def _lookup_global_default(table_name: str, type_: int) -> int:
-    try:
-        items = batch_get_items(table_name, [{"segment_id": GLOBAL_PARTITION_KEY, "sk": DEFAULT_SORT_KEY}])
-        item = items.get((GLOBAL_PARTITION_KEY, DEFAULT_SORT_KEY))
-        if item is not None:
-            return int(item["value"])
-    except Exception:
-        logger.exception(f"DynamoDB GLOBAL#DEFAULT 조회 실패: table={table_name}")
-
-    logger.warning(f"GLOBAL#DEFAULT까지 실패 -> 코드 상수 사용: type={type_}")
-    return _HARDCODED_DEFAULTS[type_]
 
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
@@ -199,18 +146,21 @@ def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: 
 
 def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]:
     """Type2(길이)는 시간과 무관해 세그먼트당 값이 하나뿐이다 - 중복
-    segment_id는 한 번만 조회해서 재사용해도 안전하다. (여전히 DynamoDB.)"""
+    segment_id는 한 번만 조회해서 재사용해도 안전하다. RDS 호출 자체가
+    실패하면(연결 장애 등) GLOBAL#DEFAULT 같은 중간 단계 없이 바로 코드
+    상수로 응답한다 - type1과 달리 메모리/S3 폴백 계층은 아직 없다."""
     unique_ids = list(dict.fromkeys(segment_ids))
-    resolved: dict[str, int] = {}
 
-    _resolve_tier(resolved, unique_ids, table_name, LENGTH_SORT_KEY)
-    remaining = [sid for sid in unique_ids if sid not in resolved]
+    try:
+        rows_by_segment = rds.batch_get_static_values(table_name, unique_ids)
+    except Exception:
+        logger.exception(f"RDS 배치 조회 실패 -> 코드 상수로 응답: table={table_name}")
+        rows_by_segment = {}
 
-    if remaining:
-        default_value = _lookup_global_default(table_name, 2)
-        for sid in remaining:
-            resolved[sid] = default_value
-
+    resolved = {
+        sid: round(rows_by_segment[sid]["value"]) if sid in rows_by_segment else _HARDCODED_DEFAULTS[2]
+        for sid in unique_ids
+    }
     return [resolved[sid] for sid in segment_ids]
 
 

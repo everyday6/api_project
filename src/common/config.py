@@ -96,15 +96,17 @@ def get_rds_dsn() -> str:
 
 
 RDS_TABLE_TYPE1 = os.getenv("RDS_TABLE_TYPE1", "segment_metrics_type1")
+RDS_TABLE_TYPE2 = os.getenv("RDS_TABLE_TYPE2", "segment_metrics_type2")
+RDS_TABLE_TYPE4 = os.getenv("RDS_TABLE_TYPE4", "segment_metrics_type4")
 
 # ==========================
 # DynamoDB (nav 골드 데이터셋 서빙) 설정
 # ==========================
 
-# nav 골드 데이터셋(segment_id x type 조회)은 RDS가 아니라 DynamoDB로
-# 서빙한다 — 접근 패턴이 key-value 조회(BatchGetItem)뿐이고, 타입별로
-# 갱신 주기가 달라 RDS의 write_table() 전체 replace 방식이 안 맞기
-# 때문이다(자세한 배경은 docs/superpowers/specs/2026-08-21-navigation-gold-pipeline-design.md).
+# type1/2/4는 RDS로 옮겨갔다(비용/크레딧 문제로 DynamoDB 대신 RDS를 쓰기로
+# 한 팀 결정 - DynamoDB가 기술적으로 부족해서가 아니다). type3(TLC
+# 택시수요)만 아직 DynamoDB에 남아있다 - zone×요일×시간대 롤링평균이라
+# 스키마가 많이 달라 별도 설계가 필요해서 이후 과제로 미뤘다.
 DYNAMO_REGION = os.getenv("AWS_REGION", "us-east-1")
 
 # ==========================
@@ -173,17 +175,22 @@ HOTSPOT_INVERSE_DISTANCE_EPSILON_FT = 1.0
 # type3(DYNAMODB_NAV_TABLE)/type4(NAV_GOLD_TABLE)도 원래 각자 다른 이름의
 # env var를 썼는데, 이 네 줄로 이름/기본값 패턴을 통일했다.
 
-# TODO(팀 검토 필요): type1이 RDS_TABLE_TYPE1(아래)로 옮겨가면서 이 값은
-# 더 이상 nav_lookup.py/nav_time/gold2.py 어디서도 안 읽는다 - scripts/
-# create_dynamodb_tables.py/seed_dynamodb_defaults.py가 아직 이 이름으로
-# DynamoDB 테이블을 만들고/시드하는데, 그 테이블 자체가 이제 안 쓰이므로
-# 정리 대상이다(당장 지우면 저 스크립트들이 깨지니 이번 변경 범위 밖으로 둠).
+# TODO(팀 검토 필요): type1/2/4가 각각 RDS_TABLE_TYPE1/2/4(위)로 옮겨가면서
+# 이 값들은 더 이상 서빙/쓰기 경로(nav_lookup.py, nav_time/nav_length/toll의
+# gold 모듈) 어디서도 안 읽는다 - scripts/create_dynamodb_tables.py/
+# seed_dynamodb_defaults.py가 아직 이 이름들로 DynamoDB 테이블을 만들고/
+# 시드하는데, 그 테이블 자체가 이제 안 쓰이므로 정리 대상이다(당장 지우면
+# 저 스크립트들이 깨지니 이번 변경 범위 밖으로 둠). DYNAMODB_TABLE_TYPE3만
+# 여전히 실제로 쓰인다.
 DYNAMODB_TABLE_TYPE1 = os.getenv("DYNAMODB_TABLE_TYPE1", "SegmentMetricsType1")
 DYNAMODB_TABLE_TYPE2 = os.getenv("DYNAMODB_TABLE_TYPE2", "SegmentMetricsType2")
 DYNAMODB_TABLE_TYPE3 = os.getenv("DYNAMODB_TABLE_TYPE3", "SegmentMetricsType3")
 DYNAMODB_TABLE_TYPE4 = os.getenv("DYNAMODB_TABLE_TYPE4", "SegmentMetricsType4")
 
-# Fallback 체인(설계 문서 7절)에서 쓰는 예약 키.
+# TODO(팀 검토 필요): type2가 RDS로 옮겨가면서 GLOBAL_PARTITION_KEY/
+# DEFAULT_SORT_KEY/LENGTH_SORT_KEY는 서빙 경로(nav_lookup.py)에서 더 이상
+# 안 쓴다 - scripts/seed_dynamodb_defaults.py가 아직 이 이름들로 시드하므로
+# 그 스크립트가 정리되기 전까지는 상수 자체를 남겨둔다.
 # GLOBAL_PARTITION_KEY: 실제 segment_id가 아닌 예약된 PK — 배포 시점에 수동으로
 #   심어두는 전역 기본값 전용 파티션.
 GLOBAL_PARTITION_KEY = "GLOBAL"
