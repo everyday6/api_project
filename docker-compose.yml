@@ -81,14 +81,13 @@ x-airflow-env: &airflow-env
   # 동일한 이유로 여기서 명시적으로 덮어쓴다). 실제 AWS RDS로 옮길 땐
   # APP_ENV=aws에서 RDS_HOST/PORT/DB/USER/PASSWORD(.env)를 채우면 되고
   # 이 값은 안 쓰인다.
+  #
+  # RDS_HOST/PORT/DB/USER/PASSWORD는 위(59번째 줄 근방)에서 이미
+  # 정의됨 - 여기 있던 중복 정의는 병렬로 진행된 두 RDS 커밋(4692750,
+  # 7139938)이 서로 다른 줄을 건드리면서 git이 충돌 없이 자동 병합해
+  # 생긴 leftover였다(YAML 중복 키로 docker-compose 파싱 자체가 실패).
   NAV_GOLD_RDS_LOCAL_DSN: >-
     postgresql://${NAV_GOLD_RDS_USER:-nav_gold}:${NAV_GOLD_RDS_PASSWORD:-nav_gold}@nav-gold-postgres:5432/${NAV_GOLD_RDS_DB:-nav_gold}
-
-  RDS_HOST: ${RDS_HOST:-}
-  RDS_PORT: ${RDS_PORT:-}
-  RDS_DB: ${RDS_DB:-}
-  RDS_USER: ${RDS_USER:-}
-  RDS_PASSWORD: ${RDS_PASSWORD:-}
 
   PYTHONPATH: /opt/airflow
 
