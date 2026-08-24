@@ -198,7 +198,7 @@
 <div class="wrap">
 
   <header>
-    <div class="badge">⚠ 모의 데이터 — 라이브 API 연결 전 UI 검증용</div>
+    <div class="badge">🟢 실제 API 연결됨 — /api/navigation/values 실시간 조회</div>
     <h1>nav-gold: 경로 하나를 고르기까지</h1>
     <div class="sub">
       A → B 사이에 후보 경로 10개가 있다고 하자. 내비게이션 앱은 각 경로(segment_id 순서 목록)를
@@ -236,41 +236,41 @@
 
   <footer>
     타입 매핑 — 1: 소요시간(초) · 2: 길이(ft) · 3: 택시 수요(구간 평균) · 4: 통행료(달러, 혼잡+도로 합산).
-    지금은 <code>ROUTES</code> 배열에 내장된 값을 쓰고 있고, 실제 서비스 연결 시
-    <code>fetchRouteMetrics()</code> 안의 mock 조회만 <code>fetch('/api/navigation/values', ...)</code> 호출로
-    바꾸면 된다(요청/응답 스키마는 이미 실제 API와 동일하게 맞춰둠).
+    <code>ROUTES</code> 배열은 경로의 segment_id 목록/도로명만 담고 있고, 실제 값(시간·거리·수요·통행료)은
+    매번 <code>POST /api/navigation/values</code>로 라이브 조회한다.
   </footer>
 
 </div>
 
 <script>
-// 실제 LION 도로망에서 뽑은 segment로 구성한 10개 후보 경로.
-// 각 segment의 time_sec/demand/toll은 실제 API가 연결되기 전까지 쓰는 모의값이고,
-// length_ft는 실제 로컬 파이프라인 산출값이다.
+// 실제 LION 도로망에서 뽑은 segment로 구성한 10개 후보 경로 - segment_id/street만
+// 실제로 쓰인다(경로 정의 + API 요청용). length_ft/time_sec/demand/toll은 이전에
+// mock으로 쓰던 값이 남아있는 것으로, 지금은 fetchRouteMetrics()가 매번 실제 API를
+// 조회해서 값을 가져오므로 화면에 표시되지 않는다.
 const ROUTES = [{"id": 1, "segments": [{"segment_id": "0066045", "street": "VARICK STREET", "length_ft": 392, "time_sec": 18, "demand": 13, "toll": 0}, {"segment_id": "0157198", "street": "UTOPIA PARKWAY", "length_ft": 129, "time_sec": 6, "demand": 7, "toll": 0}, {"segment_id": "0128529", "street": "HOWARD AVENUE", "length_ft": 133, "time_sec": 5, "demand": 38, "toll": 0}, {"segment_id": "0148086", "street": "HOLLIS COURT BOULEVARD", "length_ft": 70, "time_sec": 3, "demand": 41, "toll": 0}, {"segment_id": "0131227", "street": "38 AVENUE", "length_ft": 119, "time_sec": 5, "demand": 36, "toll": 0}, {"segment_id": "0011472", "street": "EDISON STREET", "length_ft": 304, "time_sec": 13, "demand": 9, "toll": 0}]}, {"id": 2, "segments": [{"segment_id": "0052415", "street": "86 ROAD", "length_ft": 329, "time_sec": 16, "demand": 8, "toll": 0}, {"segment_id": "0055009", "street": "ROCKAWAY BOULEVARD", "length_ft": 53, "time_sec": 2, "demand": 39, "toll": 0}, {"segment_id": "0322240", "street": "MORRIS AVENUE", "length_ft": 40, "time_sec": 2, "demand": 40, "toll": 0}, {"segment_id": "0307287", "street": "THROGS NECK EXPRESSWAY", "length_ft": 373, "time_sec": 15, "demand": 18, "toll": 0}, {"segment_id": "0312009", "street": "PARK ROW", "length_ft": 55, "time_sec": 3, "demand": 41, "toll": 0.75}]}, {"id": 3, "segments": [{"segment_id": "0076211", "street": "41 AVENUE", "length_ft": 259, "time_sec": 16, "demand": 40, "toll": 0}, {"segment_id": "0221634", "street": "LEONARD STREET", "length_ft": 265, "time_sec": 14, "demand": 7, "toll": 0}, {"segment_id": "0092410", "street": "WHITESTONE BRIDGE", "length_ft": 854, "time_sec": 52, "demand": 6, "toll": 7.46}, {"segment_id": "0129376", "street": "BEACH 17 STREET", "length_ft": 154, "time_sec": 8, "demand": 12, "toll": 0}, {"segment_id": "0070737", "street": "FORT WASHINGTON AVENUE", "length_ft": 178, "time_sec": 8, "demand": 13, "toll": 0}]}, {"id": 4, "segments": [{"segment_id": "0293376", "street": "VANDALIA AVENUE", "length_ft": 118, "time_sec": 6, "demand": 40, "toll": 0}, {"segment_id": "0021377", "street": "14 AVENUE", "length_ft": 144, "time_sec": 7, "demand": 47, "toll": 0}, {"segment_id": "0160215", "street": "RICHMOND TERRACE", "length_ft": 112, "time_sec": 5, "demand": 41, "toll": 0}, {"segment_id": "9003085", "street": "COLUMBIA STREET", "length_ft": 80, "time_sec": 4, "demand": 16, "toll": 0.75}, {"segment_id": "0149111", "street": "LINDEN BOULEVARD", "length_ft": 34, "time_sec": 2, "demand": 39, "toll": 0}]}, {"id": 5, "segments": [{"segment_id": "0059683", "street": "145 ROAD", "length_ft": 317, "time_sec": 17, "demand": 40, "toll": 0}, {"segment_id": "0172435", "street": "QUEENS BOULEVARD", "length_ft": 82, "time_sec": 3, "demand": 17, "toll": 0}, {"segment_id": "0062006", "street": "READS LANE", "length_ft": 199, "time_sec": 10, "demand": 38, "toll": 0}, {"segment_id": "0049165", "street": "65 STREET", "length_ft": 452, "time_sec": 22, "demand": 24, "toll": 0}]}, {"id": 6, "segments": [{"segment_id": "0162630", "street": "BROOKLYN BRIDGE", "length_ft": 24, "time_sec": 1, "demand": 33, "toll": 0}, {"segment_id": "0021750", "street": "RICHARDS STREET", "length_ft": 261, "time_sec": 12, "demand": 19, "toll": 0}, {"segment_id": "0014610", "street": "COLUMBIA AVENUE", "length_ft": 277, "time_sec": 16, "demand": 48, "toll": 0}, {"segment_id": "0328499", "street": "4 AVENUE", "length_ft": 140, "time_sec": 8, "demand": 9, "toll": 0}, {"segment_id": "0106178", "street": "FRANKLIN D ROOSEVELT DRIVE", "length_ft": 57, "time_sec": 3, "demand": 37, "toll": 0}]}, {"id": 7, "segments": [{"segment_id": "0005394", "street": "COMMERCE STREET", "length_ft": 270, "time_sec": 13, "demand": 25, "toll": 0}, {"segment_id": "0048853", "street": "SUMMERFIELD STREET", "length_ft": 607, "time_sec": 34, "demand": 22, "toll": 0}, {"segment_id": "0161595", "street": "CROPSEY AVENUE", "length_ft": 26, "time_sec": 1, "demand": 8, "toll": 0}, {"segment_id": "0088419", "street": "NEEDHAM AVENUE", "length_ft": 93, "time_sec": 4, "demand": 30, "toll": 0}, {"segment_id": "0048745", "street": "68 AVENUE", "length_ft": 554, "time_sec": 23, "demand": 25, "toll": 0}]}, {"id": 8, "segments": [{"segment_id": "0043924", "street": "ROCKAWAY AVENUE", "length_ft": 269, "time_sec": 11, "demand": 35, "toll": 0}, {"segment_id": "0127540", "street": "BROOKLYN AVENUE", "length_ft": 181, "time_sec": 9, "demand": 46, "toll": 0}, {"segment_id": "0062486", "street": "HUXLEY STREET", "length_ft": 319, "time_sec": 13, "demand": 39, "toll": 0}, {"segment_id": "0101165", "street": "64 AVENUE", "length_ft": 392, "time_sec": 20, "demand": 24, "toll": 0}]}, {"id": 9, "segments": [{"segment_id": "0035062", "street": "2 STREET", "length_ft": 230, "time_sec": 11, "demand": 26, "toll": 0}, {"segment_id": "0150927", "street": "EMMONS AVENUE", "length_ft": 130, "time_sec": 7, "demand": 41, "toll": 0}, {"segment_id": "0188924", "street": "MORRIS PARK AVENUE", "length_ft": 64, "time_sec": 4, "demand": 8, "toll": 0}, {"segment_id": "0016648", "street": "85 STREET", "length_ft": 768, "time_sec": 44, "demand": 21, "toll": 0}, {"segment_id": "0076596", "street": "ROOSEVELT AVENUE", "length_ft": 194, "time_sec": 10, "demand": 46, "toll": 0}]}, {"id": 10, "segments": [{"segment_id": "0068107", "street": "31 AVENUE", "length_ft": 259, "time_sec": 10, "demand": 50, "toll": 0}, {"segment_id": "0122067", "street": "OCEAN PARKWAY", "length_ft": 201, "time_sec": 11, "demand": 45, "toll": 0}, {"segment_id": "0160912", "street": "BELT PARKWAY", "length_ft": 501, "time_sec": 26, "demand": 47, "toll": 0}, {"segment_id": "0015091", "street": "VANDERBILT AVENUE", "length_ft": 104, "time_sec": 6, "demand": 22, "toll": 0}]}];
 
 // 실제 서빙 계약: POST /api/navigation/values
 // { segment_ids, type: 1|2|3|4, date, time } -> { value: [...] }
-// 지금은 라이브 서버 대신 ROUTES에 미리 넣어둔 값으로 같은 모양의 응답을 만든다.
+const API_BASE = 'https://gv37o51ey6.execute-api.ap-northeast-2.amazonaws.com';
+
+function todayAndNow() {
+  const now = new Date();
+  const date = now.toISOString().slice(0, 10);
+  const time = `${String(now.getHours()).padStart(2, '0')}:${String(now.getMinutes()).padStart(2, '0')}`;
+  return { date, time };
+}
+
 function fetchRouteMetrics(route) {
-  const byId = Object.fromEntries(route.segments.map(s => [s.segment_id, s]));
   const segmentIds = route.segments.map(s => s.segment_id);
+  const { date, time } = todayAndNow();
 
-  const responses = {
-    1: segmentIds.map(id => byId[id].time_sec),
-    2: segmentIds.map(id => byId[id].length_ft),
-    3: segmentIds.map(id => byId[id].demand),
-    4: segmentIds.map(id => byId[id].toll),
-  };
-
-  return Promise.resolve(responses);
-  // 실제 연결 시:
-  // return Promise.all([1,2,3,4].map(type =>
-  //   fetch('http://localhost:8001/api/navigation/values', {
-  //     method: 'POST', headers: {'Content-Type': 'application/json'},
-  //     body: JSON.stringify({segment_ids: segmentIds, type, date: '2026-08-23', time: '12:00'})
-  //   }).then(r => r.json()).then(r => r.value)
-  // )).then(([t1,t2,t3,t4]) => ({1:t1,2:t2,3:t3,4:t4}));
+  return Promise.all([1, 2, 3, 4].map(type =>
+    fetch(`${API_BASE}/api/navigation/values`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ segment_ids: segmentIds, type, date, time }),
+    }).then(r => r.json()).then(r => r.value)
+  )).then(([t1, t2, t3, t4]) => ({ 1: t1, 2: t2, 3: t3, 4: t4 }));
 }
 
 function sum(arr) { return arr.reduce((a, b) => a + b, 0); }
