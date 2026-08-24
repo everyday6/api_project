@@ -34,12 +34,17 @@ def run(speed_bronze_path: str, dim_segment_path: str, silver2_output: str, outp
     dim_segment_df = pd.read_parquet(dim_segment_path)
 
     speed_silver1_df = clean_speed_silver1(bronze_df)
-    silver2_df = build_segment_speed_silver2(speed_silver1_df, dim_segment_df)
+    silver2_df = build_segment_speed_silver2(speed_silver1_df, dim_segment_df).cache()
 
     row_count = silver2_df.count()
     silver2_df.write.parquet(silver2_output, mode="overwrite")
 
     S3Path(output_s3).write_text(json.dumps({"row_count": row_count}))
+
+    # spark.stop()을 안 부른다 - 로컬 테스트가 module-scope Spark 세션을 여러
+    # 테스트에서 재사용하는데, 여기서 stop하면 다음 테스트가 죽은 세션을 쓰게
+    # 된다. EMR Serverless에서는 job이 별도 프로세스라 종료 시 리소스가
+    # 정리되므로 프로덕션에서는 문제없다.
 
 
 def main() -> None:

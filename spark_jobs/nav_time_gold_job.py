@@ -27,22 +27,21 @@ from src.nav_time.gold2 import compute_time_seconds, to_serving_items, write_to_
 def run(silver2_path: str, dim_segment_path: str, serving_table: str, output_s3: str) -> None:
     spark = SparkSession.builder.appName("nav-time-gold").getOrCreate()
 
-    try:
-        silver2_df = spark.read.parquet(silver2_path)
-        dim_segment_df = pd.read_parquet(dim_segment_path)
+    silver2_df = spark.read.parquet(silver2_path)
+    dim_segment_df = pd.read_parquet(dim_segment_path)
 
-        gold1_df = filter_valid_speed(silver2_df)
+    gold1_df = filter_valid_speed(silver2_df)
 
-        bucket_df = compute_time_seconds(gold1_df, dim_segment_df[["segment_id", "length_ft"]])
-        items = to_serving_items(bucket_df, serving_table)
-        count = write_to_rds(items, serving_table)
-    finally:
-        # spark.stop()을 안 부른다 - 테스트가 module-scope fixture를 여러 테스트에서
-        # 재사용하는데, 여기서 stop하면 다음 테스트가 죽은 세션을 쓰게 된다.
-        # EMR Serverless에서는 job이 별도 프로세스라 종료 시 리소스가 정리되므로 문제없다.
-        pass
+    bucket_df = compute_time_seconds(gold1_df, dim_segment_df[["segment_id", "length_ft"]])
+    items = to_serving_items(bucket_df, serving_table)
+    count = write_to_rds(items, serving_table)
 
     S3Path(output_s3).write_text(json.dumps({"count": count}))
+
+    # spark.stop()을 안 부른다 - 로컬 테스트가 module-scope Spark 세션을 여러
+    # 테스트에서 재사용하는데, 여기서 stop하면 다음 테스트가 죽은 세션을 쓰게
+    # 된다. EMR Serverless에서는 job이 별도 프로세스라 종료 시 리소스가
+    # 정리되므로 프로덕션에서는 문제없다.
 
 
 def main() -> None:
