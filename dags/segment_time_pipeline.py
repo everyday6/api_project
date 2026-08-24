@@ -7,8 +7,11 @@ NYC DOT 실시간 속도 데이터를 30분마다 수집해서, LION 세그먼�
 Gold job이 성공할 때마다 S3 Gold 스냅샷도 같이 갱신한다(src/common/gold_snapshot.py,
 src/serving/nav_lookup.py 참고).
 
-Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 하나의 EMR
-Serverless Spark job으로 묶어서 제출한다.
+Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 EMR Serverless
+Spark job 두 개(Silver: submit_silver_job, Gold: submit_gold_job)로
+나눠서 제출한다 - 하나로 묶으면 실패했을 때 어느 단계인지 Airflow
+화면에서 구분이 안 돼서, 실패 지점을 명확히 알 수 있도록 분리했다
+(docs/superpowers/specs/2026-08-24-split-silver-gold-tasks-design.md 참고).
 """
 
 import logging
@@ -70,15 +73,35 @@ def segment_time_pipeline():
         return exists
 
     @task
-    def submit_nav_time_job(speed_bronze_path: str) -> dict:
+    def submit_silver_job(speed_bronze_path: str) -> dict:
         run_id = uuid.uuid4().hex
-        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_{run_id}.json"
+        silver2_path = EMR_JOBS_DIR / "outputs" / f"nav_time_silver2_{run_id}.parquet"
+        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_silver_{run_id}.json"
 
         run_spark_job(
-            job_name=f"nav-time-{run_id}",
-            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_job.py",
+            job_name=f"nav-time-silver-{run_id}",
+            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_silver_job.py",
             entry_point_args=[
                 "--speed-bronze-path", speed_bronze_path,
+                "--dim-segment-path", str(DIM_SEGMENT_PATH),
+                "--silver2-output", str(silver2_path),
+                "--output-s3", str(output_s3),
+            ],
+        )
+
+        result = read_json_result(str(output_s3))
+        return {"silver2_path": str(silver2_path), **result}
+
+    @task
+    def submit_gold_job(silver_result: dict) -> dict:
+        run_id = uuid.uuid4().hex
+        output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_gold_{run_id}.json"
+
+        run_spark_job(
+            job_name=f"nav-time-gold-{run_id}",
+            entry_point_script=PROJECT_ROOT / "spark_jobs" / "nav_time_gold_job.py",
+            entry_point_args=[
+                "--silver2-path", silver_result["silver2_path"],
                 "--dim-segment-path", str(DIM_SEGMENT_PATH),
                 "--serving-table", SERVING_TABLE_TYPE1,
                 "--output-s3", str(output_s3),
@@ -95,9 +118,11 @@ def segment_time_pipeline():
 
     dim_segment_ready = check_dim_segment_exists()
 
-    submit_result = submit_nav_time_job(bronze_path)
-    submit_result.set_upstream(dim_segment_ready)
-    submit_result.set_upstream(bronze_valid)
+    silver_result = submit_silver_job(bronze_path)
+    silver_result.set_upstream(dim_segment_ready)
+    silver_result.set_upstream(bronze_valid)
+
+    gold_result = submit_gold_job(silver_result)
 
 
 segment_time_pipeline()
