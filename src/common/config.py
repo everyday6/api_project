@@ -155,6 +155,9 @@ GLOBAL_PARTITION_KEY = "GLOBAL"
 DEFAULT_SORT_KEY = "DEFAULT"
 AVG_SORT_KEY = "AVG"
 LENGTH_SORT_KEY = "LENGTH"
+# type1의 3단계 폴백(SPEC Estimate). 읽는 쪽(src/serving/nav_lookup.py)과
+# 쓰는 쪽(src/nav_time/gold2.py)이 같은 상수를 참조하게 여기 둔다.
+SPEC_SORT_KEY = "SPEC"
 
 # 하루를 30분 단위로 나눈 버킷 수(00:00~23:30 -> 48개). 버킷 키는 "HHMM" 문자열.
 BUCKET_MINUTES = 30

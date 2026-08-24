@@ -17,6 +17,7 @@ def _raw_row(**overrides):
         "NodeIDFrom": "10",
         "NodeIDTo": "11",
         "SHAPE": "LINESTRING (0 0, 1 1)",
+        "POSTED_SPEED": "25",
     }
     row.update(overrides)
     return row

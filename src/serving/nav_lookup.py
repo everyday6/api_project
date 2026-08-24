@@ -11,9 +11,9 @@ Type1 체인 순서(고정):
      오래된 값이면 다음 단계로 내려간다(TTL로 지우지 않고 조회 시점에
      판단 — _is_fresh 참고).
   2. Historical AVG — (segment_id, "AVG")
-  3. SPEC Estimate — (segment_id, "SPEC"). Silver2가 도로 스펙
-     (segment_length / speed_limit)으로 미리 계산해둔 추정 통과시간
-     (spec_travel_time_sec)이 Gold에 저장돼 있다고 가정한다.
+  3. SPEC Estimate — (segment_id, "SPEC"). 도로 스펙(length_ft / speed_limit_mph)
+     으로 계산한 추정 통과시간 — src/nav_time/gold2.py의 compute_spec_travel_seconds가
+     계산하고, segment_length_pipeline이 LION 갱신 때마다(quarterly) 다시 써둔다.
   4. 코드 상수 — 외부 호출이 전혀 없는 최후의 보루
 
 Type2(길이) 체인은 별개다: 정확한 (segment_id, "LENGTH") → (GLOBAL,
@@ -36,6 +36,7 @@ from src.common.config import (
     DYNAMODB_TABLE_TYPE2,
     GLOBAL_PARTITION_KEY,
     LENGTH_SORT_KEY,
+    SPEC_SORT_KEY,
 )
 from src.common.dynamodb import batch_get_items
 from src.common.logger import get_logger
@@ -52,14 +53,9 @@ _HARDCODED_DEFAULTS = {1: 45, 2: 300}
 # 오래되면 그 bucket이 갱신을 멈췄다고 보고(파이프라인 중단 등) Historical
 # AVG로 내려간다. DynamoDB TTL로 삭제하지 않고 조회 시점에 매번 판단한다.
 # TODO(팀 검토 필요): 아직 기준 미확정 - 30분 수집 주기의 2배인 1시간으로
-# 잡은 정성적 초안. observed_at은 Gold가 그 bucket 값을 마지막으로 계산한
-# 시각(epoch seconds)이라고 가정한다.
+# 잡은 정성적 초안. observed_at은 그 bucket 값을 마지막으로 계산한 시각
+# (epoch seconds) - src/nav_time/gold2.py의 to_dynamodb_items가 기록한다.
 _FRESHNESS_THRESHOLD_SECONDS = 3600.0
-
-# type1 3단계(SPEC Estimate) 조회에 쓰는 sort key. Silver2가 도로 스펙
-# (segment_length / speed_limit)으로 미리 계산해둔 추정 통과시간이
-# (segment_id, "SPEC")으로 Gold에 저장돼 있다고 가정한다.
-SPEC_SORT_KEY = "SPEC"
 
 # type1은 세그먼트마다 순차로 DynamoDB를 조회하므로(누적시각 때문에 배치 불가),
 # DynamoDB 리전 전체가 응답 불가능한 상황에서는 세그먼트 수만큼 호출이 전부

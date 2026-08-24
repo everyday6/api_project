@@ -288,3 +288,49 @@ def test_write_to_dynamodb_calls_batch_write_and_returns_count():
 
     mock_write.assert_called_once_with("SegmentMetricsType1", items)
     assert count == 1
+
+
+def test_compute_spec_travel_seconds_uses_length_and_speed_limit():
+    # 500ft / 25mph -> (500/5280) / 25 * 3600 = 13.6363...초
+    df = pd.DataFrame([
+        {"segment_id": "1", "length_ft": 500.0, "speed_limit_mph": 25.0},
+    ])
+
+    result = gold2.compute_spec_travel_seconds(df)
+
+    assert result.iloc[0]["segment_id"] == "1"
+    assert round(result.iloc[0]["spec_travel_time_sec"], 2) == 13.64
+
+
+def test_compute_spec_travel_seconds_excludes_missing_speed_limit():
+    # 제한속도 미표기(NaN) segment는 추정 자체가 불가능해 결과에서 빠져야 한다.
+    df = pd.DataFrame([
+        {"segment_id": "1", "length_ft": 500.0, "speed_limit_mph": 25.0},
+        {"segment_id": "2", "length_ft": 300.0, "speed_limit_mph": float("nan")},
+    ])
+
+    result = gold2.compute_spec_travel_seconds(df)
+
+    assert list(result["segment_id"]) == ["1"]
+
+
+def test_compute_spec_travel_seconds_excludes_zero_or_missing_length():
+    df = pd.DataFrame([
+        {"segment_id": "1", "length_ft": 0.0, "speed_limit_mph": 25.0},
+        {"segment_id": "2", "length_ft": float("nan"), "speed_limit_mph": 25.0},
+        {"segment_id": "3", "length_ft": 100.0, "speed_limit_mph": 0.0},
+    ])
+
+    result = gold2.compute_spec_travel_seconds(df)
+
+    assert result.empty
+
+
+def test_spec_estimate_items_formats_sort_key_and_rounds_value():
+    spec_df = pd.DataFrame([
+        {"segment_id": "1", "spec_travel_time_sec": 13.64},
+    ])
+
+    items = gold2.spec_estimate_items(spec_df)
+
+    assert items == [{"segment_id": "1", "sk": "SPEC", "value": 14}]

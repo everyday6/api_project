@@ -2,8 +2,10 @@
 Gold2 — LION dim_segment에 is_routable 붙이기
 
 src/lion/silver1.py가 만든 dim_segment(기본 컬럼 + 원본 코드 컬럼)를 읽어서
-is_routable만 계산해 붙이고 저장한다. length_ft는 이미 Silver1에 있으므로
-그대로 통과시킨다 — type2(길이) 소스로 이 파일의 산출물을 그대로 쓴다.
+is_routable만 계산해 붙이고 저장한다. length_ft/speed_limit_mph는 이미
+Silver1에 있으므로 그대로 통과시킨다 — length_ft는 type2(길이), 둘 다 함께
+type1의 SPEC Estimate 폴백(src/nav_time/gold2.py) 소스로 이 파일의 산출물을
+그대로 쓴다.
 
 road_class/capacity_per_hour 등은 이번 범위(nav 세그먼트 지표 API)에
 필요하지 않아 계산하지 않는다(YAGNI) — 필요해지면 그때 추가한다.
@@ -55,7 +57,7 @@ def build_dim_segment(dim_segment_base_path: Path = DIM_SEGMENT_BASE_PATH) -> st
 
     dim_segment = df[[
         "segment_id", "street_name", "borough_code", "geometry", "length_ft",
-        "is_routable", "node_from", "node_to",
+        "is_routable", "node_from", "node_to", "speed_limit_mph",
     ]]
 
     GOLD2_DIR.mkdir(parents=True, exist_ok=True)
