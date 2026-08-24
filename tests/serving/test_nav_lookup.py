@@ -110,7 +110,7 @@ def test_resolve_falls_back_to_hardcoded_constant_when_nothing_for_segment(rds_t
 
 
 def test_resolve_falls_back_to_hardcoded_constant_when_rds_unreachable():
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("network down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("network down")):
         result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 2
@@ -150,37 +150,34 @@ def test_resolve_time_values_remembers_successful_reads_in_memory_cache(rds_tabl
     assert nav_lookup._memory_cache["1"]["avg"] == 40.0
 
 
-def test_resolve_time_values_circuit_breaker_bounds_rds_calls():
-    # RDS가 완전히 죽었을 때, 세그먼트 수만큼 순차로 느린 실패가 쌓이면
-    # 안 된다 - 연속 실패가 임계치를 넘으면 남은 세그먼트는 RDS를 더 안
-    # 건드리고 메모리/S3 폴백(둘 다 비어있으니 코드 상수)으로 바로 채워야 한다.
+def test_resolve_time_values_makes_exactly_one_rds_call_regardless_of_segment_count():
+    # RDS 조회는 요청당 한 번(batch_resolve_type1_rows)뿐이어야 한다 -
+    # 세그먼트 수만큼 순차 왕복이 쌓이던 예전 구조가 아니라서, 실패해도
+    # 딱 1번만 시도하고 바로 전체 폴백으로 넘어가야 한다(재시도 없음).
     segment_ids = [str(i) for i in range(10)]
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("network down")) as mock_resolve:
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("network down")) as mock_resolve:
         result = nav_lookup.resolve_segment_values(segment_ids, 1, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[1]] * 10
-    assert mock_resolve.call_count == nav_lookup._CIRCUIT_BREAKER_THRESHOLD
+    mock_resolve.assert_called_once_with(segment_ids, nav_lookup.RDS_TABLE_TYPE1)
 
 
-def test_resolve_time_values_opens_circuit_when_time_budget_exceeded():
-    # 호출이 전부 성공해도(장애 아님) 세그먼트가 많아 순차 호출이 쌓이면
-    # 응답이 Lambda 타임아웃을 넘길 수 있다(실측 확인됨). 남은 시간이
-    # 얼마 안 되면 성공/실패와 무관하게 회로를 열어 남은 세그먼트는
-    # RDS를 더 안 건드리고 폴백으로 채워야 한다.
-    def fake_resolve_type1_tiers(segment_id, bucket_sk, table_name):
-        if segment_id in ("1", "2") and bucket_sk == "1200":
-            return {"1200": {"value": 111, "observed_at": time.time()}}
-        return {}
+def test_resolve_time_values_batch_fetches_once_then_resolves_locally():
+    # 배치로 미리 가져온 결과만으로 세그먼트별 누적시각/버킷 계산이 전부
+    # 로컬에서 끝나야 한다 - RDS는 최초 배치 호출 한 번만 나가야 한다.
+    def fake_batch_resolve_type1_rows(segment_ids, table_name):
+        now = time.time()
+        return {
+            "1": {"1200": {"value": 111, "observed_at": now}},
+            "2": {"1200": {"value": 222, "observed_at": now}},
+        }
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=fake_resolve_type1_tiers) as mock_resolve, \
-         patch.object(nav_lookup.time, "monotonic", side_effect=[0.0, 0.0, 0.0, 100.0]):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=fake_batch_resolve_type1_rows) as mock_resolve:
         result = nav_lookup.resolve_segment_values(["1", "2", "3", "4"], 1, "12:00")
 
-    assert result == [111, 111, nav_lookup._HARDCODED_DEFAULTS[1], nav_lookup._HARDCODED_DEFAULTS[1]]
-    # 세그먼트 "3"에서 예산 초과가 감지된 시점 이후로는(그 세그먼트 포함)
-    # RDS를 더 안 건드려야 한다 - "1", "2"만 실제 조회됨.
-    assert mock_resolve.call_count == 2
+    assert result == [111, 222, nav_lookup._HARDCODED_DEFAULTS[1], nav_lookup._HARDCODED_DEFAULTS[1]]
+    mock_resolve.assert_called_once()
 
 
 # ---------------------------------------------------------------------------
@@ -191,7 +188,7 @@ def test_resolve_uses_memory_cache_when_rds_down(rds_table):
     _put_row(rds_table, "1", "AVG", 40)
     nav_lookup.resolve_segment_values(["1"], 1, "12:00")  # 메모리 캐시 예열
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [40]
@@ -203,7 +200,7 @@ def test_resolve_uses_s3_snapshot_when_rds_down_and_memory_empty(monkeypatch, tm
         "1": {"avg": 71.0, "spec": 66.0, "exact_value": None, "exact_observed_at": None},
     })
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [71]
@@ -215,7 +212,7 @@ def test_resolve_s3_snapshot_prefers_fresh_exact_over_avg(monkeypatch, tmp_path)
         "1": {"avg": 71.0, "spec": 66.0, "exact_value": 20.0, "exact_observed_at": time.time()},
     })
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [20]
@@ -229,7 +226,7 @@ def test_resolve_s3_snapshot_reapplies_freshness_to_exact_value(monkeypatch, tmp
         "1": {"avg": 71.0, "spec": 66.0, "exact_value": 20.0, "exact_observed_at": time.time() - 999_999},
     })
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [71]
@@ -239,7 +236,7 @@ def test_resolve_s3_snapshot_falls_back_to_spec_when_avg_missing(monkeypatch, tm
     monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
     gold_snapshot.write_snapshot("type1", {"1": {"spec": 66.0}})
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [66]
@@ -248,19 +245,19 @@ def test_resolve_s3_snapshot_falls_back_to_spec_when_avg_missing(monkeypatch, tm
 def test_resolve_falls_back_to_hardcoded_when_rds_down_and_no_cache_or_snapshot(monkeypatch, tmp_path):
     monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")):
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")):
         result = nav_lookup.resolve_segment_values(["999"], 1, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[1]]
 
 
 def test_resolve_s3_snapshot_loads_only_once_per_process(monkeypatch, tmp_path):
-    # 세그먼트마다 S3를 매번 부르면 RDS 순차 조회가 느려서 겪었던 것과 같은
-    # 문제(_TIME_BUDGET_SECONDS)가 재발한다 - 프로세스당 딱 한 번만 읽어야 한다.
+    # 세그먼트마다 S3를 매번 부르면 왕복이 세그먼트 수만큼 쌓이는 문제가
+    # 재발한다 - 프로세스당 딱 한 번만 읽어야 한다.
     monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
     gold_snapshot.write_snapshot("type1", {"1": {"avg": 71.0}, "2": {"avg": 82.0}})
 
-    with patch.object(nav_lookup.rds, "resolve_type1_tiers", side_effect=RuntimeError("rds down")), \
+    with patch.object(nav_lookup.rds, "batch_resolve_type1_rows", side_effect=RuntimeError("rds down")), \
          patch.object(nav_lookup.gold_snapshot, "read_snapshot", wraps=nav_lookup.gold_snapshot.read_snapshot) as mock_read:
         result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
 

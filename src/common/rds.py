@@ -78,32 +78,47 @@ def ensure_table(table_name: str) -> None:
         raise
 
 
-def resolve_type1_tiers(segment_id: str, bucket_sk: str, table_name: str) -> dict[str, dict]:
-    """segment_id의 exact(bucket_sk)/AVG/SPEC 세 tier를 한 번의 쿼리로
-    가져온다. 세그먼트 하나당 쿼리 한 번으로 세 tier를 다 받아와야
-    (경로 하나에 세그먼트 수십~수백 개를 순차 조회하는 type1 특성상) 왕복
-    횟수가 안 늘어난다.
+def batch_resolve_type1_rows(segment_ids: list[str], table_name: str) -> dict[str, dict[str, dict]]:
+    """요청에 포함된 segment_id 전체의 존재 가능한 모든 행(버킷 sk 최대
+    48개 + AVG + SPEC)을 한 번의 쿼리로 가져온다.
 
-    반환값은 sk -> {"value", "observed_at"} 매핑이고, 없는 tier는 키 자체가
-    없다. RDS 연결/쿼리 실패는 삼키지 않고 그대로 던진다 - 호출부가 이걸로
-    "RDS 자체가 죽었다"를 판단해서 memory/S3 폴백으로 넘어간다."""
+    type1은 세그먼트별로 조회해야 할 버킷(sk)이 앞 세그먼트들의 누적
+    소요시간에 따라 달라져서 요청을 받는 시점엔 어떤 버킷이 필요할지
+    미리 알 수 없다 - 그런데 sk가 날짜가 아니라 시간대(하루 48개 버킷)라
+    PK(segment_id, sk) 특성상 세그먼트 하나가 가질 수 있는 행은 최대
+    50개(48버킷+AVG+SPEC)로 정해져 있다. 그래서 필요할지 모르는 버킷을
+    미리 다 받아둬도 세그먼트당 데이터량이 작고, 이후 순차 누적시각
+    계산(src/serving/nav_lookup.py._resolve_time_values)은 이 로컬 dict만
+    보고 끝낼 수 있어 세그먼트 수만큼 RDS 왕복이 쌓이는 문제 자체가
+    없어진다(예전엔 세그먼트당 1회씩 순차 호출 -> circuit breaker/time
+    budget으로 방어해야 했는데, 이제 요청당 RDS 호출이 이 한 번뿐이라 그
+    방어 장치 자체가 필요 없어졌다).
+
+    반환값은 segment_id -> {sk: {"value", "observed_at"}} 매핑이고, 없는
+    segment_id/sk는 키 자체가 없다. RDS 연결/쿼리 실패는 삼키지 않고 그대로
+    던진다 - 호출부가 이걸로 "RDS 자체가 죽었다"를 판단해서 memory/S3
+    폴백으로 넘어간다."""
+    if not segment_ids:
+        return {}
+
+    unique_ids = list(dict.fromkeys(segment_ids))
     conn = get_connection()
     try:
         with conn.cursor() as cur:
             cur.execute(
-                f"SELECT sk, value, observed_at FROM {table_name} "
-                f"WHERE segment_id = %s AND sk IN (%s, %s, %s)",
-                (segment_id, bucket_sk, AVG_SORT_KEY, SPEC_SORT_KEY),
+                f"SELECT segment_id, sk, value, observed_at FROM {table_name} "
+                f"WHERE segment_id = ANY(%s)",
+                (unique_ids,),
             )
             rows = cur.fetchall()
     except psycopg2.OperationalError:
         _reset_connection()
         raise
 
-    return {
-        sk: {"value": float(value), "observed_at": observed_at}
-        for sk, value, observed_at in rows
-    }
+    result: dict[str, dict[str, dict]] = {}
+    for segment_id, sk, value, observed_at in rows:
+        result.setdefault(segment_id, {})[sk] = {"value": float(value), "observed_at": observed_at}
+    return result
 
 
 def upsert_items(items: list[dict], table_name: str) -> int:
@@ -155,8 +170,7 @@ def upsert_items(items: list[dict], table_name: str) -> int:
 def batch_get_rows(table_name: str, keys: list[tuple[str, str]]) -> dict[tuple[str, str], dict]:
     """(segment_id, sk) 키 목록으로 여러 행을 한 번에 조회한다. Gold
     파이프라인의 증분 갱신(예: AVG 계산)이 "기존 값"을 한꺼번에 읽을 때
-    쓴다 - 서빙 경로(resolve_type1_tiers, 세그먼트당 조회)와는 다른
-    호출부."""
+    쓴다 - 서빙 경로(batch_resolve_type1_rows)와는 다른 호출부."""
     if not keys:
         return {}
 
