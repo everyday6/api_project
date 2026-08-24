@@ -7,8 +7,11 @@ NYC DOT 실시간 속도 데이터를 30분마다 수집해서, LION 세그먼�
 Gold job이 성공할 때마다 S3 Gold 스냅샷도 같이 갱신한다(src/common/gold_snapshot.py,
 src/serving/nav_lookup.py 참고).
 
-Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 하나의 EMR
-Serverless Spark job으로 묶어서 제출한다.
+Bronze(수집)만 Airflow worker에서 돌고, Silver1~Gold2는 EMR Serverless
+Spark job 두 개(Silver: submit_silver_job, Gold: submit_gold_job)로
+나눠서 제출한다 - 하나로 묶으면 실패했을 때 어느 단계인지 Airflow
+화면에서 구분이 안 돼서, 실패 지점을 명확히 알 수 있도록 분리했다
+(docs/superpowers/specs/2026-08-24-split-silver-gold-tasks-design.md 참고).
 """
 
 import logging
