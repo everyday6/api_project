@@ -81,31 +81,6 @@ RDS_DB = os.getenv("RDS_DB")
 RDS_USER = os.getenv("RDS_USER")
 RDS_PASSWORD = os.getenv("RDS_PASSWORD")
 
-# APP_ENV=local이면 docker-compose의 nav-gold-postgres 컨테이너를 가리킨다.
-# 호스트(venv)에서 직접 돌릴 땐 localhost:5434(호스트 매핑 포트 - 기존
-# traffic-postgres-local 잔재 컨테이너가 5433을 이미 쓰고 있어 충돌 피하려고
-# 5434로 뺐다)가 기본값이고, 컨테이너 안에서는 docker-compose가 이 값을
-# 서비스명+내부 포트로 덮어쓴다(DYNAMO_LOCAL_ENDPOINT 때와 동일한 컨테이너/호스트
-# 엔드포인트 구분 필요 - 실제로 겪었던 문제라 처음부터 이렇게 분리한다).
-NAV_GOLD_RDS_LOCAL_DSN = os.getenv(
-    "NAV_GOLD_RDS_LOCAL_DSN",
-    "postgresql://nav_gold:nav_gold@localhost:5434/nav_gold",
-)
-
-
-def get_rds_dsn() -> str:
-    """type1 서빙(src/common/rds.py)이 실제로 접속할 DSN을 반환한다.
-    local이면 로컬 컨테이너, 아니면 실제 RDS(RDS_HOST 등) - 이 함수만
-    실제 RDS 엔드포인트로 바뀌면 나머지 코드는 손 안 대도 된다."""
-    if APP_ENV == "local":
-        return NAV_GOLD_RDS_LOCAL_DSN
-    return f"postgresql://{RDS_USER}:{RDS_PASSWORD}@{RDS_HOST}:{RDS_PORT}/{RDS_DB}"
-
-
-RDS_TABLE_TYPE1 = os.getenv("RDS_TABLE_TYPE1", "segment_metrics_type1")
-RDS_TABLE_TYPE2 = os.getenv("RDS_TABLE_TYPE2", "segment_metrics_type2")
-RDS_TABLE_TYPE4 = os.getenv("RDS_TABLE_TYPE4", "segment_metrics_type4")
-
 # ==========================
 # EMR Serverless (Spark 잡 실행) 설정
 # ==========================
@@ -234,13 +209,6 @@ SERVING_TABLE_TYPE4_KEY_COLUMNS = ("segment_id",)
 # GLOBAL_PARTITION_KEY: 실제 segment_id가 아닌 예약된 PK — 배포 시점에 수동으로
 # 심어두는 type2 전역 기본값 전용 파티션(scripts/seed_rds_defaults.py 참고).
 GLOBAL_PARTITION_KEY = "GLOBAL"
-
-# src/common/rds.py(팀원이 만든 범용 sk 기반 접근 모듈, 아직 몇몇 테스트가
-# 직접 참조함)가 쓰는 sort key 상수. 지금 실제로 도는 type1 파이프라인은
-# segment_id+time 컬럼 스키마라 이 값들을 안 쓰지만, rds.py 자체를 지우지
-# 않았으니 그 모듈이 참조하는 상수도 같이 남겨둔다.
-AVG_SORT_KEY = "AVG"
-SPEC_SORT_KEY = "SPEC"
 
 # 하루를 30분 단위로 나눈 버킷 수(00:00~23:30 -> 48개). 버킷 키는 "HHMM" 문자열.
 BUCKET_MINUTES = 30
