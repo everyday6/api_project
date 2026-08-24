@@ -7,7 +7,14 @@ Gold2 — type1(시간) 최종 산출물 계산 + DynamoDB 포맷/upsert
 나눠 세그먼트별 통행시간(초)을 구한다. 세그먼트 전체 평균(AVG)은 세그먼트당
 버킷을 한 번에 하나씩만 계산하는 구조에 맞춰, 이번 실행에서 바뀐 버킷 하나
 만큼만 증분 갱신한다(설계 문서 7절). DynamoDB에는 버킷 값과 AVG를 모두
-upsert한다 — 버킷 값에는 원본 데이터 날짜(collected_date)도 함께 저장한다.
+upsert한다 — 버킷 값에는 원본 데이터 날짜(collected_date)와 신선도 판단용
+타임스탬프(observed_at)도 함께 저장한다.
+
+compute_spec_travel_seconds/spec_estimate_items는 별개 흐름이다 - 실시간
+속도 판독값이 아니라 LION 도로 스펙(길이/제한속도)만으로 통과시간을
+추정해서, type1 fallback 체인의 3단계(SPEC Estimate, src/serving/nav_lookup.py
+참고)로 쓴다. segment_length_pipeline이 LION 갱신 때(quarterly)마다
+다시 계산해서 쓴다 - 실시간 버킷 계산(30분 주기)과는 트리거 자체가 다르다.
 
 단위: SPEED는 mph, length_ft는 feet. 시간(초) = (길이_ft / 5280) / 속도_mph * 3600.
 """
@@ -30,7 +37,7 @@ from pyspark.sql.functions import (
     to_date,
 )
 
-from src.common.config import AVG_SORT_KEY, BUCKET_MINUTES
+from src.common.config import AVG_SORT_KEY, BUCKET_MINUTES, SPEC_SORT_KEY
 from src.common.dynamodb import batch_get_items, batch_write_items
 from src.common.logger import get_logger
 
@@ -206,3 +213,41 @@ def write_to_dynamodb(items: list[dict], table_name: str) -> int:
     batch_write_items(table_name, items)
     logger.info(f"[nav_time_gold2] DynamoDB upsert 완료: table={table_name} count={len(items)}")
     return len(items)
+
+
+def compute_spec_travel_seconds(dim_segment_df: pd.DataFrame) -> pd.DataFrame:
+    """type1 3단계 폴백(SPEC Estimate) 소스. 실시간 속도 판독값 없이 도로
+    스펙(길이/제한속도)만으로 통과시간을 추정한다 - Exact/Historical AVG가
+    둘 다 없을 때(신규 segment, 장기 장애 등) 쓰는 값이라 세그먼트당 정적으로
+    하나만 있으면 된다.
+
+    length_ft나 speed_limit_mph가 없거나(제한속도 미표기 segment가 실측
+    기준 약 32%) 0 이하면 추정 자체가 불가능하므로 그 segment는 결과에서
+    빠진다 - 값을 지어내지 않고, nav_lookup이 다음 폴백 단계(코드 상수)로
+    넘어가게 한다."""
+
+    valid = dim_segment_df[
+        dim_segment_df["length_ft"].notna()
+        & (dim_segment_df["length_ft"] > 0)
+        & dim_segment_df["speed_limit_mph"].notna()
+        & (dim_segment_df["speed_limit_mph"] > 0)
+    ]
+
+    spec_travel_time_sec = (
+        (valid["length_ft"] / _FEET_PER_MILE) / valid["speed_limit_mph"] * _SECONDS_PER_HOUR
+    )
+
+    return pd.DataFrame({
+        "segment_id": valid["segment_id"],
+        "spec_travel_time_sec": spec_travel_time_sec,
+    })
+
+
+def spec_estimate_items(spec_df: pd.DataFrame) -> list[dict]:
+    """SPEC Estimate를 DynamoDB 아이템으로 변환한다. type2(길이)처럼 시간과
+    무관한 정적 값이라 세그먼트당 항목 1개, sort key는 고정 SPEC_SORT_KEY다."""
+
+    return [
+        {"segment_id": row["segment_id"], "sk": SPEC_SORT_KEY, "value": round(row["spec_travel_time_sec"])}
+        for row in spec_df.to_dict("records")
+    ]
