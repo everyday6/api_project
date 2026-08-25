@@ -2,7 +2,7 @@
 EMR Serverless 잡 엔트리포인트 — Silver2(LION 세그먼트 단위) -> type1(시간) RDS upsert
 
 nav_time_silver_job.py가 만들어둔 Silver2 parquet을 읽어서 Gold1(필터)
--> Gold2(버킷 평균+시간 계산+RDS upsert)를 처리한다
+-> Gold2(버킷 평균+시간 계산 -> 검증 -> RDS upsert)를 처리한다
 (docs/superpowers/specs/2026-08-24-split-silver-gold-tasks-design.md 참고).
 
 인자:
@@ -21,7 +21,12 @@ from cloudpathlib import S3Path
 from pyspark.sql import SparkSession
 
 from src.nav_time.gold1 import filter_valid_speed
-from src.nav_time.gold2 import compute_time_seconds, to_serving_items, write_to_rds
+from src.nav_time.gold2 import (
+    compute_time_seconds,
+    to_serving_items,
+    validate_bucket_time_seconds,
+    write_to_rds,
+)
 
 
 def run(silver2_path: str, dim_segment_path: str, serving_table: str, output_s3: str) -> None:
@@ -33,6 +38,7 @@ def run(silver2_path: str, dim_segment_path: str, serving_table: str, output_s3:
     gold1_df = filter_valid_speed(silver2_df)
 
     bucket_df = compute_time_seconds(gold1_df, dim_segment_df[["segment_id", "length_ft"]])
+    bucket_df = validate_bucket_time_seconds(bucket_df)
     items = to_serving_items(bucket_df, serving_table)
     count = write_to_rds(items, serving_table)
 

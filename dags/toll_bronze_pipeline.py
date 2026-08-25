@@ -22,7 +22,6 @@ from src.common.alerts import notify_slack_failure
 default_args = {
     "retries": 2,
     "retry_delay": timedelta(minutes=5),
-    "on_failure_callback": notify_slack_failure,
 }
 
 TOLL_BRONZE_UPDATED = Asset("toll_bronze_updated")
@@ -36,6 +35,7 @@ TOLL_BRONZE_UPDATED = Asset("toll_bronze_updated")
     catchup=False,
     max_active_runs=1,
     default_args=default_args,
+    on_failure_callback=notify_slack_failure,
     tags=["toll"],
 )
 def toll_bronze_pipeline():

@@ -55,29 +55,46 @@ _BATCH_GET_CHUNK = 1000
 _connection = None
 
 
-def _dsn() -> dict:
+def _dsn(*, connect_timeout: int = 1, statement_timeout_ms: int | None = None) -> dict:
     if not RDS_HOST or not RDS_DB:
         raise RuntimeError("RDS_HOST/RDS_DB 환경변수가 필요합니다")
-    return dict(
+    dsn = dict(
         host=RDS_HOST,
         port=RDS_PORT,
         dbname=RDS_DB,
         user=RDS_USER,
         password=RDS_PASSWORD,
-        connect_timeout=5,
+        connect_timeout=connect_timeout,
     )
+    if statement_timeout_ms is not None:
+        # 세션 옵션으로 서버 쪽에 강제한다 - psycopg2 자체엔 쿼리 실행 시간
+        # 상한을 거는 클라이언트 옵션이 없다(src/serving/api.py의 Type3
+        # 커넥션과 동일한 방식).
+        dsn["options"] = f"-c statement_timeout={statement_timeout_ms}"
+    return dsn
 
 
-def new_connection():
+def new_connection(*, connect_timeout: int = 1, statement_timeout_ms: int | None = None):
     """항상 새 커넥션을 연다. 커넥션을 공유하면 안 되는 호출부가 명시적으로
     쓴다 — 예: src/tlc/gold2.py의 Type3 Spark 파티션별 쓰기 스레드는 스레드마다
     자기만의 커넥션이 있어야 한다(psycopg2 커넥션은 스레드 간 동시 공유가
     안전하지 않다).
 
+    connect_timeout 기본값은 1초다 - "TCP 연결을 맺는" 단계는 읽기든
+    쓰기든 같은 VPC 안에서는 항상 빨라야 정상이라, 배치 쓰기 쪽에도
+    안전하게 걸 수 있다(연결 자체가 1초 넘게 안 되면 RDS 쪽 진짜 문제로
+    보는 게 맞다). 반대로 statement_timeout_ms는 기본값이 무제한이다 -
+    대량 upsert 같은 배치 쓰기는 "쿼리 실행 시간"이 1초를 넘는 게 정상이라,
+    여기 짧은 값을 걸면 정상 동작까지 실패로 처리된다. 서빙 조회처럼
+    "쿼리 자체도 느리면 곧장 실패해서 fallback으로 넘어가야 하는" 호출부만
+    이 값을 명시적으로 넘긴다(src/serving/nav_lookup.py 참고).
+
     autocommit=True로 열어서 트랜잭션 개념 자체를 없앤다 - 문장 하나가
     실패해도 "트랜잭션 중단 상태"에 안 빠지고 다음 호출을 바로 이어갈 수 있다.
     """
-    conn = psycopg2.connect(**_dsn())
+    conn = psycopg2.connect(
+        **_dsn(connect_timeout=connect_timeout, statement_timeout_ms=statement_timeout_ms)
+    )
     conn.autocommit = True
     return conn
 
@@ -198,7 +215,7 @@ def _chunk(items: list, size: int):
         yield items[i : i + size]
 
 
-def batch_get_items(table_name: str, keys: list[dict]) -> dict[tuple, dict]:
+def batch_get_items(table_name: str, keys: list[dict], *, conn=None) -> dict[tuple, dict]:
     """키 컬럼 dict 목록으로 여러 항목을 한 번에 조회한다.
 
     SELECT *로 읽어서 그 테이블이 실제로 가진 컬럼을 그대로 dict로 돌려준다
@@ -206,12 +223,16 @@ def batch_get_items(table_name: str, keys: list[dict]) -> dict[tuple, dict]:
     딕셔너리이며, 테이블에 없는 키는 결과에서 빠진다(호출부가 이걸로
     fallback 여부를 판단한다). 값이 NULL인 컬럼은 dict에 키 자체가 안
     들어간다 - 그 필드가 원래 없었던 것과 동일하게 취급하기 위함.
+
+    conn을 넘기면 그 커넥션을 쓴다(batch_write_items와 동일한 패턴) - 서빙
+    조회가 fast-fail 전용 커넥션(짧은 statement_timeout)을 쓰고 싶을 때
+    공유 커넥션 대신 이걸로 지정한다.
     """
     if not keys:
         return {}
 
     _validate_identifier(table_name)
-    conn = _get_connection()
+    conn = conn or _get_connection()
     key_columns = tuple(keys[0])
     if not key_columns or any(set(key) != set(key_columns) for key in keys):
         raise ValueError("모든 조회 키는 동일한 키 컬럼을 가져야 합니다")
