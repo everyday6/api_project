@@ -365,6 +365,65 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "Airflow 파이프라인 (메타데이터 DB 직접 조회 - 별도 계측 불필요)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 62 },
+      "collapsed": false
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "DAG Run 상태별 개수",
+      "description": "dag_run 테이블을 1시간 단위로 집계 - success/failed/running/queued별 추세",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 63 },
+      "datasource": { "type": "postgres", "uid": "airflow-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "airflow-postgres" },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroup(start_date, '1h') AS time, state, count(*) AS value FROM dag_run WHERE $__timeFilter(start_date) GROUP BY 1, state ORDER BY 1"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "DAG별 평균 태스크 소요시간",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 63 },
+      "datasource": { "type": "postgres", "uid": "airflow-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "airflow-postgres" },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroup(start_date, '1h') AS time, dag_id, avg(duration) AS value FROM task_instance WHERE $__timeFilter(start_date) AND duration IS NOT NULL GROUP BY 1, dag_id ORDER BY 1"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "s" }, "overrides": [] }
+    },
+    {
+      "id": 53,
+      "type": "table",
+      "title": "최근 실패 태스크 목록",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 71 },
+      "datasource": { "type": "postgres", "uid": "airflow-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "airflow-postgres" },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT start_date, dag_id, task_id, try_number, duration FROM task_instance WHERE state = 'failed' AND $__timeFilter(start_date) ORDER BY start_date DESC LIMIT 50"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] }
     }
   ]
 }
