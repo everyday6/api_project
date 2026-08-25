@@ -35,6 +35,7 @@ def test_run_calls_gold_functions_in_order_and_writes_output(tmp_path, spark):
 
     fake_gold1_df = spark.createDataFrame([{"segment_id": "seg-1", "speed": 29.82}])
     fake_bucket_df = spark.createDataFrame([{"segment_id": "seg-1", "bucket": "1200", "time_seconds": 61.0}])
+    fake_validated_df = spark.createDataFrame([{"segment_id": "seg-1", "bucket": "1200", "time_seconds": 61.0}])
     fake_items = [{"segment_id": "seg-1", "time": "1200", "value": 61}]
 
     with patch.object(nav_time_gold_job, "S3Path", Path), \
@@ -42,6 +43,9 @@ def test_run_calls_gold_functions_in_order_and_writes_output(tmp_path, spark):
          patch.object(
              nav_time_gold_job, "compute_time_seconds", return_value=fake_bucket_df
          ) as mock_gold2, \
+         patch.object(
+             nav_time_gold_job, "validate_bucket_time_seconds", return_value=fake_validated_df
+         ) as mock_validate, \
          patch.object(
              nav_time_gold_job, "to_serving_items", return_value=fake_items
          ) as mock_to_items, \
@@ -64,8 +68,12 @@ def test_run_calls_gold_functions_in_order_and_writes_output(tmp_path, spark):
     assert gold1_arg is fake_gold1_df
     assert length_df_arg.columns.tolist() == ["segment_id", "length_ft"]
 
-    # to_serving_items는 compute_time_seconds 결과 + 테이블명을 받는다.
-    mock_to_items.assert_called_once_with(fake_bucket_df, serving_table)
+    # validate_bucket_time_seconds는 compute_time_seconds 결과를 받고,
+    # RDS 쓰기 전(to_serving_items 앞)에 끼어든다.
+    mock_validate.assert_called_once_with(fake_bucket_df)
+
+    # to_serving_items는 validate_bucket_time_seconds 결과 + 테이블명을 받는다.
+    mock_to_items.assert_called_once_with(fake_validated_df, serving_table)
 
     # write_to_rds는 to_serving_items 결과 + 테이블명을 받는다.
     mock_write.assert_called_once_with(fake_items, serving_table)
