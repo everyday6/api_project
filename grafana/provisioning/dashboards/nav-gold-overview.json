@@ -1095,7 +1095,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 106
+        "y": 114
       }
     },
     {
@@ -1107,7 +1107,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 107
+        "y": 115
       },
       "datasource": {
         "type": "cloudwatch",
@@ -1150,7 +1150,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 107
+        "y": 115
       },
       "datasource": {
         "type": "cloudwatch",
@@ -1192,7 +1192,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 115
+        "y": 123
       },
       "datasource": {
         "type": "cloudwatch",
@@ -1222,6 +1222,38 @@
           "max": 100,
           "min": 0
         },
+        "overrides": []
+      }
+    },
+    {
+      "id": 72,
+      "type": "table",
+      "title": "타입별 실제 갱신 시각 (Airflow DAG 마지막 성공 시각)",
+      "description": "RDS의 updated_date는 시:분:초 없는 순수 날짜 컬럼이라 정확한 갱신 시각을 모른다. 대신 각 타입을 채우는 Gold DAG가 마지막으로 성공한 시각(dag_run.end_date)을 보여준다 - 그 DAG가 끝났다는 건 RDS 쓰기가 끝났다는 뜻이라 사실상 같은 시각이다. type1=segment_time_pipeline, type2=segment_length_pipeline, type3=tlc_type3_serving_daily, type4=toll_silver_gold_pipeline. 값이 비어있으면 그 DAG가 아직 한 번도 성공한 적이 없다는 뜻(예: tlc_type3_serving_daily는 오늘 막 추가돼 아직 미실행).",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 106
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "airflow-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-postgres"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT CASE dag_id WHEN 'segment_time_pipeline' THEN 'type1' WHEN 'segment_length_pipeline' THEN 'type2' WHEN 'tlc_type3_serving_daily' THEN 'type3' WHEN 'toll_silver_gold_pipeline' THEN 'type4' END AS type, dag_id, MAX(end_date) AS last_success_at FROM dag_run WHERE dag_id IN ('segment_time_pipeline', 'segment_length_pipeline', 'tlc_type3_serving_daily', 'toll_silver_gold_pipeline') AND state = 'success' GROUP BY dag_id ORDER BY type"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
         "overrides": []
       }
     }
