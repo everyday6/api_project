@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import math
 import re
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
@@ -21,6 +22,7 @@ from pyspark.sql.functions import (
     lit,
     max as spark_max,
     minute,
+    spark_partition_id,
     to_date,
 )
 
@@ -71,6 +73,17 @@ SEGMENT_EXPANSION_PARTITIONS = 200
 # 커넥션 수를 결정한다(동시 실행 파티션 수는 executor 코어 수만큼으로
 # 제한됨) - 파티션 수만 늘리는 건 이 한도에 영향을 안 준다.
 TYPE3_RDS_WRITE_PARTITIONS = SEGMENT_EXPANSION_PARTITIONS
+
+# expand_zone_values_to_segments의 repartition 기준을 zone_id에서
+# segment_id로 바꾼 뒤(위 참고) 파티션 크기가 고르게 되면서, 200개
+# 파티션이 예전처럼 제각각 다른 시점에 끝나며 자연스럽게 흩어지는 대신
+# 거의 동시에 쓰기 단계에 도착하게 됐다. 200개가 한꺼번에 RDS 커넥션을
+# 열려고 하면서 WAL 쓰기 잠금 경합이 발생했다(실측: Performance Insights
+# 상위 SQL에서 이 INSERT 하나에 AAS 17 이상, 대부분 LWLock:WALWrite 대기).
+# 파티션 개수·크기는 그대로 두고, 이 개수만큼씩 묶어 순차적으로(파도 형태로)
+# RDS에 쓴다 - 동시에 여는 커넥션 수를 이 값 × TYPE3_RDS_WRITE_THREADS_PER_PARTITION
+# 이하로 억제한다.
+TYPE3_RDS_WRITE_WAVE_SIZE = 20
 
 # 파티션 하나(executor 하나) 안에서 쓰기를 몇 개의 스레드로 나눠 돌릴지.
 # RDS 쓰기도 CPU가 아니라 네트워크 왕복 대기가 지배적인 I/O bound 작업이라,
@@ -544,15 +557,37 @@ def write_type3_rolling_to_rds(
     executor마다 자기 파티션을 병렬로 쓰게 바꿔서 wall-clock을 파티션
     수만큼 나눈다.
 
+    TYPE3_RDS_WRITE_PARTITIONS(200)개를 한 번에 전부 foreachPartition하면
+    200개 태스크가 거의 동시에 RDS 커넥션을 열어 WAL 쓰기 잠금 경합이
+    생긴다(위 TYPE3_RDS_WRITE_WAVE_SIZE 참고). 파티션 자체는 그대로 두고
+    TYPE3_RDS_WRITE_WAVE_SIZE개씩 묶어 파도로 나눠 순차 실행한다 -
+    spark_partition_id()로 물리 파티션 번호를 컬럼에 남겨서 그 범위로
+    필터링하는 방식이라 셔플 없이 나눌 수 있다. 여러 번 스캔하므로 join까지
+    포함한 전체 재계산을 막기 위해 persist한다.
+
     window_end는 이 롤링 평균이 반영하는 TLC 데이터의 마지막 날짜다 -
     각 행의 collected_date로 그대로 찍는다(언제 계산됐는지가 아니라 어떤
     데이터 스냅샷을 반영하는지를 남기기 위함). updated_date는 이 함수가
     실제로 실행되는 날짜(오늘)로 따로 채운다.
     """
 
-    to_write = rolling.select("segment_id", "dow", "time", "value").repartition(
-        TYPE3_RDS_WRITE_PARTITIONS
+    to_write = (
+        rolling.select("segment_id", "dow", "time", "value")
+        .repartition(TYPE3_RDS_WRITE_PARTITIONS)
+        .withColumn("_wave_partition_id", spark_partition_id())
+        .persist()
     )
     written = to_write.count()
-    to_write.foreachPartition(_write_type3_partition(table_name, window_end))
+
+    num_waves = math.ceil(TYPE3_RDS_WRITE_PARTITIONS / TYPE3_RDS_WRITE_WAVE_SIZE)
+    for wave in range(num_waves):
+        lo = wave * TYPE3_RDS_WRITE_WAVE_SIZE
+        hi = lo + TYPE3_RDS_WRITE_WAVE_SIZE - 1
+        (
+            to_write.filter(col("_wave_partition_id").between(lo, hi))
+            .drop("_wave_partition_id")
+            .foreachPartition(_write_type3_partition(table_name, window_end))
+        )
+
+    to_write.unpersist()
     return written
