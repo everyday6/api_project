@@ -1,4 +1,4 @@
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta
 from unittest.mock import patch
 
 import pytest
@@ -12,8 +12,9 @@ requires_postgres = pytest.mark.usefixtures("require_postgres")
 
 # _is_fresh()가 date.today()를 직접 부르므로, date 자체를 mock하는 대신
 # 실제 "오늘"을 기준으로 어제를 계산한다 - date를 MagicMock으로 바꿔치기하면
-# isinstance(collected_date, date) 검사가 깨진다(date가 더 이상 타입이 아니게 됨).
-TODAY = date.today()
+# isinstance(last_sample_at, datetime) 검사가 깨진다(datetime이 더 이상
+# 타입이 아니게 됨).
+TODAY = datetime.combine(date.today(), datetime.min.time())
 YESTERDAY = TODAY - timedelta(days=1)
 
 
@@ -60,17 +61,18 @@ def test_is_fresh_true_only_for_todays_date():
 
 def test_is_fresh_false_for_missing_or_malformed_value():
     assert nav_lookup._is_fresh(None) is False
-    assert nav_lookup._is_fresh("2026-08-21") is False  # 문자열은 date 인스턴스가 아님
+    assert nav_lookup._is_fresh("2026-08-21") is False  # 문자열은 datetime 인스턴스가 아님
 
 
 def test_resolve_from_row_prefers_fresh_exact():
-    row = {"value": 30, "avg": 40, "collected_date": TODAY}
+    row = {"value": 30, "avg": 40, "last_sample_at": TODAY}
     assert nav_lookup._resolve_from_row(row) == (30, "fresh")
 
 
 def test_resolve_from_row_falls_back_to_avg_when_value_is_stale():
-    row = {"value": 30, "avg": 40, "collected_date": YESTERDAY}
+    row = {"value": 30, "avg": 40, "last_sample_at": YESTERDAY}
     assert nav_lookup._resolve_from_row(row) == (40, "avg")
+
 
 
 def test_resolve_from_row_returns_none_when_row_is_none_or_empty():
@@ -83,7 +85,7 @@ def test_resolve_from_row_returns_none_when_row_is_none_or_empty():
 # ---------------------------------------------------------------------------
 
 def test_resolve_uses_fresh_exact_when_collected_today():
-    rows = {"1": {"1200": {"value": 30, "avg": 999, "collected_date": TODAY}}}
+    rows = {"1": {"1200": {"value": 30, "avg": 999, "last_sample_at": TODAY}}}
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
@@ -91,7 +93,7 @@ def test_resolve_uses_fresh_exact_when_collected_today():
 
 
 def test_resolve_falls_back_to_avg_when_value_is_stale():
-    rows = {"1": {"1200": {"value": 30, "avg": 40, "collected_date": YESTERDAY}}}
+    rows = {"1": {"1200": {"value": 30, "avg": 40, "last_sample_at": YESTERDAY}}}
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
@@ -108,7 +110,11 @@ def test_resolve_falls_back_to_hardcoded_constant_when_slot_missing_but_rds_up()
 
 
 def test_resolve_type2_has_no_avg_tier_goes_straight_to_default():
-    with patch.object(nav_lookup, "batch_get_items", return_value={}) as mock_batch:
+    # RDS 연결 자체는 되고(fast-fail 커넥션 획득 성공) 조회 결과가 비어있는
+    # 경우 - _get_fast_rds_connection도 같이 mock해야 batch_get_items가
+    # 실제로 호출되는 지점까지 도달한다.
+    with patch.object(nav_lookup, "_get_fast_rds_connection", return_value=None), \
+         patch.object(nav_lookup, "batch_get_items", return_value={}) as mock_batch:
         result = nav_lookup.resolve_segment_values(["1"], 2, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[2]]
@@ -120,12 +126,12 @@ def test_resolve_type2_has_no_avg_tier_goes_straight_to_default():
 # ---------------------------------------------------------------------------
 
 def test_resolve_falls_back_to_s3_snapshot_when_rds_unreachable():
-    snapshot = {"1": {"1200": {"value": 77, "collected_date": TODAY.isoformat()}}}
+    snapshot = {"1": {"1200": {"value": 77, "last_sample_at": TODAY.isoformat()}}}
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
          patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
-    # 스냅샷의 collected_date는 문자열(JSON 왕복)이라 date 인스턴스가 아니므로
+    # 스냅샷의 last_sample_at은 문자열(JSON 왕복)이라 datetime 인스턴스가 아니므로
     # _is_fresh가 False를 주고, 대신 "value"가 없으면 None -> 코드 상수로
     # 떨어진다는 점까지 같이 확인한다(스냅샷 값은 신선도 판단 없이 그대로
     # 못 씀 - 이 케이스는 avg가 없어 코드 상수로 떨어지는 게 맞다).
@@ -143,7 +149,7 @@ def test_resolve_uses_s3_snapshot_avg_when_rds_unreachable():
 
 def test_resolve_uses_memory_cache_before_reloading_s3_snapshot():
     # 1번째 요청(RDS 정상)에서 성공적으로 읽은 값이 메모리 캐시에 남는다.
-    rows = {"1": {"1200": {"value": 30, "avg": None, "collected_date": TODAY}}}
+    rows = {"1": {"1200": {"value": 30, "avg": None, "last_sample_at": TODAY}}}
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):
         nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
@@ -171,10 +177,10 @@ def test_resolve_falls_back_to_hardcoded_constant_when_everything_fails():
 
 def test_resolve_time_values_uses_cumulative_elapsed_time_per_segment():
     rows = {
-        "1": {"1200": {"value": 1800, "avg": None, "collected_date": TODAY}},
+        "1": {"1200": {"value": 1800, "avg": None, "last_sample_at": TODAY}},
         "2": {
-            "1200": {"value": 111, "avg": None, "collected_date": TODAY},
-            "1230": {"value": 999, "avg": None, "collected_date": TODAY},
+            "1200": {"value": 111, "avg": None, "last_sample_at": TODAY},
+            "1230": {"value": 999, "avg": None, "last_sample_at": TODAY},
         },
     }
     # 세그먼트 1: 12:00 슬롯에 1800초(30분) 소요 -> 세그먼트 2는 12:30에 도착.
@@ -207,8 +213,8 @@ def test_resolve_time_values_logs_fallback_tier_summary(caplog):
 def test_resolve_time_values_same_segment_twice_uses_different_buckets():
     rows = {
         "loop": {
-            "1200": {"value": 1800, "avg": None, "collected_date": TODAY},
-            "1230": {"value": 77, "avg": None, "collected_date": TODAY},
+            "1200": {"value": 1800, "avg": None, "last_sample_at": TODAY},
+            "1230": {"value": 77, "avg": None, "last_sample_at": TODAY},
         },
     }
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows):

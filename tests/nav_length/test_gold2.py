@@ -25,7 +25,6 @@ def test_to_serving_items_rounds_length_to_int(spark):
         {
             "segment_id": "1",
             "value": 121,
-            "collected_date": "2026-08-24",
             "updated_date": "2026-08-24",
         }
     ]
@@ -43,7 +42,6 @@ def test_to_serving_items_multiple_rows(spark):
     assert {
         "segment_id": "2",
         "value": 200,
-        "collected_date": "2026-08-24",
         "updated_date": "2026-08-24",
     } in items
 
