@@ -170,6 +170,39 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "계정 전체 (모든 EMR Serverless 애플리케이션 합산 — vCPU 할당량 확인용)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 26 },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "계정 전체 CPU Allocated (모든 앱 스택)",
+      "description": "ApplicationId 필터를 안 걸어서 이 계정/리전에 있는 모든 EMR Serverless 애플리케이션(nav-spark, traffic-score-emr-serverless 등)의 CPUAllocated를 다 가져온다. stacking(쌓기)을 켜서 그래프 맨 위 높이가 사실상 '이 순간 계정 전체가 쓰고 있는 총 vCPU'가 되게 했다 - 계정 vCPU 동시 사용 한도(Service Quotas 콘솔에서 확인)에 얼마나 가까운지 이 맨 위 높이로 판단하면 된다.\n\nTODO: 실제 한도 숫자를 Service Quotas 콘솔에서 확인해서, 이 패널에 수동으로 기준선(Threshold)을 추가해야 함 - CloudWatch가 한도 값 자체를 지표로 안 줘서 여기 자동으로는 못 넣었음.",
+      "gridPos": { "h": 9, "w": 24, "x": 0, "y": 27 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "CPUAllocated",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": { "stacking": { "mode": "normal" }, "fillOpacity": 30 }
+        },
+        "overrides": []
+      }
     }
   ]
 }
