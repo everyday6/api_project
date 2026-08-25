@@ -22,7 +22,7 @@ WORKDIR /build
 
 COPY requirements.txt .
 
-# EMR Serverless Spark job(spark_jobs/nav_length_job.py, nav_time_silver_job.py, nav_time_gold_job.py)이
+# EMR Serverless Spark job(spark_jobs/nav_time_silver_job.py, nav_time_gold_job.py 등)이
 # 실제로 쓰는 서드파티 라이브러리만 골라 담는다:
 #   - pandas, geopandas, shapely, pyproj : src/silver2/segment_speed_match.py,
 #     src/nav_time/gold2.py 등의 지오메트리/좌표계 처리 + spark_jobs가 직접
@@ -35,7 +35,7 @@ COPY requirements.txt .
 #     이제 DynamoDB 대신 RDS에 쓴다. -binary라 libpq를 따로 안 깔아도 되고,
 #     C 확장이 있어서 다른 패키지와 마찬가지로 반드시 이 Amazon Linux
 #     빌드 환경 안에서 설치해야 한다(로컬 arm64/Mac wheel은 EMR에서 못 씀).
-#   - pyarrow : spark_jobs/nav_time_silver_job.py, nav_time_gold_job.py, nav_length_job.py의
+#   - pyarrow : spark_jobs/nav_time_silver_job.py, nav_time_gold_job.py의
 #     pd.read_parquet()가 실제로 쓰는 파케이 엔진. pandas가 있다고 자동으로
 #     같이 오지 않는다 — 없으면 "Unable to find a usable engine" ImportError.
 # pyspark 자체는 EMR Serverless가 이미 제공하므로 여기서 빼서 아카이브

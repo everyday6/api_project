@@ -1,23 +1,15 @@
 from datetime import date
 from unittest.mock import patch
 
-import pytest
-from pyspark.sql import SparkSession
+import pandas as pd
 
 from src.nav_length import gold2
 
 _TODAY = date(2026, 8, 24)
 
 
-@pytest.fixture(scope="module")
-def spark():
-    session = SparkSession.builder.master("local[1]").appName("nav_length_gold2_test").getOrCreate()
-    yield session
-    session.stop()
-
-
-def test_to_serving_items_rounds_length_to_int(spark):
-    df = spark.createDataFrame([{"segment_id": "1", "length_ft": 120.7}])
+def test_to_serving_items_rounds_length_to_int():
+    df = pd.DataFrame([{"segment_id": "1", "length_ft": 120.7}])
 
     items = gold2.to_serving_items(df, today=_TODAY)
 
@@ -28,8 +20,8 @@ def test_to_serving_items_rounds_length_to_int(spark):
     } in items
 
 
-def test_to_serving_items_multiple_rows(spark):
-    df = spark.createDataFrame([
+def test_to_serving_items_multiple_rows():
+    df = pd.DataFrame([
         {"segment_id": "1", "length_ft": 100.0},
         {"segment_id": "2", "length_ft": 200.0},
     ])
@@ -44,8 +36,8 @@ def test_to_serving_items_multiple_rows(spark):
     } in items
 
 
-def test_to_serving_items_adds_global_row_with_median_length(spark):
-    df = spark.createDataFrame([
+def test_to_serving_items_adds_global_row_with_median_length():
+    df = pd.DataFrame([
         {"segment_id": "1", "length_ft": 100.0},
         {"segment_id": "2", "length_ft": 200.0},
         {"segment_id": "3", "length_ft": 300.0},
@@ -58,8 +50,8 @@ def test_to_serving_items_adds_global_row_with_median_length(spark):
     assert by_segment["GLOBAL"]["updated_date"] == "2026-08-24"
 
 
-def test_to_serving_items_empty_input_produces_no_global_row(spark):
-    df = spark.createDataFrame([], "segment_id: string, length_ft: double")
+def test_to_serving_items_empty_input_produces_no_global_row():
+    df = pd.DataFrame([], columns=["segment_id", "length_ft"])
 
     items = gold2.to_serving_items(df, today=_TODAY)
 
