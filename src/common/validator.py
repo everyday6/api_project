@@ -1,16 +1,21 @@
 """
-공통 검증 모듈
+TLC 다운로드 검증 Task
 
 역할
-1. 다운로드 파일 존재 여부 확인
-2. 다운로드 파일 크기 확인
-3. 검증된 다운로드 정보를 dict 형태로 다음 Task에 전달
+1. 다운로드 파일이 존재하고 비어있지 않은지 확인(src/common/file_validation.py)
+2. 검증된 다운로드 정보를 dict 형태로 다음 Task에 전달
+
+"공통 검증 모듈"이라는 이전 이름과 달리 실제로는 tlc_ingest_daily만 쓰는
+TLC 전용 Airflow task다(logger stem도 원래부터 "tlc_bronze") - 형식 검증
+로직 자체는 src/common/file_validation.py로 옮겨서 다른 도메인(LION,
+Toll)도 재사용하고, 여긴 TLC DAG용 task 래퍼 역할만 한다.
 """
 
 from pathlib import Path
 
 from airflow.decorators import task
 
+from src.common.file_validation import validate_non_empty
 from src.common.logger import get_logger
 
 
@@ -37,32 +42,14 @@ def validate_download(
     )
 
     # -----------------------------------------
-    # 1. 파일 존재 여부 확인
+    # 파일 존재 + 비어있지 않은지 확인
     # -----------------------------------------
 
-    if not tmp_path.exists():
-
-        logger.error(
-            f"파일이 존재하지 않습니다 : {filename}"
-        )
-
-        raise FileNotFoundError(
-            tmp_path
-        )
-
-    # -----------------------------------------
-    # 2. 파일 크기 확인
-    # -----------------------------------------
-
-    if tmp_path.stat().st_size == 0:
-
-        logger.error(
-            f"빈 파일입니다 : {filename}"
-        )
-
-        raise ValueError(
-            f"빈 파일입니다 : {filename}"
-        )
+    try:
+        validate_non_empty(tmp_path)
+    except (FileNotFoundError, ValueError):
+        logger.error(f"파일 검증 실패 : {filename}")
+        raise
 
     # -----------------------------------------
     # 검증 완료
