@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-import math
+import csv
+import io
 import re
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import date, timedelta
+from uuid import uuid4
 
+from psycopg2 import sql
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
     array,
@@ -22,7 +24,6 @@ from pyspark.sql.functions import (
     lit,
     max as spark_max,
     minute,
-    spark_partition_id,
     to_date,
 )
 
@@ -77,34 +78,25 @@ TYPE3_RDS_WRITE_PARTITIONS = SEGMENT_EXPANSION_PARTITIONS
 # expand_zone_values_to_segments의 repartition 기준을 zone_id에서
 # segment_id로 바꾼 뒤(위 참고) 파티션 크기가 고르게 되면서, 200개
 # 파티션이 예전처럼 제각각 다른 시점에 끝나며 자연스럽게 흩어지는 대신
-# 거의 동시에 쓰기 단계에 도착하게 됐다. 200개가 한꺼번에 RDS 커넥션을
-# 열려고 하면서 WAL 쓰기 잠금 경합이 발생했다(실측: Performance Insights
-# 상위 SQL에서 이 INSERT 하나에 AAS 17 이상, 대부분 LWLock:WALWrite 대기).
-# 파티션 개수·크기는 그대로 두고, 이 개수만큼씩 묶어 순차적으로(파도 형태로)
-# RDS에 쓴다 - 동시에 여는 커넥션 수를 이 값 × TYPE3_RDS_WRITE_THREADS_PER_PARTITION
-# 이하로 억제한다.
+# 거의 동시에 쓰기 단계에 도착하게 됐다.
 #
-# 처음엔 20으로 시작했는데(동시 커넥션 40개) 그것도 이 소형 인스턴스
-# (db.t4g.medium)엔 과했다 - 실제로 돌려보니 Spark task 진행은 멈췄는데
-# Performance Insights AAS는 계속 올라가는 상황이 재현됐고(LWLock:WALWrite
-# 지배적, Lock:relation은 거의 없어 row/table 락 충돌이 아니라 순수 WAL
-# 쓰기 처리량 한계로 확인), job을 강제 취소해야 했다. 훨씬 보수적으로
-# 낮춘다 - 동시 커넥션 4개(2 파티션 × 스레드 2개) 수준부터 안정성을
-# 먼저 확인하고, 필요하면 나중에 올린다.
-TYPE3_RDS_WRITE_WAVE_SIZE = 2
-
-# 파티션 하나(executor 하나) 안에서 쓰기를 몇 개의 스레드로 나눠 돌릴지.
-# RDS 쓰기도 CPU가 아니라 네트워크 왕복 대기가 지배적인 I/O bound 작업이라,
-# 파티션 내부도 스레드로 쪼개면 wall-clock을 줄일 수 있다(세그먼트 수가
-# 늘어나 파티션당 수백만 건을 순차로 쓰면 시간이 선형으로 늘어나는 걸
-# 완화하기 위함). 스레드마다 db.new_connection()으로 자기만의 커넥션을 열어
-# 쓴다(psycopg2 커넥션은 스레드 간 공유가 안전하지 않음).
-# 동시 커넥션 수는 대략 TYPE3_RDS_WRITE_PARTITIONS × 이 값이므로(기본
-# 200 × 2 = 400이지만, 동시 실행 파티션 수는 executor 코어 수로 제한되니
-# 실제 동시 커넥션은 그보다 훨씬 작다), RDS의 max_connections를 넘지
-# 않게 여유를 두고 안전이 확인되면 조심스럽게 올릴 것. PgBouncer/RDS
-# Proxy 앞단이 있다면 그쪽 풀 크기도 같이 고려해야 한다.
-TYPE3_RDS_WRITE_THREADS_PER_PARTITION = 2
+# 처음엔 파티션마다 직접 upsert(ON CONFLICT DO UPDATE)를 날렸는데, 200개가
+# 한꺼번에 RDS 커넥션을 열려고 하면서 WAL 쓰기 잠금 경합이 발생했다(실측:
+# Performance Insights 상위 SQL에서 이 INSERT 하나에 AAS 17 이상, 대부분
+# LWLock:WALWrite 대기). 동시성을 웨이브로 아무리 조절해도(20 -> 4 커넥션
+# 수준까지 낮춰봄) 근본적으로 안 풀렸다 - RDS(db.t4g.medium, 2 vCPU)의
+# WAL이 원래 단일 순서로 직렬화되는 자원이라, 나눠서 보내는 걸로는
+# upsert 자체의 처리량 한계(실측 초당 1,520행 수준, 7,300만 건 기준
+# 10시간 이상 추정)를 못 넘었다.
+#
+# 그래서 upsert를 파티션마다 반복하는 대신, write_type3_rolling_to_rds가
+# 파티션마다 인덱스 없는 UNLOGGED 스테이징 테이블에 COPY로 흘려넣고(충돌
+# 확인이 없어 여러 파티션이 동시에 해도 경쟁하지 않는다 - 웨이브 불필요),
+# 전부 끝나면 딱 한 번의 upsert로 실제 테이블에 병합한다. 같은 인스턴스로
+# 실측했을 때 COPY는 초당 14만 행, 단일 병합은 초당 5.2만 행이 나와서
+# 나눠서 반복하는 것보다 30배 이상 빨랐다 - 병목이 "upsert가 느려서"가
+# 아니라 "여러 커넥션이 각자 작은 배치로 WAL을 반복 fsync하며 경쟁한 것"
+# 이었기 때문이다.
 
 TAXI_ZONE_IDS = tuple(range(1, 264))
 DOW_NAMES = TLC_TYPE3_DOW_NAMES
@@ -478,75 +470,49 @@ def validate_segment_values(
     return {"segments": actual_segments, "rows": actual_rows}
 
 
-def _write_rows_chunk(table_name: str, rows_chunk: list, collected_date: date) -> None:
-    """행 묶음 하나를 자기만의 RDS 커넥션으로 upsert한다.
+def _copy_type3_partition(staging_table: str, collected_date: date):
+    """executor 파티션 하나를 COPY로 스테이징 테이블에 통째로 흘려넣는다.
 
-    psycopg2 커넥션은 스레드 간에 안전하게 공유할 수 없으므로, 청크마다
-    (=스레드마다) db.new_connection()으로 새로 연다.
+    upsert(ON CONFLICT DO UPDATE)와 달리 인덱스 충돌 확인이 없어서, 여러
+    파티션이 동시에 COPY해도 서로 경쟁하지 않는다 - 그래서 예전처럼
+    파티션을 웨이브로 나누거나 파티션 내부를 스레드로 쪼갤 필요가 없다.
+    COPY 자체가 이미 스트리밍 방식이라 파티션 전체를 커넥션 하나로 한
+    번에 보내는 게 더 효율적이다.
 
-    row 하나가 (segment_id, dow, time) 슬롯 하나(값 하나)다 - 예전엔
-    세그먼트당 336개 값을 JSONB 하나에 중첩해서 아이템 1개로 묶어 썼지만
-    (DynamoDB 최소 과금 단위를 피하려는 목적, git 이력 참고), 실제 조회가
-    항상 "세그먼트 여러 개 x 시각 하나"라서 dow/time을 진짜 컬럼으로 꺼내는
-    flat 스키마로 바꿨다(src/common/config.py의 SERVING_TABLE_TYPE3_COLUMNS
-    참고) - 세그먼트당 336행이 되지만 조회 쪽(src/serving/api.py)이 훨씬
-    단순해진다."""
-
-    if not rows_chunk:
-        return
-
-    items = [
-        {
-            "segment_id": str(row["segment_id"]),
-            "dow": row["dow"],
-            "time": str(row["time"]).zfill(4),
-            "value": float(row["value"]),
-            "collected_date": collected_date.isoformat(),
-            "updated_date": date.today().isoformat(),
-        }
-        for row in rows_chunk
-    ]
-
-    conn = db.new_connection()
-    try:
-        db.batch_write_items(
-            table_name,
-            items,
-            key_columns=SERVING_TABLE_TYPE3_KEY_COLUMNS,
-            conn=conn,
-        )
-    finally:
-        conn.close()
-
-
-def _write_type3_partition(table_name: str, collected_date: date):
-    """executor 파티션 하나를 다시 스레드 여러 개로 쪼개 RDS에 쓴다.
-
-    RDS 쓰기는 네트워크 왕복 대기가 대부분인 I/O bound 작업이라, 파티션
-    하나를 한 스레드가 순차로(for row in rows) 처리하면 세그먼트 수가 많을 때
-    wall-clock이 그대로 늘어난다. 파티션 안에서도 TYPE3_RDS_WRITE_THREADS_PER_PARTITION개
-    스레드로 나눠 동시에(스레드마다 자기 커넥션으로) 써서 이걸 완화한다.
-
-    청크 중 하나에서 예외가 나면 as_completed 루프에서 future.result()가 그
-    예외를 다시 던져서 write_type3_rolling_to_rds까지 전파된다. 그러면
-    Airflow가 S3 완료 상태 파일을 쓰지 않으므로 다음 DAG 실행에서 다시
-    처리한다."""
+    row 하나가 (segment_id, dow, time) 슬롯 하나(값 하나)다(flat 스키마,
+    2026-08-24 개편 - src/common/config.py의 SERVING_TABLE_TYPE3_COLUMNS
+    참고)."""
 
     def _write(rows) -> None:
         rows = list(rows)
         if not rows:
             return
 
-        thread_count = min(TYPE3_RDS_WRITE_THREADS_PER_PARTITION, len(rows))
-        chunks = [rows[i::thread_count] for i in range(thread_count)]
+        buffer = io.StringIO()
+        writer = csv.writer(buffer)
+        for row in rows:
+            writer.writerow([
+                str(row["segment_id"]),
+                row["dow"],
+                str(row["time"]).zfill(4),
+                float(row["value"]),
+                collected_date.isoformat(),
+                date.today().isoformat(),
+            ])
+        buffer.seek(0)
 
-        with ThreadPoolExecutor(max_workers=thread_count) as executor:
-            futures = [
-                executor.submit(_write_rows_chunk, table_name, chunk, collected_date)
-                for chunk in chunks
-            ]
-            for future in as_completed(futures):
-                future.result()
+        conn = db.new_connection()
+        try:
+            with conn.cursor() as cur:
+                cur.copy_expert(
+                    sql.SQL(
+                        "COPY {table} (segment_id, dow, time, value, "
+                        "collected_date, updated_date) FROM STDIN WITH (FORMAT csv)"
+                    ).format(table=sql.Identifier(staging_table)),
+                    buffer,
+                )
+        finally:
+            conn.close()
 
     return _write
 
@@ -556,22 +522,22 @@ def write_type3_rolling_to_rds(
     rolling: DataFrame,
     window_end: date,
 ) -> int:
-    """검증된 Spark 롤링 결과를 executor 병렬로 Type 3 테이블에 저장한다.
+    """검증된 Spark 롤링 결과를 스테이징 COPY + 단일 병합으로 Type 3 테이블에 저장한다.
 
-    이전엔 driver가 toLocalIterator()로 한 줄씩 순차로 batch_writer를
-    호출했다 — segment 수가 많으면(zone 값이 segment마다 복제되므로 수만~
-    수십만 건) 이 태스크 하나가 Airflow heartbeat timeout(기본 300초)을
-    넘겨 강제 종료되는 사고가 실제로 있었다. foreachPartition으로
-    executor마다 자기 파티션을 병렬로 쓰게 바꿔서 wall-clock을 파티션
-    수만큼 나눈다.
+    예전엔 executor마다 직접 upsert를 날렸는데(git 이력 참고), 파티션을
+    아무리 조절해도 RDS(db.t4g.medium, 2 vCPU)의 WAL 쓰기 처리량 한계에
+    부딪혀 7,300만 건 기준 10시간 이상 걸릴 것으로 추정됐다(위
+    TYPE3_RDS_WRITE_PARTITIONS 주석 참고).
 
-    TYPE3_RDS_WRITE_PARTITIONS(200)개를 한 번에 전부 foreachPartition하면
-    200개 태스크가 거의 동시에 RDS 커넥션을 열어 WAL 쓰기 잠금 경합이
-    생긴다(위 TYPE3_RDS_WRITE_WAVE_SIZE 참고). 파티션 자체는 그대로 두고
-    TYPE3_RDS_WRITE_WAVE_SIZE개씩 묶어 파도로 나눠 순차 실행한다 -
-    spark_partition_id()로 물리 파티션 번호를 컬럼에 남겨서 그 범위로
-    필터링하는 방식이라 셔플 없이 나눌 수 있다. 여러 번 스캔하므로 join까지
-    포함한 전체 재계산을 막기 위해 persist한다.
+    그래서 지금은:
+    1. 파티션마다 인덱스 없는 UNLOGGED 스테이징 테이블에 COPY로 흘려넣는다
+       (경쟁이 없어 파티션 전부를 동시에 foreachPartition해도 안전하다).
+    2. 전부 끝나면 스테이징 테이블에서 실제 테이블로 딱 한 번의
+       upsert(INSERT ... ON CONFLICT DO UPDATE)로 병합한다.
+    3. 스테이징 테이블은 성공/실패 상관없이 정리한다.
+
+    스테이징 테이블명에 run 고유 접미사(uuid4)를 붙인다 - 재시도나 겹치는
+    실행이 같은 이름을 쓰다 서로 덮어쓰는 걸 막기 위함이다.
 
     window_end는 이 롤링 평균이 반영하는 TLC 데이터의 마지막 날짜다 -
     각 행의 collected_date로 그대로 찍는다(언제 계산됐는지가 아니라 어떤
@@ -579,23 +545,59 @@ def write_type3_rolling_to_rds(
     실제로 실행되는 날짜(오늘)로 따로 채운다.
     """
 
-    to_write = (
-        rolling.select("segment_id", "dow", "time", "value")
-        .repartition(TYPE3_RDS_WRITE_PARTITIONS)
-        .withColumn("_wave_partition_id", spark_partition_id())
-        .persist()
+    to_write = rolling.select("segment_id", "dow", "time", "value").repartition(
+        TYPE3_RDS_WRITE_PARTITIONS
     )
     written = to_write.count()
+    if written == 0:
+        return 0
 
-    num_waves = math.ceil(TYPE3_RDS_WRITE_PARTITIONS / TYPE3_RDS_WRITE_WAVE_SIZE)
-    for wave in range(num_waves):
-        lo = wave * TYPE3_RDS_WRITE_WAVE_SIZE
-        hi = lo + TYPE3_RDS_WRITE_WAVE_SIZE - 1
-        (
-            to_write.filter(col("_wave_partition_id").between(lo, hi))
-            .drop("_wave_partition_id")
-            .foreachPartition(_write_type3_partition(table_name, window_end))
-        )
+    staging_table = f"{table_name}_staging_{uuid4().hex}"
+    key_columns = SERVING_TABLE_TYPE3_KEY_COLUMNS
+    value_columns = ("value", "collected_date", "updated_date")
+    all_columns = key_columns + value_columns
+
+    conn = db.new_connection()
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE TABLE {staging} (LIKE {table} INCLUDING ALL)").format(
+                    staging=sql.Identifier(staging_table),
+                    table=sql.Identifier(table_name),
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE {staging} SET UNLOGGED").format(
+                    staging=sql.Identifier(staging_table)
+                )
+            )
+
+        to_write.foreachPartition(_copy_type3_partition(staging_table, window_end))
+
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "INSERT INTO {table} ({cols}) SELECT {cols} FROM {staging} "
+                    "ON CONFLICT ({keys}) DO UPDATE SET {set_clause}"
+                ).format(
+                    table=sql.Identifier(table_name),
+                    staging=sql.Identifier(staging_table),
+                    cols=sql.SQL(", ").join(sql.Identifier(c) for c in all_columns),
+                    keys=sql.SQL(", ").join(sql.Identifier(c) for c in key_columns),
+                    set_clause=sql.SQL(", ").join(
+                        sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c))
+                        for c in value_columns
+                    ),
+                )
+            )
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(staging_table))
+            )
+        conn.close()
+
+    return written
 
     to_write.unpersist()
     return written
