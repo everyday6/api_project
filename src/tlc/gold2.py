@@ -562,20 +562,28 @@ def write_type3_rolling_to_rds(
        스테이징 테이블을 미리 만든다(파티션마다 자기 전용 테이블 - 공유
        자원이 없어 경쟁 자체가 생기지 않는다).
     2. 파티션마다 자기 몫의 테이블에 COPY로 흘려넣는다(웨이브 불필요).
-    3. 그 테이블들을 UNION ALL로, 라이브 테이블과 완전히 같은 구조(인덱스/
-       제약조건 포함)의 통합 스테이징 테이블 하나로 합친다 - 이 단계도
-       아직 아무도 안 읽는 테이블끼리의 작업이라 라이브 테이블과 경쟁이
-       없다.
-    4. 통합 스테이징 테이블을 다시 LOGGED로 되돌려 내구성을 확보하고
+    3. 그 테이블들을 UNION ALL로 통합 스테이징 테이블 하나로 합친다 - 이때
+       통합 테이블은 컬럼 구조만 있고 PK는 아직 없다. 처음엔 라이브
+       테이블과 완전히 같은 구조(PK 포함)로 미리 만들고 채웠는데, 그러면
+       행마다 PK B-tree를 갱신해야 해서 실측으로 IO:DataFileRead 대기에
+       걸려 20분 넘게 끝나지 않는 사고가 있었다 - 인덱스 없는 빈 테이블에
+       쏟아붓는 이 단계도 아직 아무도 안 읽는 테이블끼리의 작업이라 라이브
+       테이블과 경쟁이 없다.
+    4. 데이터가 다 들어간 다음에야 라이브 테이블과 같은 PK를
+       `ADD PRIMARY KEY`로 만든다 - 이건 전체를 한 번 정렬해서 B-tree를
+       통째로 쌓는 방식이라, 행마다 갱신하는 것보다 훨씬 빠르다(3번의
+       근본 원인과 대칭되는 해결책). maintenance_work_mem을 이 커넥션에서만
+       올려서 정렬이 여러 패스로 쪼개지지 않게 한다.
+    5. 통합 스테이징 테이블을 다시 LOGGED로 되돌려 내구성을 확보하고
        (UNLOGGED 테이블은 재시작/크래시 시 자동으로 비워지므로, 이 상태로
        라이브가 되면 안 된다), ANALYZE로 통계를 갱신한다(스왑 직후부터
        쿼리 플래너가 정확한 추정치를 쓰게 하기 위함).
-    5. 라이브 테이블 <-> 통합 스테이징 테이블 이름을 하나의 트랜잭션 안에서
+    6. 라이브 테이블 <-> 통합 스테이징 테이블 이름을 하나의 트랜잭션 안에서
        스왑한다. RENAME은 ACCESS EXCLUSIVE 락이 필요하지만 메타데이터만
        바꾸는 작업이라 밀리초 안에 끝난다 - 조회가 겹쳐도 잠깐 대기하는
        정도지 지금처럼 수십 초씩 막히지 않는다. 두 RENAME을 한 트랜잭션
        으로 묶어야 그 사이 테이블 이름이 잠깐 존재하지 않는 순간이 없다.
-    6. 스왑 후 남은 옛/스테이징 테이블은 성공/실패 상관없이 전부 정리한다
+    7. 스왑 후 남은 옛/스테이징 테이블은 성공/실패 상관없이 전부 정리한다
        (실패 시엔 일부가 애초에 안 생겼어도 DROP IF EXISTS가 조용히
        넘어간다).
 
@@ -641,7 +649,7 @@ def write_type3_rolling_to_rds(
             # 아무도 안 읽는 테이블끼리의 작업이라 라이브 테이블과는
             # 경쟁이 없다.
             cur.execute(
-                sql.SQL("CREATE TABLE {combined} (LIKE {table} INCLUDING ALL)").format(
+                sql.SQL("CREATE TABLE {combined} (LIKE {table})").format(
                     combined=sql.Identifier(combined_table),
                     table=sql.Identifier(table_name),
                 )
@@ -665,6 +673,14 @@ def write_type3_rolling_to_rds(
                     combined=sql.Identifier(combined_table),
                     cols=select_columns,
                     union_query=union_query,
+                )
+            )
+
+            cur.execute(sql.SQL("SET maintenance_work_mem = '256MB'"))
+            cur.execute(
+                sql.SQL("ALTER TABLE {combined} ADD PRIMARY KEY ({keys})").format(
+                    combined=sql.Identifier(combined_table),
+                    keys=sql.SQL(", ").join(sql.Identifier(c) for c in key_columns),
                 )
             )
 

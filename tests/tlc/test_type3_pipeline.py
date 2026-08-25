@@ -345,24 +345,30 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
     assert written == 2
 
     # 파티션 3개 x (CREATE TABLE, ALTER TABLE) = 6, + 통합 스테이징
-    # (CREATE, ALTER UNLOGGED, INSERT...UNION ALL, ALTER LOGGED, ANALYZE) = 5,
-    # + RENAME 2 + DROP TABLE 3(파티션들/통합/old 각각) = execute 16번.
-    assert cur.execute.call_count == 16
+    # (CREATE, ALTER UNLOGGED, INSERT...UNION ALL, SET maintenance_work_mem,
+    # ADD PRIMARY KEY, ALTER LOGGED, ANALYZE) = 7,
+    # + RENAME 2 + DROP TABLE 3(파티션들/통합/old 각각) = execute 18번.
+    assert cur.execute.call_count == 18
     executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
     for i in range(3):
         assert "CREATE TABLE" in executed_sql[i * 2]
         assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
     assert "CREATE TABLE" in executed_sql[6]
-    assert "INCLUDING ALL" in executed_sql[6]
+    assert "INCLUDING ALL" not in executed_sql[6], (
+        "PK가 있는 상태로 채우면 행마다 B-tree를 갱신해야 해서 느려진다 - "
+        "데이터를 다 채운 뒤에 PK를 만들어야 한다"
+    )
     assert "SET UNLOGGED" in executed_sql[7]
     assert "UNION ALL" in executed_sql[8]
-    assert "SET LOGGED" in executed_sql[9]
-    assert "ANALYZE" in executed_sql[10]
-    assert "RENAME TO" in executed_sql[11]
-    assert "RENAME TO" in executed_sql[12]
-    assert "DROP TABLE" in executed_sql[13]
-    assert "DROP TABLE" in executed_sql[14]
+    assert "maintenance_work_mem" in executed_sql[9]
+    assert "ADD PRIMARY KEY" in executed_sql[10]
+    assert "SET LOGGED" in executed_sql[11]
+    assert "ANALYZE" in executed_sql[12]
+    assert "RENAME TO" in executed_sql[13]
+    assert "RENAME TO" in executed_sql[14]
     assert "DROP TABLE" in executed_sql[15]
+    assert "DROP TABLE" in executed_sql[16]
+    assert "DROP TABLE" in executed_sql[17]
 
     # 두 RENAME이 한 트랜잭션으로 묶여서 커밋됐는지 확인한다(둘 다 성공해야
     # 라이브 테이블 이름이 존재하지 않는 순간 없이 스왑된다).
@@ -381,12 +387,12 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
         table_name = f"{staging_prefix}_p{i}"
         assert table_name in executed_sql[i * 2]
         assert table_name in executed_sql[8]
-        assert table_name in executed_sql[13]
+        assert table_name in executed_sql[15]
 
     # 라이브 테이블 이름이 첫 번째 RENAME(라이브->old)과 두 번째
     # RENAME(통합 스테이징->라이브)에 그대로 쓰였는지 확인한다.
-    assert "nav-segment-metrics" in executed_sql[11]
-    assert "nav-segment-metrics" in executed_sql[12]
+    assert "nav-segment-metrics" in executed_sql[13]
+    assert "nav-segment-metrics" in executed_sql[14]
 
     conn.close.assert_called_once()
 
