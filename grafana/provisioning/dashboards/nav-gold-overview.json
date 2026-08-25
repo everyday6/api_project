@@ -490,6 +490,30 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 70,
+      "type": "row",
+      "title": "데이터 신선도 (RDS 직접 조회 - Airflow가 초록불이어도 실제 값이 안 채워질 수 있어 별도 확인)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 88 }
+    },
+    {
+      "id": 71,
+      "type": "table",
+      "title": "타입별 row 수 / 최근 갱신 시각",
+      "description": "선택된 시간 범위와 무관하게 항상 테이블 전체 기준 최신 상태를 보여준다(시간 필터 없음). type1은 실측값이 실시간으로 쌓이는 테이블이라 last_sample_at(마지막 실측 반영 시각) 기준 경과 시간도 같이 보여준다 - 이 값이 계속 커지면 type1 파이프라인이 새 데이터를 못 채우고 있다는 뜻. type2/3/4는 정적/배치성 참조값이라 updated_date(마지막 Gold 실행일)만 본다.",
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 89 },
+      "datasource": { "type": "postgres", "uid": "rds-postgres" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "postgres", "uid": "rds-postgres" },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT 'type1' AS type, COUNT(*) AS row_count, MAX(last_sample_at) AS last_sample_at, ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(last_sample_at))) / 3600, 1) AS hours_since_last_sample, MAX(updated_date) AS updated_date FROM segment_metrics_type1 UNION ALL SELECT 'type2', COUNT(*), NULL, NULL, MAX(updated_date) FROM segment_metrics_type2 UNION ALL SELECT 'type3', COUNT(*), NULL, NULL, MAX(updated_date) FROM segment_metrics_type3 UNION ALL SELECT 'type4', COUNT(*), NULL, NULL, MAX(updated_date) FROM segment_metrics_type4"
+        }
+      ],
+      "fieldConfig": { "defaults": {}, "overrides": [] }
     }
   ]
 }
