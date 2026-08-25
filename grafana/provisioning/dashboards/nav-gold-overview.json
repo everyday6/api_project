@@ -297,6 +297,74 @@
         }
       ],
       "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "API Gateway (nav-api, HTTP API gv37o51ey6)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 53 },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Count / 4xx / 5xx",
+      "description": "HTTP API(v2)는 REST API(v1)와 지표 이름이 다르다(4XXError가 아니라 4xx) - 안 뜨면 CloudWatch에서 실제 이름 확인 필요(EMR Serverless 때와 같은 이유).",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 54 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "Count",
+          "dimensions": { "ApiId": "gv37o51ey6" },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "4xx",
+          "dimensions": { "ApiId": "gv37o51ey6" },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "5xx",
+          "dimensions": { "ApiId": "gv37o51ey6" },
+          "statistic": "Sum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Latency / IntegrationLatency",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 54 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "Latency",
+          "dimensions": { "ApiId": "gv37o51ey6" },
+          "statistic": "p99",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "IntegrationLatency",
+          "dimensions": { "ApiId": "gv37o51ey6" },
+          "statistic": "p99",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
     }
   ]
 }
