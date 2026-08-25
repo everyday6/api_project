@@ -1,0 +1,169 @@
+{
+  "id": null,
+  "uid": "nav-gold-overview",
+  "title": "nav-gold Overview (RDS + EMR Serverless)",
+  "tags": ["nav-gold"],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": { "from": "now-6h", "to": "now" },
+  "panels": [
+    {
+      "id": 1,
+      "type": "row",
+      "title": "RDS (nav-segment-serving)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 0 },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "DatabaseConnections",
+      "description": "동시 연결 수 - EMR job 여러 개가 겹치면 여기서 급증하는 걸 볼 수 있음",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 1 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "DatabaseConnections",
+          "dimensions": { "DBInstanceIdentifier": "nav-segment-serving" },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPUUtilization",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 1 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "CPUUtilization",
+          "dimensions": { "DBInstanceIdentifier": "nav-segment-serving" },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "FreeableMemory",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 9 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "FreeableMemory",
+          "dimensions": { "DBInstanceIdentifier": "nav-segment-serving" },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "bytes" }, "overrides": [] }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Read / Write IOPS",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 9 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "ReadIOPS",
+          "dimensions": { "DBInstanceIdentifier": "nav-segment-serving" },
+          "statistic": "Average",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/RDS",
+          "metricName": "WriteIOPS",
+          "dimensions": { "DBInstanceIdentifier": "nav-segment-serving" },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "iops" }, "overrides": [] }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "EMR Serverless (00g870ett46id32p)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 17 },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "CPU / Memory Allocated",
+      "description": "계정 vCPU 할당량 한도(quota)에 근접하는지 여기서 추세를 볼 수 있음",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "CPUAllocated",
+          "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "statistic": "Maximum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MemoryAllocated",
+          "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Job 상태별 개수 (Running / Success / Failed)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "RunningJobCount",
+          "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "statistic": "Maximum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "SuccessJobCount",
+          "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "FailedJobCount",
+          "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "statistic": "Sum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    }
+  ]
+}
