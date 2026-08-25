@@ -359,7 +359,7 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
     # 아니라 파티션마다 다른 테이블이라는 것의 증거).
     assert len(copy_calls) == 1
     staging_prefix, collected_date = copy_calls[0]
-    assert staging_prefix.startswith("nav-segment-metrics_staging_")
+    assert staging_prefix.startswith("tmp_type3_")
     assert collected_date == date(2026, 8, 20)
     for i in range(3):
         table_name = f"{staging_prefix}_p{i}"

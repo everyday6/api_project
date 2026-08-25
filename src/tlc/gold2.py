@@ -567,7 +567,12 @@ def write_type3_rolling_to_rds(
     if written == 0:
         return 0
 
-    staging_prefix = f"{table_name}_staging_{uuid4().hex}"
+    # Postgres 식별자는 63바이트를 넘으면 그냥 잘라버린다(에러 없이 조용히
+    # truncate) - table_name(예: segment_metrics_type3) + 접두사 + uuid를
+    # 다 붙이면 파티션 번호(_p199)가 잘려나가 200개 이름이 전부 똑같아져
+    # DuplicateTable 에러가 났다(실제로 겪은 사고). table_name 없이 짧게
+    # "tmp_type3_"로 고정하고 uuid도 8자만 써서 여유 있게 짧게 유지한다.
+    staging_prefix = f"tmp_type3_{uuid4().hex[:8]}"
     staging_tables = [
         f"{staging_prefix}_p{i}" for i in range(TYPE3_RDS_WRITE_PARTITIONS)
     ]
