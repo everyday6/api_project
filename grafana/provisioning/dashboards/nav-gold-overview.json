@@ -424,6 +424,72 @@
         }
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 60,
+      "type": "row",
+      "title": "EC2 호스트 (Airflow+Grafana 도는 인스턴스) - CloudWatch Agent 설치 필요",
+      "description": "scripts/install_cloudwatch_agent.sh 실행 + EC2 인스턴스 역할에 cloudwatch:PutMetricData 권한 추가 전까지는 이 행이 비어있는 게 정상이다.",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 79 },
+      "collapsed": false
+    },
+    {
+      "id": 61,
+      "type": "timeseries",
+      "title": "CPU idle % (참고: 이 값이 낮을수록 CPU가 바쁜 것 - 사용률이 아니라 유휴율임에 주의)",
+      "description": "CloudWatch Agent 기본 지표가 idle%이라 그대로 뒀다 - '사용률'로 보려면 100에서 빼서 읽으면 된다. InstanceId 차원 필터 없이(matchExact: false) 이 계정에 에이전트가 붙은 인스턴스가 있으면 다 잡는다.",
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 80 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "cpu_usage_idle",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 62,
+      "type": "timeseries",
+      "title": "메모리 사용률",
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 80 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "mem_used_percent",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] }
+    },
+    {
+      "id": 63,
+      "type": "timeseries",
+      "title": "디스크 사용률 (/)",
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 80 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "disk_used_percent",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] }
     }
   ]
 }
