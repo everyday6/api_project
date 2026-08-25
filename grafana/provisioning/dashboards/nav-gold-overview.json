@@ -1058,8 +1058,8 @@
     {
       "id": 71,
       "type": "table",
-      "title": "타입별 row 수 / 최근 갱신 시각",
-      "description": "선택된 시간 범위와 무관하게 항상 테이블 전체 기준 최신 상태를 보여준다(시간 필터 없음). type1은 실측값이 실시간으로 쌓이는 테이블이라 last_sample_at(마지막 실측 반영 시각) 기준 경과 시간도 같이 보여준다 - 이 값이 계속 커지면 type1 파이프라인이 새 데이터를 못 채우고 있다는 뜻. type2/4는 row 수가 적어 정확한 COUNT를 쓴다. type3는 5천만 행이 넘어 정확한 COUNT(*)/MAX(updated_date)가 각각 40~50초 걸려(측정 완료) 이 인스턴스가 실제로 서빙 중인 API와 자원을 두고 경합하게 되므로, 테이블을 스캔하지 않는 pg_class.reltuples 추정치만 쓴다(마지막 autovacuum/ANALYZE 기준 근사치 - 실측 대비 오차 0.3%). type3의 실제 최근 갱신 시각은 이 패널 대신 위 Airflow 행의 DAG 성공 시각으로 확인한다. updated_date는 시:분:초 없는 순수 날짜라 타임존 변환에 영향 안 받도록 텍스트로 캐스팅해서 조회한다(last_sample_at은 실제 타임스탬프라 그대로 둠 - 브라우저 시간대로 보정돼서 보이는 게 맞음).",
+      "title": "타입별 row 수 / 정확한 갱신 시각",
+      "description": "row 수는 RDS 직접 조회(type3는 5천만 행이 넘어 pg_class.reltuples 추정치 사용 - 정확한 COUNT는 40초+ 걸려 실제 서빙과 자원 경합함). updated_at은 RDS의 updated_date(시:분:초 없는 순수 날짜)가 아니라, 그 타입을 채우는 Gold DAG의 마지막 성공 시각(Airflow dag_run.end_date)이다 - DAG 완료 = RDS 쓰기 완료라 사실상 같은 시각이면서 진짜 시:분:초까지 정확하다. type1=segment_time_pipeline, type2=segment_length_pipeline, type3=tlc_type3_serving_daily(아직 미실행이라 빈 값), type4=toll_silver_gold_pipeline. 두 개의 다른 데이터소스(RDS/Airflow 메타데이터 DB) 쿼리 결과를 type 기준으로 합쳤다(Join by field 변환).",
       "gridPos": {
         "h": 8,
         "w": 24,
@@ -1067,8 +1067,8 @@
         "y": 98
       },
       "datasource": {
-        "type": "postgres",
-        "uid": "rds-postgres"
+        "type": "datasource",
+        "uid": "-- Mixed --"
       },
       "targets": [
         {
@@ -1079,13 +1079,32 @@
           },
           "format": "table",
           "editorMode": "code",
-          "rawSql": "SELECT 'type1' AS type, COUNT(*) AS row_count, MAX(last_sample_at) AS last_sample_at, ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(last_sample_at))) / 3600, 1) AS hours_since_last_sample, MAX(updated_date)::text AS updated_date FROM segment_metrics_type1 UNION ALL SELECT 'type2', COUNT(*), NULL, NULL, MAX(updated_date)::text FROM segment_metrics_type2 UNION ALL SELECT 'type3', (SELECT reltuples::bigint FROM pg_class WHERE relname = 'segment_metrics_type3'), NULL, NULL, NULL UNION ALL SELECT 'type4', COUNT(*), NULL, NULL, MAX(updated_date)::text FROM segment_metrics_type4"
+          "rawSql": "SELECT 'type1' AS type, COUNT(*) AS row_count, MAX(last_sample_at) AS last_sample_at, ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(last_sample_at))) / 3600, 1) AS hours_since_last_sample FROM segment_metrics_type1 UNION ALL SELECT 'type2', COUNT(*), NULL, NULL FROM segment_metrics_type2 UNION ALL SELECT 'type3', (SELECT reltuples::bigint FROM pg_class WHERE relname = 'segment_metrics_type3'), NULL, NULL UNION ALL SELECT 'type4', COUNT(*), NULL, NULL FROM segment_metrics_type4"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-postgres"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT CASE dag_id WHEN 'segment_time_pipeline' THEN 'type1' WHEN 'segment_length_pipeline' THEN 'type2' WHEN 'tlc_type3_serving_daily' THEN 'type3' WHEN 'toll_silver_gold_pipeline' THEN 'type4' END AS type, MAX(end_date) AS updated_at FROM dag_run WHERE dag_id IN ('segment_time_pipeline', 'segment_length_pipeline', 'tlc_type3_serving_daily', 'toll_silver_gold_pipeline') AND state = 'success' GROUP BY dag_id"
         }
       ],
       "fieldConfig": {
         "defaults": {},
         "overrides": []
-      }
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "type",
+            "mode": "outer"
+          }
+        }
+      ]
     },
     {
       "id": 80,
@@ -1095,7 +1114,7 @@
         "h": 1,
         "w": 24,
         "x": 0,
-        "y": 114
+        "y": 106
       }
     },
     {
@@ -1107,7 +1126,7 @@
         "h": 8,
         "w": 12,
         "x": 0,
-        "y": 115
+        "y": 107
       },
       "datasource": {
         "type": "cloudwatch",
@@ -1150,7 +1169,7 @@
         "h": 8,
         "w": 12,
         "x": 12,
-        "y": 115
+        "y": 107
       },
       "datasource": {
         "type": "cloudwatch",
@@ -1192,7 +1211,7 @@
         "h": 8,
         "w": 24,
         "x": 0,
-        "y": 123
+        "y": 115
       },
       "datasource": {
         "type": "cloudwatch",
@@ -1222,38 +1241,6 @@
           "max": 100,
           "min": 0
         },
-        "overrides": []
-      }
-    },
-    {
-      "id": 72,
-      "type": "table",
-      "title": "타입별 실제 갱신 시각 (Airflow DAG 마지막 성공 시각)",
-      "description": "RDS의 updated_date는 시:분:초 없는 순수 날짜 컬럼이라 정확한 갱신 시각을 모른다. 대신 각 타입을 채우는 Gold DAG가 마지막으로 성공한 시각(dag_run.end_date)을 보여준다 - 그 DAG가 끝났다는 건 RDS 쓰기가 끝났다는 뜻이라 사실상 같은 시각이다. type1=segment_time_pipeline, type2=segment_length_pipeline, type3=tlc_type3_serving_daily, type4=toll_silver_gold_pipeline. 값이 비어있으면 그 DAG가 아직 한 번도 성공한 적이 없다는 뜻(예: tlc_type3_serving_daily는 오늘 막 추가돼 아직 미실행).",
-      "gridPos": {
-        "h": 8,
-        "w": 24,
-        "x": 0,
-        "y": 106
-      },
-      "datasource": {
-        "type": "postgres",
-        "uid": "airflow-postgres"
-      },
-      "targets": [
-        {
-          "refId": "A",
-          "datasource": {
-            "type": "postgres",
-            "uid": "airflow-postgres"
-          },
-          "format": "table",
-          "editorMode": "code",
-          "rawSql": "SELECT CASE dag_id WHEN 'segment_time_pipeline' THEN 'type1' WHEN 'segment_length_pipeline' THEN 'type2' WHEN 'tlc_type3_serving_daily' THEN 'type3' WHEN 'toll_silver_gold_pipeline' THEN 'type4' END AS type, dag_id, MAX(end_date) AS last_success_at FROM dag_run WHERE dag_id IN ('segment_time_pipeline', 'segment_length_pipeline', 'tlc_type3_serving_daily', 'toll_silver_gold_pipeline') AND state = 'success' GROUP BY dag_id ORDER BY type"
-        }
-      ],
-      "fieldConfig": {
-        "defaults": {},
         "overrides": []
       }
     }
