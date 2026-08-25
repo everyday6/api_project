@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import re
+import time
 from collections import OrderedDict
 from datetime import datetime
 from threading import Lock
@@ -222,6 +223,7 @@ def get_type3_values(
             raise RuntimeError("SERVING_TABLE_TYPE3 환경변수가 필요합니다")
         connection = conn or get_db_connection()
         unique_segments = _unique_in_order(segment_ids)
+        start = time.perf_counter()
         for offset in range(0, len(unique_segments), TYPE3_BATCH_SIZE):
             chunk = unique_segments[offset:offset + TYPE3_BATCH_SIZE]
             for segment_id, value in _fetch_batch(connection, resolved_table, chunk, dow, bucket):
@@ -238,6 +240,11 @@ def get_type3_values(
                     continue
                 found[segment_id] = value
                 _remember_value(segment_id, cache_slot, value)
+        elapsed_ms = (time.perf_counter() - start) * 1000
+        # db.py의 batch_get_items()와 같은 형식 - Grafana의 "타입별 RDS 쿼리
+        # 응답시간" 패널이 table 필드로 두 경로를 같이 묶어서 집계한다
+        # (Type3는 db.py를 안 거치는 별도 쿼리 경로라 여기서 따로 남겨야 함).
+        logger.info(f"[rds_query_duration] table={resolved_table} ms={elapsed_ms:.1f}")
     except Exception:
         logger.exception("RDS Type 3 조회 실패; 캐시 또는 기본값으로 응답합니다")
 
