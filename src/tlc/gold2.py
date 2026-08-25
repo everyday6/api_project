@@ -83,7 +83,15 @@ TYPE3_RDS_WRITE_PARTITIONS = SEGMENT_EXPANSION_PARTITIONS
 # 파티션 개수·크기는 그대로 두고, 이 개수만큼씩 묶어 순차적으로(파도 형태로)
 # RDS에 쓴다 - 동시에 여는 커넥션 수를 이 값 × TYPE3_RDS_WRITE_THREADS_PER_PARTITION
 # 이하로 억제한다.
-TYPE3_RDS_WRITE_WAVE_SIZE = 20
+#
+# 처음엔 20으로 시작했는데(동시 커넥션 40개) 그것도 이 소형 인스턴스
+# (db.t4g.medium)엔 과했다 - 실제로 돌려보니 Spark task 진행은 멈췄는데
+# Performance Insights AAS는 계속 올라가는 상황이 재현됐고(LWLock:WALWrite
+# 지배적, Lock:relation은 거의 없어 row/table 락 충돌이 아니라 순수 WAL
+# 쓰기 처리량 한계로 확인), job을 강제 취소해야 했다. 훨씬 보수적으로
+# 낮춘다 - 동시 커넥션 4개(2 파티션 × 스레드 2개) 수준부터 안정성을
+# 먼저 확인하고, 필요하면 나중에 올린다.
+TYPE3_RDS_WRITE_WAVE_SIZE = 2
 
 # 파티션 하나(executor 하나) 안에서 쓰기를 몇 개의 스레드로 나눠 돌릴지.
 # RDS 쓰기도 CPU가 아니라 네트워크 왕복 대기가 지배적인 I/O bound 작업이라,
