@@ -429,6 +429,14 @@ services:
       POSTGRES_DB: ${POSTGRES_DB}
       POSTGRES_USER: ${POSTGRES_USER}
       POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # 서빙용 RDS(nav-segment-serving)를 직접 조회하는 데이터소스 -
+      # grafana/provisioning/datasources/rds-postgres.yaml 참고. src/common/db.py와
+      # 같은 자격증명을 재사용한다.
+      RDS_HOST: ${RDS_HOST}
+      RDS_PORT: ${RDS_PORT}
+      RDS_DB: ${RDS_DB}
+      RDS_USER: ${RDS_USER}
+      RDS_PASSWORD: ${RDS_PASSWORD}
 
     volumes:
       - grafana_data:/var/lib/grafana
