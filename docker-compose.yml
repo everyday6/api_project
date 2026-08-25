@@ -398,6 +398,41 @@ services:
 
 
   # =========================================================
+  # Grafana
+  #
+  # RDS/EMR Serverless/Lambda 등 CloudWatch에 이미 쌓이는 지표를 한
+  # 화면에서 보기 위한 대시보드. CloudWatch 데이터소스는
+  # grafana/provisioning/datasources/cloudwatch.yaml이 시작 시 자동
+  # 등록한다 - authType: default라 이 EC2 인스턴스에 이미 붙어있는 IAM
+  # 롤(CloudWatchReadOnlyAccess)을 그대로 쓰고, 별도 액세스 키를
+  # 관리할 필요가 없다(S3 접근과 동일한 원칙).
+  # =========================================================
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+
+    container_name: navigation-grafana
+
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
+    environment:
+      AWS_REGION: ${AWS_REGION}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USERNAME:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD가 .env에 설정되어야 합니다}
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+    ports:
+      - "3000:3000"
+
+    networks:
+      - airflow-network
+
+
+  # =========================================================
   # 컨테이너 크래시 감시
   #
   # restart 정책은 "죽으면 다시 살리기"만 할 뿐, 죽었다는 사실 자체는
@@ -418,7 +453,7 @@ services:
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master
+      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master,navigation-grafana
       POLL_INTERVAL_SECONDS: 30
 
     volumes:
@@ -437,6 +472,7 @@ services:
 # =========================================================
 volumes:
   postgres_data:
+  grafana_data:
 
 
 # =========================================================
