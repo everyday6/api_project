@@ -310,3 +310,41 @@ def test_resolve_type2_loads_snapshot_only_once_per_process():
         nav_lookup.resolve_segment_values(["1"], 2, "12:00")
 
     mock_read.assert_called_once()
+
+
+def test_resolve_type2_logs_fallback_tier_summary_when_rds_up(caplog):
+    # 메인 조회에선 rds-seg만 찾아지고, global-seg는 없어서 GLOBAL
+    # 재조회(RDS)로 채워진다 - Grafana의 "Type2 fallback 계층 비율" 패널이
+    # 이 로그를 집계한다.
+    def fake_batch_get_items(table_name, keys, conn=None):
+        if len(keys) == 1 and keys[0]["segment_id"] == nav_lookup.GLOBAL_PARTITION_KEY:
+            return {(nav_lookup.GLOBAL_PARTITION_KEY,): {"value": 999}}
+        return {("rds-seg",): {"value": 100}}
+
+    with patch.object(nav_lookup, "_get_fast_rds_connection", return_value=None), \
+         patch.object(nav_lookup, "batch_get_items", side_effect=fake_batch_get_items), \
+         caplog.at_level("INFO", logger="src.serving.nav_lookup"):
+        nav_lookup.resolve_segment_values(["rds-seg", "global-seg"], 2, "12:00")
+
+    summary_logs = [r.message for r in caplog.records if "[type2_fallback_tier_summary]" in r.message]
+    assert len(summary_logs) == 1
+    assert "rds=1" in summary_logs[0]
+    assert "global=1" in summary_logs[0]
+    assert "snapshot=0" in summary_logs[0]
+    assert "hardcoded=0" in summary_logs[0]
+    assert "total=2" in summary_logs[0]
+
+
+def test_resolve_type2_logs_fallback_tier_summary_when_rds_down(caplog):
+    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 150}), \
+         caplog.at_level("INFO", logger="src.serving.nav_lookup"):
+        nav_lookup.resolve_segment_values(["1", "missing"], 2, "12:00")
+
+    summary_logs = [r.message for r in caplog.records if "[type2_fallback_tier_summary]" in r.message]
+    assert len(summary_logs) == 1
+    assert "rds=0" in summary_logs[0]
+    assert "global=0" in summary_logs[0]
+    assert "snapshot=1" in summary_logs[0]
+    assert "hardcoded=1" in summary_logs[0]
+    assert "total=2" in summary_logs[0]

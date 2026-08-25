@@ -1120,8 +1120,8 @@
     {
       "id": 81,
       "type": "timeseries",
-      "title": "타입별 RDS 쿼리 응답시간 (p50/p95/p99)",
-      "description": "RDS 자체 CloudWatch 지표(ReadLatency 등)는 디스크 I/O 지연의 평균값이라 서빙이 실제 체감하는 쿼리 응답시간과 다르다. [rds_query_duration] 로그를 table별로 나눠서 집계한다 - Type1/2/4는 src/common/db.py의 batch_get_items(), Type3는 src/serving/api.py의 get_type3_values()가 각각 남긴다(서로 다른 코드 경로라 별도로 계측했다). 테이블(=타입)마다 색이 달라진다.",
+      "title": "Type1 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type1 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -1147,10 +1147,7 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
-          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by tbl, bin(1m)",
-          "statsGroups": [
-            "tbl"
-          ]
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type1\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
         }
       ],
       "fieldConfig": {
@@ -1161,10 +1158,10 @@
       }
     },
     {
-      "id": 82,
+      "id": 84,
       "type": "timeseries",
-      "title": "Type1 fallback 계층 비율 (fresh / avg / hardcoded)",
-      "description": "src/serving/nav_lookup.py가 요청당 한 번 남기는 [fallback_tier_summary] 로그를 집계한다. fresh 비율이 낮고 hardcoded 비율이 높아지면 type1 파이프라인이 최신 데이터를 못 채우고 있다는 신호다.",
+      "title": "Type2 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type2 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -1190,26 +1187,24 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
-          "expression": "fields @timestamp, @message | filter @message like /fallback_tier_summary/ | parse @message \"fresh=* avg=* hardcoded=* total=*\" as fresh_n, avg_n, hardcoded_n, total_n | stats sum(fresh_n) as fresh_sum, sum(avg_n) as avg_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields fresh_sum * 100.0 / total_sum as fresh_pct, avg_sum * 100.0 / total_sum as avg_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type2\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
         }
       ],
       "fieldConfig": {
         "defaults": {
-          "unit": "percent",
-          "max": 100,
-          "min": 0
+          "unit": "ms"
         },
         "overrides": []
       }
     },
     {
-      "id": 83,
+      "id": 85,
       "type": "timeseries",
-      "title": "Type3 fallback 계층 비율 (rds / cache / snapshot / hardcoded)",
-      "description": "src/serving/api.py의 get_type3_values()가 요청당 한 번 남기는 [type3_fallback_tier_summary] 로그를 집계한다. rds=RDS 직접 조회 성공, cache=최근 RDS 성공값 재사용, snapshot=RDS 실패 시 S3 zone 스냅샷으로 재구성, hardcoded=아무것도 없어 기본값(0) 응답. hardcoded 비율이 올라가면 RDS 장애 + 스냅샷도 못 커버하는 세그먼트가 늘고 있다는 뜻.",
+      "title": "Type3 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type3 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
       "gridPos": {
         "h": 8,
-        "w": 24,
+        "w": 12,
         "x": 0,
         "y": 115
       },
@@ -1232,7 +1227,213 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type3\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 86,
+      "type": "timeseries",
+      "title": "Type4 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type4 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 115
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type4\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 82,
+      "type": "timeseries",
+      "title": "Type1 fallback 계층 비율 (fresh / avg / hardcoded)",
+      "description": "src/serving/nav_lookup.py의 _resolve_time_values()가 요청당 한 번 남기는 [fallback_tier_summary] 로그(type=1)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 123
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /fallback_tier_summary/ and @message like /type=1/ | parse @message \"fresh=* avg=* hardcoded=* total=*\" as fresh_n, avg_n, hardcoded_n, total_n | stats sum(fresh_n) as fresh_sum, sum(avg_n) as avg_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields fresh_sum * 100.0 / total_sum as fresh_pct, avg_sum * 100.0 / total_sum as avg_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 87,
+      "type": "timeseries",
+      "title": "Type2 fallback 계층 비율 (rds / global / snapshot / hardcoded)",
+      "description": "src/serving/nav_lookup.py의 _resolve_length_values()가 요청당 한 번 남기는 [type2_fallback_tier_summary] 로그를 집계한다. rds=세그먼트 자체 row를 RDS에서 직접 찾음, global=RDS는 살아있지만 이 세그먼트 값이 없어 GLOBAL 기본값 사용, snapshot=RDS 자체가 죽어 S3 스냅샷의 세그먼트별 값 사용, hardcoded=스냅샷에도 없어 코드 상수 사용.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 123
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /type2_fallback_tier_summary/ | parse @message \"rds=* global=* snapshot=* hardcoded=* total=*\" as rds_n, global_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(global_n) as global_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, global_sum * 100.0 / total_sum as global_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 83,
+      "type": "timeseries",
+      "title": "Type3 fallback 계층 비율 (rds / cache / snapshot / hardcoded)",
+      "description": "src/serving/api.py의 get_type3_values()가 요청당 한 번 남기는 [type3_fallback_tier_summary] 로그를 집계한다. rds=RDS 직접 조회 성공, cache=최근 RDS 성공값 재사용, snapshot=RDS 실패 시 S3 zone 스냅샷으로 재구성, hardcoded=아무것도 없어 기본값(0) 응답. hardcoded 비율이 올라가면 RDS 장애 + 스냅샷도 못 커버하는 세그먼트가 늘고 있다는 뜻.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 131
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
           "expression": "fields @timestamp, @message | filter @message like /type3_fallback_tier_summary/ | parse @message \"rds=* cache=* snapshot=* hardcoded=* total=*\" as rds_n, cache_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(cache_n) as cache_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, cache_sum * 100.0 / total_sum as cache_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 88,
+      "type": "timeseries",
+      "title": "Type4 fallback 계층 비율 (rds / snapshot / hardcoded)",
+      "description": "src/toll/serving.py의 get_toll_values()가 요청당 한 번 남기는 [type4_fallback_tier_summary] 로그를 집계한다. RDS가 정상 응답했는데 특정 세그먼트에 통행료가 없는 건 폴백이 아니라 '진짜 통행료 대상이 아님'이라 rds 계층으로 센다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 131
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /type4_fallback_tier_summary/ | parse @message \"rds=* snapshot=* hardcoded=* total=*\" as rds_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
         }
       ],
       "fieldConfig": {

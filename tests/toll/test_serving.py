@@ -76,6 +76,37 @@ def test_get_toll_values_loads_snapshot_only_once_per_process():
     mock_read.assert_called_once()
 
 
+def test_get_toll_values_logs_fallback_tier_summary_when_rds_up(caplog):
+    # RDS가 살아있으면 조회됐든 안 됐든(통행료 대상 아님) 전부 rds 계층 -
+    # Grafana의 "Type4 fallback 계층 비율" 패널이 이 로그를 집계한다.
+    with patch(
+        "src.toll.serving.db.batch_get_items",
+        return_value={("1",): {"segment_id": "1", "value": 5.0}},
+    ), caplog.at_level("INFO", logger="src.toll.serving"):
+        get_toll_values(["1", "not-a-toll-road"])
+
+    summary_logs = [r.message for r in caplog.records if "[type4_fallback_tier_summary]" in r.message]
+    assert len(summary_logs) == 1
+    assert "rds=2" in summary_logs[0]
+    assert "snapshot=0" in summary_logs[0]
+    assert "hardcoded=0" in summary_logs[0]
+    assert "total=2" in summary_logs[0]
+
+
+def test_get_toll_values_logs_fallback_tier_summary_when_rds_down(caplog):
+    with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 2.75}), \
+         caplog.at_level("INFO", logger="src.toll.serving"):
+        get_toll_values(["1", "2"])
+
+    summary_logs = [r.message for r in caplog.records if "[type4_fallback_tier_summary]" in r.message]
+    assert len(summary_logs) == 1
+    assert "rds=0" in summary_logs[0]
+    assert "snapshot=1" in summary_logs[0]
+    assert "hardcoded=1" in summary_logs[0]
+    assert "total=2" in summary_logs[0]
+
+
 def test_get_toll_value_delegates_to_get_toll_values():
     with patch(
         "src.toll.serving.db.batch_get_items",
