@@ -30,7 +30,7 @@ from src.common.config import (
 )
 from src.common.logger import get_logger
 from src.toll.bronze import BRONZE_ROOT
-from src.toll.serving import TYPE_TOLL, get_toll_value  # noqa: F401 (하위 호환 재수출)
+from src.toll.serving import get_toll_value  # noqa: F401 (하위 호환 재수출)
 from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
