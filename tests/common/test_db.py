@@ -77,6 +77,21 @@ def test_batch_get_empty_keys_returns_empty_dict():
     assert db.batch_get_items(TABLE_NAME, []) == {}
 
 
+def test_batch_get_items_logs_query_duration(caplog):
+    # Grafana의 RDS 응답시간 p50/p95/p99 패널(CloudWatch Logs Insights)이
+    # 이 로그를 집계한다 - 빈 키 호출(쿼리 자체가 안 나감)은 로그를 안
+    # 남기는지, 실제 조회는 테이블명과 함께 남기는지 확인한다.
+    _create_test_table()
+    db.put_item(TABLE_NAME, _key("1") | {"travel_seconds": 30}, key_columns=KEY_COLUMNS)
+
+    with caplog.at_level("INFO", logger="src.common.db"):
+        db.batch_get_items(TABLE_NAME, [_key("1")])
+
+    duration_logs = [r.message for r in caplog.records if "[rds_query_duration]" in r.message]
+    assert len(duration_logs) == 1
+    assert f"table={TABLE_NAME}" in duration_logs[0]
+
+
 def test_batch_write_handles_different_optional_fields():
     _create_test_table()
     db.batch_write_items(
