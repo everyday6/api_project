@@ -1,4 +1,4 @@
-"""route_map_demo.html에 박아넣을 DATA(JSON) 블록을 생성한다.
+"""index.html에 박아넣을 DATA(JSON) 블록을 생성한다.
 
 맨하튼(borough_code=="1") routable 세그먼트만 쓴다 - 기존 정적 데모의
 background_coords 세그먼트 수(19,981)와 정확히 일치해서, 원래도 이
@@ -13,7 +13,7 @@ graph: 브라우저에서 클릭 두 점 사이 실시간 경로 탐색(Dijkstra
 (Python networkx 기준 실측 평균 7ms, 최대 16ms).
 
 사용법: python demo/build_route_map_data.py > /tmp/data.json 로 확인하거나,
---write로 route_map_demo.html의 DATA 블록을 직접 갱신한다.
+--write로 index.html의 DATA 블록을 직접 갱신한다.
 """
 
 from __future__ import annotations
@@ -27,7 +27,7 @@ import pandas as pd
 from shapely import wkt
 
 DIM_SEGMENT_PATH = Path(__file__).resolve().parent.parent / "data" / "gold2" / "dim_segment.parquet"
-DEMO_HTML_PATH = Path(__file__).resolve().parent / "route_map_demo.html"
+DEMO_HTML_PATH = Path(__file__).resolve().parent / "index.html"
 
 
 def _flatten_coords(geometry_wkt: str) -> list[float]:
@@ -81,7 +81,7 @@ def build_data() -> dict:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--write", action="store_true", help="route_map_demo.html의 DATA 블록을 직접 갱신")
+    parser.add_argument("--write", action="store_true", help="index.html의 DATA 블록을 직접 갱신")
     args = parser.parse_args()
 
     data = build_data()
