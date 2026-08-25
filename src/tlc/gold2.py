@@ -532,27 +532,60 @@ def write_type3_rolling_to_rds(
     rolling: DataFrame,
     window_end: date,
 ) -> int:
-    """검증된 Spark 롤링 결과를 파티션별 스테이징 COPY + 단일 병합으로 Type 3 테이블에 저장한다.
+    """검증된 Spark 롤링 결과를 파티션별 스테이징 COPY + 원자적 테이블 스왑으로
+    Type 3 테이블에 저장한다.
 
-    예전엔(git 이력 참고) executor마다 직접 upsert를 날렸는데, 파티션을
-    아무리 조절해도 RDS(db.t4g.medium, 2 vCPU)의 WAL 쓰기 처리량 한계에
-    부딪혔다(실측 웨이브 4커넥션: 초당 1,520행, 7,300만 건 기준 10시간
-    이상 추정). 그다음 스테이징 테이블 하나 + COPY + 단일 병합으로
-    바꿨는데, 이번엔 그 스테이징 테이블 하나를 여러 파티션이 동시에
-    늘리려고(Lock:extend) 경쟁해서 DB Load가 정상의 8배까지 치솟았다(위
-    _copy_type3_partition 주석 참고).
+    이 함수는 두 번의 실측 문제를 거쳐 지금 형태가 됐다:
+
+    1. (예전) executor마다 직접 upsert를 날렸는데, 파티션을 아무리 조절해도
+       RDS(db.t4g.medium, 2 vCPU)의 WAL 쓰기 처리량 한계에 부딪혔다(실측
+       웨이브 4커넥션: 초당 1,520행, 7,300만 건 기준 10시간 이상 추정).
+    2. (그다음) 스테이징 테이블 하나 + COPY + 단일 병합으로 바꿨는데, 이번엔
+       그 스테이징 테이블 하나를 여러 파티션이 동시에 늘리려고(Lock:extend)
+       경쟁해서 DB Load가 정상의 8배까지 치솟았다(아래 _copy_type3_partition
+       주석 참고) - 그래서 파티션마다 자기 전용 스테이징 테이블을 쓰도록
+       바꿨다.
+    3. (지금) 그 여러 스테이징 테이블을 실제 테이블에 직접
+       upsert(INSERT ... ON CONFLICT DO UPDATE)로 병합했는데, 이 병합 자체가
+       라이브 테이블 전체를 건드리는 하나의 거대한 트랜잭션이라 그동안 서빙
+       조회가 막혀 타임아웃 나는 문제가 실측으로 확인됐다(이 병합이 도는
+       동안 Type3 조회 성공률이 평소 80%대에서 6%대로 떨어짐 - RDS CPU/
+       디스크 지연은 정상이었던 걸 보면 자원 부족이 아니라 락 경합/트랜잭션
+       부하 때문). "롤링"은 최근 N주 평균이라는 값 계산 방식일 뿐, 매번
+       세그먼트×요일×시간대 전체를 다시 계산한다(validate_segment_values()가
+       매번 전체 커버리지를 강제한다) - 즉 병합 직전 데이터는 항상 "테이블
+       전체의 완전한 최신본"이라, 행 단위 병합 대신 테이블 자체를 통째로
+       바꿔치기해도 안전하다.
 
     그래서 지금은:
     1. 파티션 개수(TYPE3_RDS_WRITE_PARTITIONS)만큼 인덱스 없는 UNLOGGED
        스테이징 테이블을 미리 만든다(파티션마다 자기 전용 테이블 - 공유
        자원이 없어 경쟁 자체가 생기지 않는다).
     2. 파티션마다 자기 몫의 테이블에 COPY로 흘려넣는다(웨이브 불필요).
-    3. 전부 끝나면 그 테이블들을 UNION ALL로 합쳐서 실제 테이블에 딱
-       한 번의 upsert(INSERT ... ON CONFLICT DO UPDATE)로 병합한다.
-    4. 스테이징 테이블들은 성공/실패 상관없이 정리한다.
+    3. 그 테이블들을 UNION ALL로, 라이브 테이블과 완전히 같은 구조(인덱스/
+       제약조건 포함)의 통합 스테이징 테이블 하나로 합친다 - 이 단계도
+       아직 아무도 안 읽는 테이블끼리의 작업이라 라이브 테이블과 경쟁이
+       없다.
+    4. 통합 스테이징 테이블을 다시 LOGGED로 되돌려 내구성을 확보하고
+       (UNLOGGED 테이블은 재시작/크래시 시 자동으로 비워지므로, 이 상태로
+       라이브가 되면 안 된다), ANALYZE로 통계를 갱신한다(스왑 직후부터
+       쿼리 플래너가 정확한 추정치를 쓰게 하기 위함).
+    5. 라이브 테이블 <-> 통합 스테이징 테이블 이름을 하나의 트랜잭션 안에서
+       스왑한다. RENAME은 ACCESS EXCLUSIVE 락이 필요하지만 메타데이터만
+       바꾸는 작업이라 밀리초 안에 끝난다 - 조회가 겹쳐도 잠깐 대기하는
+       정도지 지금처럼 수십 초씩 막히지 않는다. 두 RENAME을 한 트랜잭션
+       으로 묶어야 그 사이 테이블 이름이 잠깐 존재하지 않는 순간이 없다.
+    6. 스왑 후 남은 옛/스테이징 테이블은 성공/실패 상관없이 전부 정리한다
+       (실패 시엔 일부가 애초에 안 생겼어도 DROP IF EXISTS가 조용히
+       넘어간다).
 
-    스테이징 테이블명에 run 고유 접미사(uuid4)를 붙인다 - 재시도나 겹치는
-    실행이 같은 이름을 쓰다 서로 덮어쓰는 걸 막기 위함이다.
+    스테이징/통합/옛 테이블명에 run 고유 접미사(uuid4)를 붙인다 - 재시도나
+    겹치는 실행이 같은 이름을 쓰다 서로 덮어쓰는 걸 막기 위함이다. Postgres
+    식별자는 63바이트를 넘으면 그냥 잘라버리므로(에러 없이 조용히 truncate),
+    파티션별 스테이징 테이블명은 table_name 없이 짧게 "tmp_type3_"로
+    고정하고 uuid도 8자만 써서 여유 있게 짧게 유지한다(table_name까지 다
+    붙이면 파티션 번호(_p199)가 잘려나가 200개 이름이 전부 똑같아져
+    DuplicateTable 에러가 났던 사고가 실제로 있었다).
 
     window_end는 이 롤링 평균이 반영하는 TLC 데이터의 마지막 날짜다 -
     각 행의 collected_date로 그대로 찍는다(언제 계산됐는지가 아니라 어떤
@@ -567,15 +600,12 @@ def write_type3_rolling_to_rds(
     if written == 0:
         return 0
 
-    # Postgres 식별자는 63바이트를 넘으면 그냥 잘라버린다(에러 없이 조용히
-    # truncate) - table_name(예: segment_metrics_type3) + 접두사 + uuid를
-    # 다 붙이면 파티션 번호(_p199)가 잘려나가 200개 이름이 전부 똑같아져
-    # DuplicateTable 에러가 났다(실제로 겪은 사고). table_name 없이 짧게
-    # "tmp_type3_"로 고정하고 uuid도 8자만 써서 여유 있게 짧게 유지한다.
     staging_prefix = f"tmp_type3_{uuid4().hex[:8]}"
     staging_tables = [
         f"{staging_prefix}_p{i}" for i in range(TYPE3_RDS_WRITE_PARTITIONS)
     ]
+    combined_table = f"{table_name}_staging_{uuid4().hex[:8]}"
+    old_table = f"{table_name}_old_{uuid4().hex[:8]}"
     key_columns = SERVING_TABLE_TYPE3_KEY_COLUMNS
     value_columns = ("value", "collected_date", "updated_date")
     all_columns = key_columns + value_columns
@@ -599,6 +629,22 @@ def write_type3_rolling_to_rds(
         to_write.foreachPartition(_copy_type3_partition(staging_prefix, window_end))
 
         with conn.cursor() as cur:
+            # 파티션별 스테이징들을 라이브 테이블과 완전히 같은 구조(인덱스/
+            # 제약조건 포함)의 통합 스테이징 테이블 하나로 합친다 - 아직
+            # 아무도 안 읽는 테이블끼리의 작업이라 라이브 테이블과는
+            # 경쟁이 없다.
+            cur.execute(
+                sql.SQL("CREATE TABLE {combined} (LIKE {table} INCLUDING ALL)").format(
+                    combined=sql.Identifier(combined_table),
+                    table=sql.Identifier(table_name),
+                )
+            )
+            cur.execute(
+                sql.SQL("ALTER TABLE {combined} SET UNLOGGED").format(
+                    combined=sql.Identifier(combined_table)
+                )
+            )
+
             select_columns = sql.SQL(", ").join(sql.Identifier(c) for c in all_columns)
             union_query = sql.SQL(" UNION ALL ").join(
                 sql.SQL("SELECT {cols} FROM {staging}").format(
@@ -608,20 +654,43 @@ def write_type3_rolling_to_rds(
                 for staging_table in staging_tables
             )
             cur.execute(
-                sql.SQL(
-                    "INSERT INTO {table} ({cols}) {union_query} "
-                    "ON CONFLICT ({keys}) DO UPDATE SET {set_clause}"
-                ).format(
-                    table=sql.Identifier(table_name),
+                sql.SQL("INSERT INTO {combined} ({cols}) {union_query}").format(
+                    combined=sql.Identifier(combined_table),
                     cols=select_columns,
                     union_query=union_query,
-                    keys=sql.SQL(", ").join(sql.Identifier(c) for c in key_columns),
-                    set_clause=sql.SQL(", ").join(
-                        sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c))
-                        for c in value_columns
-                    ),
                 )
             )
+
+            cur.execute(
+                sql.SQL("ALTER TABLE {combined} SET LOGGED").format(
+                    combined=sql.Identifier(combined_table)
+                )
+            )
+            cur.execute(
+                sql.SQL("ANALYZE {combined}").format(combined=sql.Identifier(combined_table))
+            )
+
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("ALTER TABLE {table} RENAME TO {old}").format(
+                        table=sql.Identifier(table_name),
+                        old=sql.Identifier(old_table),
+                    )
+                )
+                cur.execute(
+                    sql.SQL("ALTER TABLE {combined} RENAME TO {table}").format(
+                        combined=sql.Identifier(combined_table),
+                        table=sql.Identifier(table_name),
+                    )
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = True
     finally:
         with conn.cursor() as cur:
             cur.execute(
@@ -629,9 +698,12 @@ def write_type3_rolling_to_rds(
                     sql.SQL(", ").join(sql.Identifier(t) for t in staging_tables)
                 )
             )
+            cur.execute(
+                sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(combined_table))
+            )
+            cur.execute(
+                sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(old_table))
+            )
         conn.close()
 
-    return written
-
-    to_write.unpersist()
     return written
