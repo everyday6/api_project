@@ -243,18 +243,29 @@ def _fake_connection():
     return conn, cur
 
 
-def test_copy_type3_partition_streams_csv_rows_to_staging_table(monkeypatch):
+def _fake_task_context(partition_id):
+    """TaskContext.get()을 대체한다 - _copy_type3_partition이 실제 Spark
+    task 밖에서(foreachPartition 없이) 직접 호출될 때는 TaskContext.get()이
+    None이라 partitionId()를 못 부른다."""
+
+    context = MagicMock()
+    context.partitionId.return_value = partition_id
+    return context
+
+
+def test_copy_type3_partition_streams_csv_rows_to_own_staging_table(monkeypatch):
     """executor에서 실제로 도는 부분만 떼어내 같은 프로세스에서 직접 검증한다.
 
     row 하나가 (segment_id, dow, time) 슬롯 하나다(flat 스키마 - 2026-08-24
-    개편). COPY는 upsert와 달리 파티션 전체를 커넥션 하나로 한 번에
-    보내므로(스레드 분할 없음), copy_expert가 정확히 한 번 호출되고 그
-    안의 CSV 내용이 입력 행 순서 그대로인지 검증한다."""
+    개편). 파티션마다 자기 전용 스테이징 테이블에 쓴다 - 물리 파티션
+    번호(TaskContext)로 테이블명을 정한다. copy_expert가 정확히 한 번
+    호출되고, 그 테이블명과 CSV 내용이 입력 행 순서 그대로인지 검증한다."""
 
     monkeypatch.setattr("src.tlc.gold2.date", _FixedDate)
     conn, cur = _fake_connection()
 
-    with patch("src.tlc.gold2.db.new_connection", return_value=conn):
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
+         patch("src.tlc.gold2.TaskContext.get", return_value=_fake_task_context(5)):
         write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
         write_partition([
             {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
@@ -263,7 +274,7 @@ def test_copy_type3_partition_streams_csv_rows_to_staging_table(monkeypatch):
 
     cur.copy_expert.assert_called_once()
     copy_sql, buffer = cur.copy_expert.call_args[0]
-    assert "segment_metrics_type3_staging_abc" in str(copy_sql)
+    assert "segment_metrics_type3_staging_abc_p5" in str(copy_sql)
     assert buffer.read() == (
         "0000001,FRI,1200,1.5,2026-08-20,2026-08-24\r\n"
         "0000002,MON,1230,2.5,2026-08-20,2026-08-24\r\n"
@@ -272,6 +283,9 @@ def test_copy_type3_partition_streams_csv_rows_to_staging_table(monkeypatch):
 
 
 def test_copy_type3_partition_skips_empty_partition():
+    """빈 파티션이면 자기 테이블명을 알아낼 필요도 없이 바로 끝난다 -
+    TaskContext.get()을 mock 안 해도(=None이어도) 문제없어야 한다."""
+
     conn, cur = _fake_connection()
 
     with patch("src.tlc.gold2.db.new_connection", return_value=conn):
@@ -286,7 +300,8 @@ def test_copy_type3_partition_propagates_copy_failure():
     conn, cur = _fake_connection()
     cur.copy_expert.side_effect = RuntimeError("COPY failure")
 
-    with patch("src.tlc.gold2.db.new_connection", return_value=conn):
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
+         patch("src.tlc.gold2.TaskContext.get", return_value=_fake_task_context(0)):
         write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
         with pytest.raises(RuntimeError, match="COPY failure"):
             write_partition([
@@ -298,10 +313,14 @@ def test_copy_type3_partition_propagates_copy_failure():
 
 
 def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
-    """스테이징 테이블 생성/병합/정리 SQL과 파티션 COPY 호출을 검증한다.
+    """파티션별 스테이징 테이블 생성/병합/정리 SQL과 COPY 호출을 검증한다.
 
     실제 파티션 쓰기(_copy_type3_partition)는 no-op으로 바꿔치기하고,
-    driver 쪽에서 직접 여는 db.new_connection()만 fake로 검증한다."""
+    driver 쪽에서 직접 여는 db.new_connection()만 fake로 검증한다.
+    TYPE3_RDS_WRITE_PARTITIONS를 3으로 낮춰서 검증 범위를 읽기 쉽게
+    만든다 - 실제 값(200)이어도 로직은 동일하다."""
+
+    monkeypatch.setattr("src.tlc.gold2.TYPE3_RDS_WRITE_PARTITIONS", 3)
 
     rolling = spark.createDataFrame([
         {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
@@ -310,8 +329,8 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
     conn, cur = _fake_connection()
     copy_calls = []
 
-    def _fake_copy(staging_table, collected_date):
-        copy_calls.append((staging_table, collected_date))
+    def _fake_copy(staging_prefix, collected_date):
+        copy_calls.append((staging_prefix, collected_date))
         return lambda rows: None
 
     with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
@@ -324,22 +343,29 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
 
     assert written == 2
 
-    # CREATE TABLE, ALTER TABLE, 병합 upsert, DROP TABLE = execute 4번.
-    assert cur.execute.call_count == 4
+    # 파티션 3개 x (CREATE TABLE, ALTER TABLE) = 6, + 병합 upsert 1 +
+    # DROP TABLE 1 = execute 8번.
+    assert cur.execute.call_count == 8
     executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
-    assert "CREATE TABLE" in executed_sql[0]
-    assert "SET UNLOGGED" in executed_sql[1]
-    assert "ON CONFLICT" in executed_sql[2]
-    assert "DROP TABLE" in executed_sql[3]
+    for i in range(3):
+        assert "CREATE TABLE" in executed_sql[i * 2]
+        assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
+    assert "UNION ALL" in executed_sql[6]
+    assert "ON CONFLICT" in executed_sql[6]
+    assert "DROP TABLE" in executed_sql[7]
 
-    # 스테이징 테이블명이 CREATE/병합/DROP 전부에서 같은 값으로 쓰였고,
-    # _copy_type3_partition에도 그대로 전달됐는지 확인한다.
+    # _copy_type3_partition에도 같은 접두사가 전달됐고, 병합/정리 SQL에
+    # 파티션 0~2번 테이블명이 전부 등장하는지 확인한다(공유 테이블이
+    # 아니라 파티션마다 다른 테이블이라는 것의 증거).
     assert len(copy_calls) == 1
-    staging_table, collected_date = copy_calls[0]
-    assert staging_table.startswith("nav-segment-metrics_staging_")
+    staging_prefix, collected_date = copy_calls[0]
+    assert staging_prefix.startswith("nav-segment-metrics_staging_")
     assert collected_date == date(2026, 8, 20)
-    assert staging_table in executed_sql[0]
-    assert staging_table in executed_sql[3]
+    for i in range(3):
+        table_name = f"{staging_prefix}_p{i}"
+        assert table_name in executed_sql[i * 2]
+        assert table_name in executed_sql[6]
+        assert table_name in executed_sql[7]
 
     conn.close.assert_called_once()
 
@@ -364,17 +390,19 @@ def test_write_type3_rolling_to_rds_skips_empty_input(spark):
     conn.close.assert_not_called()
 
 
-def test_write_type3_rolling_to_rds_cleans_up_staging_table_on_partition_failure(
-    spark,
+def test_write_type3_rolling_to_rds_cleans_up_staging_tables_on_partition_failure(
+    spark, monkeypatch,
 ):
-    """COPY 단계에서 실패해도 스테이징 테이블 DROP은 반드시 실행된다."""
+    """COPY 단계에서 실패해도 만들어둔 스테이징 테이블 전부 DROP은 반드시 실행된다."""
+
+    monkeypatch.setattr("src.tlc.gold2.TYPE3_RDS_WRITE_PARTITIONS", 3)
 
     rolling = spark.createDataFrame([
         {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
     ])
     conn, cur = _fake_connection()
 
-    def _always_fail(_staging_table, _collected_date):
+    def _always_fail(_staging_prefix, _collected_date):
         def _write(_rows):
             raise RuntimeError("COPY failure")
         return _write
@@ -391,13 +419,16 @@ def test_write_type3_rolling_to_rds_cleans_up_staging_table_on_partition_failure
                 date(2026, 8, 20),
             )
 
-    # CREATE TABLE, ALTER TABLE까지만 성공하고 병합은 못 갔지만, DROP은
-    # finally에서 실행돼야 한다.
+    # 파티션 3개의 CREATE/ALTER(6개)까지만 성공하고 병합은 못 갔지만,
+    # DROP은 finally에서 3개 테이블 다 걸고 실행돼야 한다.
     executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
-    assert len(executed_sql) == 3
-    assert "CREATE TABLE" in executed_sql[0]
-    assert "SET UNLOGGED" in executed_sql[1]
-    assert "DROP TABLE" in executed_sql[2]
+    assert len(executed_sql) == 7
+    for i in range(3):
+        assert "CREATE TABLE" in executed_sql[i * 2]
+        assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
+    assert "DROP TABLE" in executed_sql[6]
+    for i in range(3):
+        assert f"_p{i}" in executed_sql[6]
     conn.close.assert_called_once()
 
 

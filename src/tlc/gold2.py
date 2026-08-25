@@ -9,6 +9,7 @@ from datetime import date, timedelta
 from uuid import uuid4
 
 from psycopg2 import sql
+from pyspark import TaskContext
 from pyspark.sql import DataFrame, SparkSession
 from pyspark.sql.functions import (
     array,
@@ -470,14 +471,21 @@ def validate_segment_values(
     return {"segments": actual_segments, "rows": actual_rows}
 
 
-def _copy_type3_partition(staging_table: str, collected_date: date):
-    """executor 파티션 하나를 COPY로 스테이징 테이블에 통째로 흘려넣는다.
+def _copy_type3_partition(staging_prefix: str, collected_date: date):
+    """executor 파티션 하나를 자기 전용 스테이징 테이블로 COPY한다.
 
-    upsert(ON CONFLICT DO UPDATE)와 달리 인덱스 충돌 확인이 없어서, 여러
-    파티션이 동시에 COPY해도 서로 경쟁하지 않는다 - 그래서 예전처럼
-    파티션을 웨이브로 나누거나 파티션 내부를 스레드로 쪼갤 필요가 없다.
-    COPY 자체가 이미 스트리밍 방식이라 파티션 전체를 커넥션 하나로 한
-    번에 보내는 게 더 효율적이다.
+    처음엔 파티션 전부가 스테이징 테이블 하나를 공유했는데, 실제로 돌려
+    보니 여러 파티션이 동시에 그 테이블 하나를 늘리려고(extend) 경쟁하며
+    RDS Performance Insights 기준 DB Load가 정상의 8배(816%)까지
+    치솟았다 - 지배적인 대기 유형이 Lock:extend(같은 relation을 동시에
+    확장하려는 대기)였다. COPY 자체는 충돌 확인이 없어 여러 파티션이
+    동시에 해도 괜찮다고 봤는데, "같은 테이블을 같이 키우는 것"까지는
+    피해야 했다.
+
+    그래서 write_type3_rolling_to_rds가 파티션 개수(0..N-1)만큼 스테이징
+    테이블을 미리 만들어두고, 여기서는 TaskContext로 물리 파티션 번호를
+    얻어 자기 몫의 테이블에만 COPY한다 - 테이블 자체가 다르니 경쟁이
+    구조적으로 생기지 않는다.
 
     row 하나가 (segment_id, dow, time) 슬롯 하나(값 하나)다(flat 스키마,
     2026-08-24 개편 - src/common/config.py의 SERVING_TABLE_TYPE3_COLUMNS
@@ -487,6 +495,8 @@ def _copy_type3_partition(staging_table: str, collected_date: date):
         rows = list(rows)
         if not rows:
             return
+
+        staging_table = f"{staging_prefix}_p{TaskContext.get().partitionId()}"
 
         buffer = io.StringIO()
         writer = csv.writer(buffer)
@@ -522,19 +532,24 @@ def write_type3_rolling_to_rds(
     rolling: DataFrame,
     window_end: date,
 ) -> int:
-    """검증된 Spark 롤링 결과를 스테이징 COPY + 단일 병합으로 Type 3 테이블에 저장한다.
+    """검증된 Spark 롤링 결과를 파티션별 스테이징 COPY + 단일 병합으로 Type 3 테이블에 저장한다.
 
-    예전엔 executor마다 직접 upsert를 날렸는데(git 이력 참고), 파티션을
+    예전엔(git 이력 참고) executor마다 직접 upsert를 날렸는데, 파티션을
     아무리 조절해도 RDS(db.t4g.medium, 2 vCPU)의 WAL 쓰기 처리량 한계에
-    부딪혀 7,300만 건 기준 10시간 이상 걸릴 것으로 추정됐다(위
-    TYPE3_RDS_WRITE_PARTITIONS 주석 참고).
+    부딪혔다(실측 웨이브 4커넥션: 초당 1,520행, 7,300만 건 기준 10시간
+    이상 추정). 그다음 스테이징 테이블 하나 + COPY + 단일 병합으로
+    바꿨는데, 이번엔 그 스테이징 테이블 하나를 여러 파티션이 동시에
+    늘리려고(Lock:extend) 경쟁해서 DB Load가 정상의 8배까지 치솟았다(위
+    _copy_type3_partition 주석 참고).
 
     그래서 지금은:
-    1. 파티션마다 인덱스 없는 UNLOGGED 스테이징 테이블에 COPY로 흘려넣는다
-       (경쟁이 없어 파티션 전부를 동시에 foreachPartition해도 안전하다).
-    2. 전부 끝나면 스테이징 테이블에서 실제 테이블로 딱 한 번의
-       upsert(INSERT ... ON CONFLICT DO UPDATE)로 병합한다.
-    3. 스테이징 테이블은 성공/실패 상관없이 정리한다.
+    1. 파티션 개수(TYPE3_RDS_WRITE_PARTITIONS)만큼 인덱스 없는 UNLOGGED
+       스테이징 테이블을 미리 만든다(파티션마다 자기 전용 테이블 - 공유
+       자원이 없어 경쟁 자체가 생기지 않는다).
+    2. 파티션마다 자기 몫의 테이블에 COPY로 흘려넣는다(웨이브 불필요).
+    3. 전부 끝나면 그 테이블들을 UNION ALL로 합쳐서 실제 테이블에 딱
+       한 번의 upsert(INSERT ... ON CONFLICT DO UPDATE)로 병합한다.
+    4. 스테이징 테이블들은 성공/실패 상관없이 정리한다.
 
     스테이징 테이블명에 run 고유 접미사(uuid4)를 붙인다 - 재시도나 겹치는
     실행이 같은 이름을 쓰다 서로 덮어쓰는 걸 막기 위함이다.
@@ -552,7 +567,10 @@ def write_type3_rolling_to_rds(
     if written == 0:
         return 0
 
-    staging_table = f"{table_name}_staging_{uuid4().hex}"
+    staging_prefix = f"{table_name}_staging_{uuid4().hex}"
+    staging_tables = [
+        f"{staging_prefix}_p{i}" for i in range(TYPE3_RDS_WRITE_PARTITIONS)
+    ]
     key_columns = SERVING_TABLE_TYPE3_KEY_COLUMNS
     value_columns = ("value", "collected_date", "updated_date")
     all_columns = key_columns + value_columns
@@ -560,29 +578,38 @@ def write_type3_rolling_to_rds(
     conn = db.new_connection()
     try:
         with conn.cursor() as cur:
-            cur.execute(
-                sql.SQL("CREATE TABLE {staging} (LIKE {table} INCLUDING ALL)").format(
-                    staging=sql.Identifier(staging_table),
-                    table=sql.Identifier(table_name),
+            for staging_table in staging_tables:
+                cur.execute(
+                    sql.SQL("CREATE TABLE {staging} (LIKE {table})").format(
+                        staging=sql.Identifier(staging_table),
+                        table=sql.Identifier(table_name),
+                    )
                 )
-            )
-            cur.execute(
-                sql.SQL("ALTER TABLE {staging} SET UNLOGGED").format(
-                    staging=sql.Identifier(staging_table)
+                cur.execute(
+                    sql.SQL("ALTER TABLE {staging} SET UNLOGGED").format(
+                        staging=sql.Identifier(staging_table)
+                    )
                 )
-            )
 
-        to_write.foreachPartition(_copy_type3_partition(staging_table, window_end))
+        to_write.foreachPartition(_copy_type3_partition(staging_prefix, window_end))
 
         with conn.cursor() as cur:
+            select_columns = sql.SQL(", ").join(sql.Identifier(c) for c in all_columns)
+            union_query = sql.SQL(" UNION ALL ").join(
+                sql.SQL("SELECT {cols} FROM {staging}").format(
+                    cols=select_columns,
+                    staging=sql.Identifier(staging_table),
+                )
+                for staging_table in staging_tables
+            )
             cur.execute(
                 sql.SQL(
-                    "INSERT INTO {table} ({cols}) SELECT {cols} FROM {staging} "
+                    "INSERT INTO {table} ({cols}) {union_query} "
                     "ON CONFLICT ({keys}) DO UPDATE SET {set_clause}"
                 ).format(
                     table=sql.Identifier(table_name),
-                    staging=sql.Identifier(staging_table),
-                    cols=sql.SQL(", ").join(sql.Identifier(c) for c in all_columns),
+                    cols=select_columns,
+                    union_query=union_query,
                     keys=sql.SQL(", ").join(sql.Identifier(c) for c in key_columns),
                     set_clause=sql.SQL(", ").join(
                         sql.SQL("{c} = EXCLUDED.{c}").format(c=sql.Identifier(c))
@@ -593,7 +620,9 @@ def write_type3_rolling_to_rds(
     finally:
         with conn.cursor() as cur:
             cur.execute(
-                sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(staging_table))
+                sql.SQL("DROP TABLE IF EXISTS {}").format(
+                    sql.SQL(", ").join(sql.Identifier(t) for t in staging_tables)
+                )
             )
         conn.close()
 
