@@ -203,6 +203,100 @@
         },
         "overrides": []
       }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Lambda (nav-api)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 36 },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Invocations / Errors / Throttles",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 37 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/Lambda",
+          "metricName": "Invocations",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/Lambda",
+          "metricName": "Errors",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/Lambda",
+          "metricName": "Throttles",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "Sum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Duration (Average / p50 / p99)",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 37 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/Lambda",
+          "metricName": "Duration",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "Average",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/Lambda",
+          "metricName": "Duration",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "p50",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/Lambda",
+          "metricName": "Duration",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "p99",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "ConcurrentExecutions",
+      "description": "동시 실행 수 - Lambda 계정 동시성 한도에 근접하는지 여기서 확인",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 45 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/Lambda",
+          "metricName": "ConcurrentExecutions",
+          "dimensions": { "FunctionName": "nav-api" },
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] }
     }
   ]
 }
