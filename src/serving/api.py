@@ -189,16 +189,21 @@ def _resolve_from_zone_snapshot(segment_id: str, dow: str, bucket: str) -> float
     return _type3_zone_snapshot.get(f"{zone_id}#{dow}#{bucket}")
 
 
-def _fallback_value(segment_id: str, cache_slot: str, dow: str, bucket: str) -> float:
+def _fallback_value(segment_id: str, cache_slot: str, dow: str, bucket: str) -> tuple[float, str]:
+    """두 번째 반환값(tier)은 어떤 단계에서 값을 뽑았는지("cache"/"snapshot"/
+    "hardcoded") - Grafana 대시보드용 fallback 히트율 집계에 쓴다
+    (get_type3_values 참고)."""
     key = (segment_id, cache_slot)
     with _cache_lock:
         if key in _value_cache:
             value = _value_cache[key]
             _value_cache.move_to_end(key)
-            return value
+            return value, "cache"
 
     value = _resolve_from_zone_snapshot(segment_id, dow, bucket)
-    return value if value is not None else MISSING_VALUE
+    if value is not None:
+        return value, "snapshot"
+    return MISSING_VALUE, "hardcoded"
 
 
 def _unique_in_order(values: list[str]) -> list[str]:
@@ -286,12 +291,27 @@ def get_type3_values(
     if missing:
         logger.warning("Type 3 조회 누락: %s/%s", missing, len(segment_ids))
 
-    return [
-        found[segment_id]
-        if segment_id in found
-        else _fallback_value(segment_id, cache_slot, dow, bucket)
-        for segment_id in segment_ids
-    ]
+    tier_counts = {"rds": 0, "cache": 0, "snapshot": 0, "hardcoded": 0}
+    values = []
+    for segment_id in segment_ids:
+        if segment_id in found:
+            tier_counts["rds"] += 1
+            values.append(found[segment_id])
+        else:
+            value, tier = _fallback_value(segment_id, cache_slot, dow, bucket)
+            tier_counts[tier] += 1
+            values.append(value)
+
+    # 요청당 한 번만 남긴다(세그먼트별로 남기면 요청 하나에 수백 줄이 될 수
+    # 있음) - CloudWatch Logs Insights가 이 로그를 집계해서 Grafana의
+    # "Type3 fallback 계층 비율" 패널을 그린다.
+    logger.info(
+        f"[type3_fallback_tier_summary] rds={tier_counts['rds']} "
+        f"cache={tier_counts['cache']} snapshot={tier_counts['snapshot']} "
+        f"hardcoded={tier_counts['hardcoded']} total={len(segment_ids)}"
+    )
+
+    return values
 
 
 @app.get("/health")
