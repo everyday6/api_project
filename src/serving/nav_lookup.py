@@ -95,6 +95,12 @@ _memory_cache: dict[tuple[str, str], dict] = {}
 _s3_snapshot_loaded = False
 _s3_snapshot: dict[str, dict[str, dict]] = {}
 
+# Type2(길이) 전용 S3 스냅샷 - segment_id당 값 하나뿐이라 위 type1
+# 스냅샷과 구조가 달라 별도로 둔다. GLOBAL_PARTITION_KEY 기본값도 이
+# 스냅샷 안에 자연히 포함돼 있다(src/nav_length/gold2.py 참고).
+_length_snapshot_loaded = False
+_length_snapshot: dict[str, float] = {}
+
 # 서빙 전용 fast-fail RDS 커넥션. db.py의 공유 커넥션과 별개로 지연 생성해서
 # Lambda 웜스타트 사이에 재사용한다.
 _fast_rds_connection = None
@@ -299,9 +305,24 @@ def _lookup_global_default(table_name: str) -> int:
     return _HARDCODED_DEFAULTS[2]
 
 
+def _load_length_snapshot_once() -> None:
+    global _length_snapshot_loaded, _length_snapshot
+    if _length_snapshot_loaded:
+        return
+    _length_snapshot = gold_snapshot.read_snapshot("type2")
+    _length_snapshot_loaded = True
+
+
 def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]:
     """Type2(길이)는 시간과 무관해 세그먼트당 값이 하나뿐이다 - 중복
-    segment_id는 한 번만 조회해서 재사용해도 안전하다."""
+    segment_id는 한 번만 조회해서 재사용해도 안전하다.
+
+    RDS는 살아있는데 특정 segment만 없으면 GLOBAL 기본값(RDS의 실측
+    중앙값, src/nav_length/gold2.py 참고)으로 채운다. RDS 자체가
+    죽었으면 그 RDS 재조회(_lookup_global_default) 대신 S3 스냅샷으로
+    바로 넘어간다 - 이미 죽은 RDS에 재시도성 호출을 또 보낼 이유가
+    없다. 스냅샷에도 없으면 스냅샷 자체에 실려있는 GLOBAL 값을 쓰고,
+    스냅샷마저 실패하면 최후의 코드 상수로 떨어진다."""
     unique_ids = list(dict.fromkeys(segment_ids))
     resolved: dict[str, int] = {}
 
@@ -320,19 +341,24 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
                     f"RDS 항목 형식 오류(다음 fallback 단계로 넘어감): "
                     f"table={table_name} segment_id={sid}"
                 )
+
+        remaining = [sid for sid in unique_ids if sid not in resolved]
+        if remaining:
+            default_value = _lookup_global_default(table_name)
+            for sid in remaining:
+                resolved[sid] = default_value
     except Exception:
-        logger.exception(f"RDS batch_get_items 실패: table={table_name}")
+        logger.exception(f"RDS batch_get_items 실패 -> S3 스냅샷으로 폴백: table={table_name}")
+        _load_length_snapshot_once()
+        fallback_default = _length_snapshot.get(GLOBAL_PARTITION_KEY, _HARDCODED_DEFAULTS[2])
+        for sid in unique_ids:
+            if sid not in resolved:
+                resolved[sid] = round(_length_snapshot.get(sid, fallback_default))
     finally:
         logger.info(
             f"[nav_lookup] RDS type2 배치 조회 소요 시간: "
             f"{(time.monotonic() - started) * 1000:.0f}ms"
         )
-
-    remaining = [sid for sid in unique_ids if sid not in resolved]
-    if remaining:
-        default_value = _lookup_global_default(table_name)
-        for sid in remaining:
-            resolved[sid] = default_value
 
     return [resolved[sid] for sid in segment_ids]
 

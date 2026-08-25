@@ -14,6 +14,7 @@ from fastapi import FastAPI, Request
 from fastapi.responses import JSONResponse
 from pydantic import Field, RootModel, field_validator
 
+from src.common import gold_snapshot
 from src.common.config import (
     RDS_DB,
     RDS_HOST,
@@ -54,6 +55,16 @@ RDS_STATEMENT_TIMEOUT_MS = 1_000
 
 _value_cache: OrderedDict[tuple[str, str], float] = OrderedDict()
 _cache_lock = Lock()
+
+# RDS 자체가 응답 불가능할 때 메모리 캐시 다음으로 쓰는 S3 스냅샷 2개
+# (src/tlc/gold2.py/spark_jobs/tlc_pipeline_job.py의 _export_type3_snapshot이
+# RDS 쓰기 성공 시마다 갱신). zone→segment로 확장된 7,300만 행을 그대로
+# 담으면 너무 커서, 확장 전 재료(zone 단위 rolling 평균 + segment→zone
+# 매핑)만 담아뒀다가 조회 시 조합해서 재구성한다(무손실 - 확장이 단순
+# 값 복사라서 가능함).
+_type3_snapshot_loaded = False
+_type3_zone_snapshot: dict[str, float] = {}
+_type3_mapping_snapshot: dict[str, int] = {}
 
 SegmentId = Annotated[str, Field(min_length=1)]
 SegmentIds = Annotated[
@@ -157,13 +168,36 @@ def _remember_value(segment_id: str, cache_slot: str, value: float) -> None:
             _value_cache.popitem(last=False)
 
 
-def _fallback_value(segment_id: str, cache_slot: str) -> float:
+def _load_type3_snapshot_once() -> None:
+    global _type3_snapshot_loaded, _type3_zone_snapshot, _type3_mapping_snapshot
+    if _type3_snapshot_loaded:
+        return
+    _type3_zone_snapshot = gold_snapshot.read_snapshot("type3_zone")
+    _type3_mapping_snapshot = gold_snapshot.read_snapshot("type3_mapping")
+    _type3_snapshot_loaded = True
+
+
+def _resolve_from_zone_snapshot(segment_id: str, dow: str, bucket: str) -> float | None:
+    """Zone 스냅샷 + segment→zone 매핑으로 값을 재구성한다. 매핑에 그
+    segment가 없거나 zone 스냅샷에 그 (zone, dow, bucket) 조합이 없으면
+    None을 돌려줘서 호출부가 최종 기본값(0)으로 내려가게 한다."""
+    _load_type3_snapshot_once()
+    zone_id = _type3_mapping_snapshot.get(segment_id)
+    if zone_id is None:
+        return None
+    return _type3_zone_snapshot.get(f"{zone_id}#{dow}#{bucket}")
+
+
+def _fallback_value(segment_id: str, cache_slot: str, dow: str, bucket: str) -> float:
     key = (segment_id, cache_slot)
     with _cache_lock:
-        value = _value_cache.get(key, MISSING_VALUE)
         if key in _value_cache:
+            value = _value_cache[key]
             _value_cache.move_to_end(key)
-        return value
+            return value
+
+    value = _resolve_from_zone_snapshot(segment_id, dow, bucket)
+    return value if value is not None else MISSING_VALUE
 
 
 def _unique_in_order(values: list[str]) -> list[str]:
@@ -248,7 +282,7 @@ def get_type3_values(
     return [
         found[segment_id]
         if segment_id in found
-        else _fallback_value(segment_id, cache_slot)
+        else _fallback_value(segment_id, cache_slot, dow, bucket)
         for segment_id in segment_ids
     ]
 

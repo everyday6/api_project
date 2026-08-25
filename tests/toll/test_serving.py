@@ -1,6 +1,19 @@
 from unittest.mock import patch
 
-from src.toll.serving import get_toll_values
+import pytest
+
+from src.toll import serving
+from src.toll.serving import get_toll_value, get_toll_values
+
+
+@pytest.fixture(autouse=True)
+def _clear_snapshot_cache():
+    """모듈 전역 스냅샷 캐시가 테스트 간에 새지 않도록 초기화한다."""
+    serving._snapshot_loaded = False
+    serving._snapshot = {}
+    yield
+    serving._snapshot_loaded = False
+    serving._snapshot = {}
 
 
 def test_get_toll_values_returns_values_in_order():
@@ -36,8 +49,36 @@ def test_get_toll_values_dedupes_before_querying_then_restores_duplicates():
     assert len(keys_arg) == 1
 
 
-def test_get_toll_values_falls_back_to_zero_when_rds_unreachable():
-    with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")):
+def test_get_toll_values_falls_back_to_zero_when_rds_and_snapshot_both_fail():
+    with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={}):
         result = get_toll_values(["1", "2", "3"])
 
     assert result == [0.0, 0.0, 0.0]
+
+
+def test_get_toll_values_falls_back_to_s3_snapshot_when_rds_unreachable():
+    # RDS 자체가 죽었을 때는 스냅샷에 있는 값을 그대로 쓴다 - 스냅샷에
+    # 없는 segment만 0으로 떨어진다.
+    with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 2.75}):
+        result = get_toll_values(["1", "2"])
+
+    assert result == [2.75, 0.0]
+
+
+def test_get_toll_values_loads_snapshot_only_once_per_process():
+    with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 2.75}) as mock_read:
+        get_toll_values(["1"])
+        get_toll_values(["1"])
+
+    mock_read.assert_called_once()
+
+
+def test_get_toll_value_delegates_to_get_toll_values():
+    with patch(
+        "src.toll.serving.db.batch_get_items",
+        return_value={("1",): {"segment_id": "1", "value": 5.0}},
+    ):
+        assert get_toll_value("1") == 5.0
