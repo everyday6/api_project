@@ -210,9 +210,9 @@ def _resolve_from_row(row: dict | None) -> tuple[int | None, str | None]:
     Grafana 대시보드용 fallback 히트율 집계에 쓴다(_resolve_time_values
     참고)."""
     if row is None:
-        return None
+        return None, None
     if row.get("value") is not None and _is_fresh(row.get("last_sample_at")):
-        return round(row["value"])
+        return round(row["value"]), "fresh"
     if row.get("avg") is not None:
         return round(row["avg"]), "avg"
     return None, None

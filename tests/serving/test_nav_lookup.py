@@ -195,8 +195,8 @@ def test_resolve_time_values_logs_fallback_tier_summary(caplog):
     # 요약 로그 한 줄을 집계한다 - 세그먼트마다 로그를 안 남기고 요청당
     # 한 번만 남기는지, tier별 개수가 맞는지 확인한다.
     rows = {
-        "fresh_seg": {"1200": {"value": 10, "avg": None, "collected_date": TODAY}},
-        "avg_seg": {"1200": {"value": None, "avg": 20, "collected_date": None}},
+        "fresh_seg": {"1200": {"value": 10, "avg": None, "last_sample_at": TODAY}},
+        "avg_seg": {"1200": {"value": None, "avg": 20, "last_sample_at": None}},
     }
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows), \
          caplog.at_level("INFO", logger="src.serving.nav_lookup"):
