@@ -187,6 +187,44 @@ def test_get_type3_values_falls_back_to_zone_snapshot_when_rds_unreachable():
     assert result == [33.0, 0.0]
 
 
+def test_get_type3_values_logs_fallback_tier_summary(caplog):
+    # rds/cache/snapshot/hardcoded 네 계층을 한 요청 안에서 다 겪게 만들어서
+    # 요청당 한 번 남는 요약 로그의 계층별 개수가 맞는지 확인한다 - Grafana의
+    # "Type3 fallback 계층 비율" 패널이 이 로그를 집계한다.
+    requested_at = datetime(2026, 8, 21, 12, 0)  # FRI, 1200
+    zone_snapshot = {"42#FRI#1200": 33.0}
+    mapping_snapshot = {"snapshot-seg": 42}
+
+    def fake_read_snapshot(type_name):
+        return zone_snapshot if type_name == "type3_zone" else mapping_snapshot
+
+    with patch("src.common.gold_snapshot.read_snapshot", side_effect=fake_read_snapshot), \
+         caplog.at_level("INFO", logger="src.serving.api"):
+        # cached-seg를 먼저 RDS로 성공 조회해서 메모리 캐시에 데워둔다.
+        api.get_type3_values(
+            ["cached-seg"],
+            requested_at,
+            conn=FakeConnection({"cached-seg": 10.0}),
+            table_name="navigation-values",
+        )
+        api.get_type3_values(
+            ["rds-seg", "cached-seg", "snapshot-seg", "hardcoded-seg"],
+            requested_at,
+            conn=FakeConnection({"rds-seg": 20.0}),
+            table_name="navigation-values",
+        )
+
+    summary_logs = [
+        r.message for r in caplog.records
+        if "[type3_fallback_tier_summary]" in r.message and "total=4" in r.message
+    ]
+    assert len(summary_logs) == 1
+    assert "rds=1" in summary_logs[0]
+    assert "cache=1" in summary_logs[0]
+    assert "snapshot=1" in summary_logs[0]
+    assert "hardcoded=1" in summary_logs[0]
+
+
 def test_get_type3_values_loads_snapshot_only_once_per_process():
     requested_at = datetime(2026, 8, 21, 12, 0)
 
