@@ -54,6 +54,7 @@ def get_toll_values(segment_ids: list[str]) -> list[float]:
 
     unique_ids = list(dict.fromkeys(segment_ids))
     keys = [{"segment_id": segment_id} for segment_id in unique_ids]
+    tier: dict[str, str] = {}
 
     try:
         found = db.batch_get_items(SERVING_TABLE_TYPE4, keys)
@@ -62,6 +63,11 @@ def get_toll_values(segment_ids: list[str]) -> list[float]:
             for segment_id in unique_ids
             if (segment_id,) in found
         }
+        # RDS 호출 자체는 성공했으므로, 이 segment에 통행료가 없는 것도
+        # "진짜 통행료 대상이 아님"이지 폴백이 아니다(위 docstring 참고) -
+        # 전부 rds 계층으로 센다.
+        for segment_id in unique_ids:
+            tier[segment_id] = "rds"
     except Exception:
         logger.exception("[toll_serving] RDS 조회 실패 - S3 스냅샷으로 폴백합니다")
         _load_snapshot_once()
@@ -70,5 +76,18 @@ def get_toll_values(segment_ids: list[str]) -> list[float]:
             for segment_id in unique_ids
             if segment_id in _snapshot
         }
+        for segment_id in unique_ids:
+            tier[segment_id] = "snapshot" if segment_id in _snapshot else "hardcoded"
+
+    # 요청당 한 번만 남긴다 - Grafana의 "Type4 fallback 계층 비율" 패널이
+    # 이 로그를 집계한다.
+    tier_counts = {"rds": 0, "snapshot": 0, "hardcoded": 0}
+    for segment_id in segment_ids:
+        tier_counts[tier[segment_id]] += 1
+    logger.info(
+        f"[type4_fallback_tier_summary] rds={tier_counts['rds']} "
+        f"snapshot={tier_counts['snapshot']} hardcoded={tier_counts['hardcoded']} "
+        f"total={len(segment_ids)}"
+    )
 
     return [values.get(segment_id, 0.0) for segment_id in segment_ids]

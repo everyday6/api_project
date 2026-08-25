@@ -325,6 +325,7 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
     스냅샷마저 실패하면 최후의 코드 상수로 떨어진다."""
     unique_ids = list(dict.fromkeys(segment_ids))
     resolved: dict[str, int] = {}
+    tier: dict[str, str] = {}
 
     started = time.monotonic()
     try:
@@ -336,6 +337,7 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
                 continue
             try:
                 resolved[sid] = round(item["value"])
+                tier[sid] = "rds"
             except (KeyError, ValueError, TypeError):
                 logger.exception(
                     f"RDS 항목 형식 오류(다음 fallback 단계로 넘어감): "
@@ -347,6 +349,7 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
             default_value = _lookup_global_default(table_name)
             for sid in remaining:
                 resolved[sid] = default_value
+                tier[sid] = "global"
     except Exception:
         logger.exception(f"RDS batch_get_items 실패 -> S3 스냅샷으로 폴백: table={table_name}")
         _load_length_snapshot_once()
@@ -354,11 +357,26 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
         for sid in unique_ids:
             if sid not in resolved:
                 resolved[sid] = round(_length_snapshot.get(sid, fallback_default))
+                tier[sid] = "snapshot" if sid in _length_snapshot else "hardcoded"
     finally:
         logger.info(
             f"[nav_lookup] RDS type2 배치 조회 소요 시간: "
             f"{(time.monotonic() - started) * 1000:.0f}ms"
         )
+
+    # 요청당 한 번만 남긴다 - Grafana의 "Type2 fallback 계층 비율" 패널이
+    # 이 로그를 집계한다. rds=세그먼트 자체 row를 RDS에서 직접 찾음,
+    # global=RDS는 살아있지만 이 세그먼트 값이 없어 GLOBAL 기본값 사용,
+    # snapshot=RDS 자체가 죽어 S3 스냅샷의 세그먼트별 값 사용,
+    # hardcoded=스냅샷에도 없어 코드 상수 사용.
+    tier_counts = {"rds": 0, "global": 0, "snapshot": 0, "hardcoded": 0}
+    for sid in segment_ids:
+        tier_counts[tier.get(sid, "hardcoded")] += 1
+    logger.info(
+        f"[type2_fallback_tier_summary] rds={tier_counts['rds']} "
+        f"global={tier_counts['global']} snapshot={tier_counts['snapshot']} "
+        f"hardcoded={tier_counts['hardcoded']} total={len(segment_ids)}"
+    )
 
     return [resolved[sid] for sid in segment_ids]
 
