@@ -15,7 +15,11 @@ datasources:
     secureJsonData:
       password: ${RDS_PASSWORD}
     jsonData:
-      sslmode: prefer
+      # Grafana의 Postgres 드라이버(Go lib/pq)는 disable/require/verify-ca/
+      # verify-full만 지원한다 - psycopg2의 prefer는 못 씀(src/common/db.py는
+      # psycopg2라 sslmode를 아예 안 정해도 되지만 여기선 명시가 필요).
+      # RDS는 기본적으로 TLS를 지원하니 require로 고정한다.
+      sslmode: require
       postgresVersion: 1600
       timescaledb: false
     isDefault: false
