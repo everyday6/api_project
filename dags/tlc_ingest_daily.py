@@ -1,4 +1,4 @@
-"""TLC Type 3 단일 수집·가공 파이프라인.
+"""TLC 원본 수집 → S3 Gold2(Type 3 Zone 일별 집계) 생성 파이프라인.
 
 TLC 데이터는 정확히 한 달 뒤가 아니라 몇 달씩 지연을 두고
 불규칙하게 올라오기 때문에, 특정 날짜를 기다리는 대신
@@ -19,8 +19,11 @@ Validate (Great Expectations, EMR Serverless)
 Silver1 (EMR Serverless)
     ↓
 Zone 날짜별 Type 3 (EMR Serverless → S3 Gold2)
-    ↓
-Zone 최근 12주 요일별 평균 → Segment 매핑 → RDS (EMR Serverless)
+
+S3 Gold2를 RDS(서빙 DB)에 발행하는 건 별도 DAG(tlc_type3_serving_daily)가
+맡는다 - "데이터 생성"과 "서비스 DB 발행"의 역할을 분리해서, RDS 쪽에
+문제가 생겨도 이 DAG(다운로드~Silver~Gold2)를 다시 돌릴 필요가 없게
+한다. 두 DAG는 강하게 연결하지 않고 각자 독립적으로 매일 실행된다.
 
 신규 파일이 없는 날은 각 단계가 빈 목록에 대해 실행되어
 아무 일도 하지 않고 정상 종료된다.
@@ -48,15 +51,11 @@ from src.tlc.bronze_validation import (
     chunk_bronze_files,
     validate_bronze_quality,
 )
-from src.tlc.silver1 import build_silver, find_pending_silver_files
+from src.tlc.silver1 import build_silver
 from src.tlc.type3_pipeline import (
     build_type3_staged_records,
-    check_type3_publish_needed,
-    check_type3_reference_ready,
     cleanup_type3_staging,
-    find_pending_type3_months,
     publish_type3_daily_records,
-    publish_type3_rolling_values,
     validate_type3_staged_records,
 )
 
@@ -76,7 +75,7 @@ default_args = {
 # =========================================================
 
 @dag(
-    dag_id="tlc_daily",
+    dag_id="tlc_ingest_daily",
     start_date=datetime(2025, 8, 1),
     schedule="@daily",
     catchup=False,
@@ -86,9 +85,9 @@ default_args = {
     max_active_runs=1,
     default_args=default_args,
     on_failure_callback=notify_slack_failure,
-    tags=["TLC", "daily"],
+    tags=["TLC", "ingest", "daily"],
 )
-def tlc_daily():
+def tlc_ingest_daily():
 
     # -----------------------------------------
     # 1. 신규 데이터 확인
@@ -121,21 +120,15 @@ def tlc_daily():
     )
 
     # -----------------------------------------
-    # 5. Bronze는 있지만 Silver1이 완료되지 않은 파일 복구
-    # -----------------------------------------
-
-    pending_silver_files = find_pending_silver_files(bronze_files)
-
-    # -----------------------------------------
-    # 6. taxi_type별 청크로 묶기
+    # 5. taxi_type별 청크로 묶기
     # -----------------------------------------
 
     bronze_chunks = chunk_bronze_files(
-        bronze_files=pending_silver_files,
+        bronze_files=bronze_files,
     )
 
     # -----------------------------------------
-    # 7. 청크별 Bronze 데이터 품질 검증 (Great Expectations)
+    # 6. 청크별 Bronze 데이터 품질 검증 (Great Expectations)
     # -----------------------------------------
 
     validated_bronze_chunks = validate_bronze_quality.expand(
@@ -143,7 +136,7 @@ def tlc_daily():
     )
 
     # -----------------------------------------
-    # 8. 검증 통과 파일 Silver1 변환 및 S3 저장
+    # 7. 검증 통과 파일 Silver1 변환 및 S3 저장
     # -----------------------------------------
 
     silver_results = build_silver.expand(
@@ -151,24 +144,15 @@ def tlc_daily():
     )
 
     # -----------------------------------------
-    # 9. Type 3 임시 저장 → 검증 → 운영 파티션 승격
+    # 8. Type 3 임시 저장 → 검증 → 운영 파티션(S3 Gold2) 승격
+    #    (오늘 신규 Silver 기준)
     # -----------------------------------------
 
-    pending_type3_months = find_pending_type3_months(silver_results)
-    staged_type3 = build_type3_staged_records(pending_type3_months)
+    staged_type3 = build_type3_staged_records(silver_results)
     validated_type3 = validate_type3_staged_records(staged_type3)
     published_type3 = publish_type3_daily_records(validated_type3)
     cleanup_type3_staging(published_type3)
 
-    # -----------------------------------------
-    # 10. RDS가 최신 12주보다 오래된 경우에만 갱신
-    # -----------------------------------------
-
-    publish_plan = check_type3_publish_needed(published_type3)
-    reference_ready = check_type3_reference_ready(publish_plan)
-    published_values = publish_type3_rolling_values(publish_plan)
-    reference_ready >> published_values
-
 
 # DAG 생성
-tlc_daily()
+tlc_ingest_daily()

@@ -18,13 +18,14 @@ from src.tlc.gold2 import (
     write_type3_rolling_to_rds,
 )
 from src.tlc.type3_pipeline import (
+    TYPE3_FRESHNESS_MAX_LAG_DAYS,
     _complete_silver_paths_for_month,
-    _find_pending_type3_months,
-    _month_success_marker,
+    _months_from_silver_results,
     _read_type3_publish_state,
     _staging_run_path,
     _type3_metadata_is_current,
     _type3_reference_exists,
+    _type3_rds_lag_days,
     _write_type3_publish_state,
 )
 
@@ -100,29 +101,18 @@ def test_complete_silver_paths_require_all_taxi_types(tmp_path):
     assert missing_types == []
 
 
-def test_find_pending_type3_months_uses_month_success_marker(tmp_path):
-    silver_root = tmp_path / "silver"
-    marker_root = tmp_path / "markers"
-    for taxi_type in TAXI_TYPES:
-        output = silver_root / f"{taxi_type}_tripdata_2026-05"
-        output.mkdir(parents=True)
-        (output / "_SUCCESS").touch()
+def test_months_from_silver_results_dedupes_and_sorts():
+    silver_results = [
+        {"taxi_type": "yellow", "filename": "yellow_tripdata_2026-05.parquet"},
+        {"taxi_type": "green", "filename": "green_tripdata_2026-05.parquet"},
+        {"taxi_type": "fhv", "filename": "fhv_tripdata_2026-04.parquet"},
+    ]
 
-    assert _find_pending_type3_months(
-        ["2026-05"],
-        silver_root=silver_root,
-        marker_root=marker_root,
-    ) == ["2026-05"]
+    assert _months_from_silver_results(silver_results) == ["2026-04", "2026-05"]
 
-    marker = _month_success_marker("2026-05", marker_root)
-    marker.parent.mkdir(parents=True)
-    marker.touch()
 
-    assert _find_pending_type3_months(
-        ["2026-05"],
-        silver_root=silver_root,
-        marker_root=marker_root,
-    ) == []
+def test_months_from_silver_results_empty_for_no_new_files():
+    assert _months_from_silver_results([]) == []
 
 
 def test_type3_metadata_is_current_only_after_completed_publish():
@@ -169,6 +159,31 @@ def test_type3_publish_state_round_trip(tmp_path):
     assert _read_type3_publish_state(state_path) == {}
     _write_type3_publish_state(metadata, state_path)
     assert _read_type3_publish_state(state_path) == metadata
+
+
+def test_type3_rds_lag_days_zero_when_in_sync():
+    gold_window_end = date(2026, 8, 24)
+    state = {"status": "COMPLETED", "window_end": "2026-08-24"}
+
+    assert _type3_rds_lag_days(gold_window_end, state) == 0
+
+
+def test_type3_rds_lag_days_positive_when_rds_behind_gold2():
+    gold_window_end = date(2026, 8, 24)
+    state = {"status": "COMPLETED", "window_end": "2026-08-20"}
+
+    lag_days = _type3_rds_lag_days(gold_window_end, state)
+
+    assert lag_days == 4
+    assert lag_days > TYPE3_FRESHNESS_MAX_LAG_DAYS, (
+        "이 테스트는 '기준을 넘는 gap'을 나타내야 한다 - 임계값이 바뀌면 "
+        "같이 조정할 것"
+    )
+
+
+def test_type3_rds_lag_days_rejects_missing_publish_state():
+    with pytest.raises(ValueError, match="배포 상태가 없습니다"):
+        _type3_rds_lag_days(date(2026, 8, 24), {})
 
 
 def test_type3_reference_exists_is_false_until_mapping_is_published(tmp_path):
