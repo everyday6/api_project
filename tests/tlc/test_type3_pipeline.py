@@ -313,7 +313,8 @@ def test_copy_type3_partition_propagates_copy_failure():
 
 
 def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
-    """파티션별 스테이징 테이블 생성/병합/정리 SQL과 COPY 호출을 검증한다.
+    """파티션별 스테이징 테이블 생성 -> 통합 스테이징으로 UNION ALL 병합 ->
+    원자적 스왑 -> 정리까지의 SQL과 COPY 호출을 검증한다.
 
     실제 파티션 쓰기(_copy_type3_partition)는 no-op으로 바꿔치기하고,
     driver 쪽에서 직접 여는 db.new_connection()만 fake로 검증한다.
@@ -343,20 +344,35 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
 
     assert written == 2
 
-    # 파티션 3개 x (CREATE TABLE, ALTER TABLE) = 6, + 병합 upsert 1 +
-    # DROP TABLE 1 = execute 8번.
-    assert cur.execute.call_count == 8
+    # 파티션 3개 x (CREATE TABLE, ALTER TABLE) = 6, + 통합 스테이징
+    # (CREATE, ALTER UNLOGGED, INSERT...UNION ALL, ALTER LOGGED, ANALYZE) = 5,
+    # + RENAME 2 + DROP TABLE 3(파티션들/통합/old 각각) = execute 16번.
+    assert cur.execute.call_count == 16
     executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
     for i in range(3):
         assert "CREATE TABLE" in executed_sql[i * 2]
         assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
-    assert "UNION ALL" in executed_sql[6]
-    assert "ON CONFLICT" in executed_sql[6]
-    assert "DROP TABLE" in executed_sql[7]
+    assert "CREATE TABLE" in executed_sql[6]
+    assert "INCLUDING ALL" in executed_sql[6]
+    assert "SET UNLOGGED" in executed_sql[7]
+    assert "UNION ALL" in executed_sql[8]
+    assert "SET LOGGED" in executed_sql[9]
+    assert "ANALYZE" in executed_sql[10]
+    assert "RENAME TO" in executed_sql[11]
+    assert "RENAME TO" in executed_sql[12]
+    assert "DROP TABLE" in executed_sql[13]
+    assert "DROP TABLE" in executed_sql[14]
+    assert "DROP TABLE" in executed_sql[15]
 
-    # _copy_type3_partition에도 같은 접두사가 전달됐고, 병합/정리 SQL에
-    # 파티션 0~2번 테이블명이 전부 등장하는지 확인한다(공유 테이블이
-    # 아니라 파티션마다 다른 테이블이라는 것의 증거).
+    # 두 RENAME이 한 트랜잭션으로 묶여서 커밋됐는지 확인한다(둘 다 성공해야
+    # 라이브 테이블 이름이 존재하지 않는 순간 없이 스왑된다).
+    conn.commit.assert_called_once()
+    conn.rollback.assert_not_called()
+
+    # _copy_type3_partition에도 같은 접두사가 전달됐고, 파티션별 스테이징
+    # 테이블명이 각자의 CREATE/ALTER 및 통합 단계의 UNION ALL, 정리 DROP에
+    # 전부 등장하는지 확인한다(공유 테이블이 아니라 파티션마다 다른
+    # 테이블이라는 것의 증거).
     assert len(copy_calls) == 1
     staging_prefix, collected_date = copy_calls[0]
     assert staging_prefix.startswith("tmp_type3_")
@@ -364,8 +380,13 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
     for i in range(3):
         table_name = f"{staging_prefix}_p{i}"
         assert table_name in executed_sql[i * 2]
-        assert table_name in executed_sql[6]
-        assert table_name in executed_sql[7]
+        assert table_name in executed_sql[8]
+        assert table_name in executed_sql[13]
+
+    # 라이브 테이블 이름이 첫 번째 RENAME(라이브->old)과 두 번째
+    # RENAME(통합 스테이징->라이브)에 그대로 쓰였는지 확인한다.
+    assert "nav-segment-metrics" in executed_sql[11]
+    assert "nav-segment-metrics" in executed_sql[12]
 
     conn.close.assert_called_once()
 
@@ -419,16 +440,20 @@ def test_write_type3_rolling_to_rds_cleans_up_staging_tables_on_partition_failur
                 date(2026, 8, 20),
             )
 
-    # 파티션 3개의 CREATE/ALTER(6개)까지만 성공하고 병합은 못 갔지만,
-    # DROP은 finally에서 3개 테이블 다 걸고 실행돼야 한다.
+    # 파티션 3개의 CREATE/ALTER(6개)까지만 성공하고 통합/스왑은 못 갔지만,
+    # DROP 3개(파티션들 한 번에/통합 스테이징-애초에 안 생겼어도 IF EXISTS라
+    # 조용히 넘어감/old-마찬가지)는 finally에서 실행돼야 한다.
     executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
-    assert len(executed_sql) == 7
+    assert len(executed_sql) == 9
     for i in range(3):
         assert "CREATE TABLE" in executed_sql[i * 2]
         assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
     assert "DROP TABLE" in executed_sql[6]
     for i in range(3):
         assert f"_p{i}" in executed_sql[6]
+    assert "DROP TABLE" in executed_sql[7]
+    assert "DROP TABLE" in executed_sql[8]
+    conn.commit.assert_not_called()
     conn.close.assert_called_once()
 
 
