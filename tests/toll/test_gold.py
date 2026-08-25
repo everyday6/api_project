@@ -1,7 +1,10 @@
+from unittest.mock import patch
+
 import pandas as pd
 import pytest
 import yaml
 
+from src.toll import gold
 from src.toll.gold import (
     build_gold_items,
     get_toll_value,
@@ -118,6 +121,29 @@ def test_build_gold_items_keeps_first_match_when_segment_matches_two_facilities(
 
     assert len(items) == 1
     assert items[0]["value"] == 17.00
+
+
+def test_write_gold_items_exports_snapshot_after_rds_write():
+    items = [{"segment_id": "S1", "value": 2.75}, {"segment_id": "S2", "value": 17.00}]
+
+    with patch.object(gold.db, "ensure_table"), \
+         patch.object(gold.db, "batch_write_items") as mock_write, \
+         patch.object(gold.gold_snapshot, "write_snapshot") as mock_snapshot:
+        write_gold_items(items)
+
+    mock_write.assert_called_once()
+    mock_snapshot.assert_called_once_with("type4", {"S1": 2.75, "S2": 17.00})
+
+
+def test_write_gold_items_survives_snapshot_export_failure():
+    # 스냅샷 갱신이 실패해도 RDS 쓰기 자체는 이미 끝났으므로 예외를
+    # 전파하면 안 된다.
+    items = [{"segment_id": "S1", "value": 2.75}]
+
+    with patch.object(gold.db, "ensure_table"), \
+         patch.object(gold.db, "batch_write_items"), \
+         patch.object(gold.gold_snapshot, "write_snapshot", side_effect=RuntimeError("S3 down")):
+        write_gold_items(items)  # 예외 없이 정상 종료돼야 한다.
 
 
 @requires_postgres

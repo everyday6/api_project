@@ -22,7 +22,7 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src.common import db
+from src.common import db, gold_snapshot
 from src.common.config import (
     SERVING_TABLE_TYPE4,
     SERVING_TABLE_TYPE4_COLUMNS,
@@ -123,6 +123,17 @@ def write_gold_items(items: list[dict]) -> None:
         key_columns=SERVING_TABLE_TYPE4_KEY_COLUMNS,
     )
     logger.info(f"[toll_gold] RDS에 {len(items)}개 아이템 적재 완료")
+
+    # RDS가 죽었을 때 서빙 쪽(src/toll/serving.py)이 대신 쓸 스냅샷을
+    # 갱신한다. 통행료 대상 segment만이라 전체를 통째로 담아도 작다 -
+    # segment_id별 값 하나뿐이라 시간 슬롯 분할이 필요 없다(type1과 다른
+    # 이유는 nav_time/gold2.py 참고). 스냅샷 갱신 자체가 실패해도 RDS
+    # 쓰기는 이미 끝난 뒤라 파이프라인을 실패시키지 않는다.
+    try:
+        snapshot = {item["segment_id"]: item["value"] for item in items}
+        gold_snapshot.write_snapshot("type4", snapshot)
+    except Exception:
+        logger.exception("[toll_gold] S3 스냅샷 갱신 실패(RDS 쓰기 자체는 성공)")
 
 
 def build_and_write(

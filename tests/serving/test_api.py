@@ -1,4 +1,5 @@
 from datetime import datetime
+from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
@@ -60,8 +61,14 @@ def clear_value_cache():
     with api._cache_lock:
         api._value_cache.clear()
     api._db_connection = None
+    api._type3_snapshot_loaded = False
+    api._type3_zone_snapshot = {}
+    api._type3_mapping_snapshot = {}
     yield
     api._db_connection = None
+    api._type3_snapshot_loaded = False
+    api._type3_zone_snapshot = {}
+    api._type3_mapping_snapshot = {}
 
 
 def test_build_sort_key_floors_to_30_minute_slot():
@@ -130,14 +137,52 @@ def test_get_type3_values_uses_cache_then_zero_on_rds_failure():
         table_name="navigation-values",
     )
 
-    result = api.get_type3_values(
-        ["0077356", "0088421"],
-        requested_at,
-        conn=FakeConnection(fail=True),
-        table_name="navigation-values",
-    )
+    with patch("src.common.gold_snapshot.read_snapshot", return_value={}):
+        result = api.get_type3_values(
+            ["0077356", "0088421"],
+            requested_at,
+            conn=FakeConnection(fail=True),
+            table_name="navigation-values",
+        )
 
     assert result == [18.5, 0.0]
+
+
+def test_get_type3_values_falls_back_to_zone_snapshot_when_rds_unreachable():
+    # 캐시에 없는 segment는 zone 스냅샷 + segment→zone 매핑으로 재구성한다.
+    requested_at = datetime(2026, 8, 21, 12, 0)  # FRI, 1200
+    zone_snapshot = {"42#FRI#1200": 33.0}
+    mapping_snapshot = {"0088421": 42}
+
+    def fake_read_snapshot(type_name):
+        return zone_snapshot if type_name == "type3_zone" else mapping_snapshot
+
+    with patch("src.common.gold_snapshot.read_snapshot", side_effect=fake_read_snapshot):
+        result = api.get_type3_values(
+            ["0088421", "unmapped-segment"],
+            requested_at,
+            conn=FakeConnection(fail=True),
+            table_name="navigation-values",
+        )
+
+    assert result == [33.0, 0.0]
+
+
+def test_get_type3_values_loads_snapshot_only_once_per_process():
+    requested_at = datetime(2026, 8, 21, 12, 0)
+
+    with patch(
+        "src.common.gold_snapshot.read_snapshot", return_value={}
+    ) as mock_read:
+        api.get_type3_values(
+            ["0088421"], requested_at, conn=FakeConnection(fail=True), table_name="navigation-values",
+        )
+        api.get_type3_values(
+            ["0088421"], requested_at, conn=FakeConnection(fail=True), table_name="navigation-values",
+        )
+
+    # zone + 매핑 2개 파일 -> 최초 1회씩(총 2번), 그 이후 재호출에서는 안 늘어난다.
+    assert mock_read.call_count == 2
 
 
 def test_navigation_values_accepts_agreed_array_request(monkeypatch):

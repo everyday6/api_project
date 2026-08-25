@@ -12,8 +12,25 @@ RDS 조회 하나뿐이라 그 의존성이 전혀 필요 없는데, nav_api.py�
 
 from __future__ import annotations
 
-from src.common import db
+from src.common import db, gold_snapshot
 from src.common.config import SERVING_TABLE_TYPE4
+from src.common.logger import get_logger
+
+logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_serving")
+
+# RDS 자체가 응답 불가능할 때 대신 쓰는 S3 스냅샷(gold.py의 write_gold_items가
+# RDS 쓰기 성공 시마다 갱신). Lambda 웜 인스턴스에서 최초 1회만 로드해서
+# 재사용한다 - 통행료 대상 segment만이라 전체를 통째로 담아도 작다.
+_snapshot_loaded = False
+_snapshot: dict[str, float] = {}
+
+
+def _load_snapshot_once() -> None:
+    global _snapshot_loaded, _snapshot
+    if _snapshot_loaded:
+        return
+    _snapshot = gold_snapshot.read_snapshot("type4")
+    _snapshot_loaded = True
 
 
 def get_toll_value(segment_id: str) -> float:
@@ -22,32 +39,36 @@ def get_toll_value(segment_id: str) -> float:
     호환용으로 남겨둔다 — 여러 세그먼트를 한 번에 조회할 때는
     get_toll_values()를 쓴다(RDS 호출 횟수를 줄임)."""
 
-    return db.get_value(
-        SERVING_TABLE_TYPE4,
-        {"segment_id": segment_id},
-        "value",
-        default=0,
-    )
+    return get_toll_values([segment_id])[0]
 
 
 def get_toll_values(segment_ids: list[str]) -> list[float]:
     """서빙 조회 함수(배치). segment_ids 순서/중복을 그대로 유지해서
     반환한다 - 중복 제거 후 한 번에 조회하고 원래 순서로 다시 매핑한다.
 
-    RDS 호출 자체가 실패하면(커넥션/네트워크 등) 전부 0으로 응답한다
-    - 무조건 응답 원칙, 통행료 하나 때문에 전체 요청이 죽으면 안 된다."""
+    RDS 호출 자체가 실패하면(커넥션/네트워크 등) S3 스냅샷으로 넘어간다.
+    RDS가 정상 응답했는데 특정 segment가 없는 건 "진짜로 통행료 대상이
+    아닌 도로"로 간주해서 스냅샷을 거치지 않고 바로 0으로 응답한다 -
+    RDS가 멀쩡한데 이미 없다고 확인된 값에 예전 스냅샷을 섞으면 두 실패
+    모드(값이 없음 vs RDS가 죽음)가 헷갈린다."""
 
     unique_ids = list(dict.fromkeys(segment_ids))
     keys = [{"segment_id": segment_id} for segment_id in unique_ids]
 
     try:
         found = db.batch_get_items(SERVING_TABLE_TYPE4, keys)
+        values = {
+            segment_id: float(found[(segment_id,)].get("value", 0))
+            for segment_id in unique_ids
+            if (segment_id,) in found
+        }
     except Exception:
-        return [0.0] * len(segment_ids)
+        logger.exception("[toll_serving] RDS 조회 실패 - S3 스냅샷으로 폴백합니다")
+        _load_snapshot_once()
+        values = {
+            segment_id: _snapshot[segment_id]
+            for segment_id in unique_ids
+            if segment_id in _snapshot
+        }
 
-    values = {
-        segment_id: float(found[(segment_id,)].get("value", 0))
-        for segment_id in unique_ids
-        if (segment_id,) in found
-    }
     return [values.get(segment_id, 0.0) for segment_id in segment_ids]

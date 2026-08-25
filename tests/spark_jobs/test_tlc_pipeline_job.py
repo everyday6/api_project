@@ -1,10 +1,12 @@
 from datetime import datetime
+from unittest.mock import patch
 
 import pandas as pd
 import pytest
 from pyspark.sql import SparkSession
 
-from spark_jobs.tlc_pipeline_job import _validate_bronze
+from spark_jobs import tlc_pipeline_job
+from spark_jobs.tlc_pipeline_job import _export_type3_snapshot, _validate_bronze
 
 
 @pytest.fixture(scope="module")
@@ -172,3 +174,34 @@ def test_validate_bronze_aggregates_multiple_critical_failures(tmp_path, spark):
     assert [item["filename"] for item in result["excluded"]] == [
         "critical_multi_1.parquet", "critical_multi_2.parquet",
     ]
+
+
+def test_export_type3_snapshot_writes_zone_and_mapping_snapshots(spark):
+    zone_rolling = spark.createDataFrame([
+        {"zone_id": 42, "dow": "FRI", "time": "1200", "value": 33.0},
+        {"zone_id": 7, "dow": "MON", "time": "0000", "value": 12.5},
+    ])
+    mapping = spark.createDataFrame([
+        {"segment_id": "S1", "zone_id": 42},
+        {"segment_id": "S2", "zone_id": 42},
+        {"segment_id": "S3", "zone_id": 7},
+    ])
+
+    with patch.object(tlc_pipeline_job.gold_snapshot, "write_snapshot") as mock_write:
+        _export_type3_snapshot(zone_rolling, mapping)
+
+    calls = {call.args[0]: call.args[1] for call in mock_write.call_args_list}
+    assert calls["type3_zone"] == {"42#FRI#1200": 33.0, "7#MON#0000": 12.5}
+    assert calls["type3_mapping"] == {"S1": 42, "S2": 42, "S3": 7}
+
+
+def test_export_type3_snapshot_survives_write_failure(spark):
+    zone_rolling = spark.createDataFrame([
+        {"zone_id": 42, "dow": "FRI", "time": "1200", "value": 33.0},
+    ])
+    mapping = spark.createDataFrame([{"segment_id": "S1", "zone_id": 42}])
+
+    with patch.object(
+        tlc_pipeline_job.gold_snapshot, "write_snapshot", side_effect=RuntimeError("S3 down"),
+    ):
+        _export_type3_snapshot(zone_rolling, mapping)  # 예외 없이 정상 종료돼야 한다.

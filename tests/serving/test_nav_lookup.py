@@ -24,10 +24,14 @@ def _clear_caches():
     nav_lookup._memory_cache.clear()
     nav_lookup._s3_snapshot_loaded = False
     nav_lookup._s3_snapshot = {}
+    nav_lookup._length_snapshot_loaded = False
+    nav_lookup._length_snapshot = {}
     yield
     nav_lookup._memory_cache.clear()
     nav_lookup._s3_snapshot_loaded = False
     nav_lookup._s3_snapshot = {}
+    nav_lookup._length_snapshot_loaded = False
+    nav_lookup._length_snapshot = {}
 
 
 def test_time_to_bucket_rounds_down_to_30_minutes():
@@ -280,8 +284,29 @@ def test_resolve_type2_falls_back_to_global_default_when_missing():
     assert result == [300]
 
 
-def test_resolve_type2_falls_back_to_hardcoded_constant_when_rds_unreachable():
-    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")):
+def test_resolve_type2_falls_back_to_hardcoded_constant_when_rds_and_snapshot_both_fail():
+    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={}):
         result = nav_lookup.resolve_segment_values(["1", "2"], 2, "12:00")
 
     assert result == [nav_lookup._HARDCODED_DEFAULTS[2]] * 2
+
+
+def test_resolve_type2_falls_back_to_s3_snapshot_when_rds_unreachable():
+    # RDS 자체가 죽었을 때는 GLOBAL 재조회(RDS) 대신 스냅샷을 바로 쓴다 -
+    # 스냅샷에 있는 segment는 그 값, 없는 segment는 스냅샷의 GLOBAL 값으로.
+    snapshot = {"1": 150, "GLOBAL": 200}
+    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
+        result = nav_lookup.resolve_segment_values(["1", "missing"], 2, "12:00")
+
+    assert result == [150, 200]
+
+
+def test_resolve_type2_loads_snapshot_only_once_per_process():
+    with patch.object(nav_lookup, "batch_get_items", side_effect=RuntimeError("network down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 150}) as mock_read:
+        nav_lookup.resolve_segment_values(["1"], 2, "12:00")
+        nav_lookup.resolve_segment_values(["1"], 2, "12:00")
+
+    mock_read.assert_called_once()
