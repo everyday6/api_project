@@ -122,7 +122,7 @@ def segment_time_pipeline():
     silver_result.set_upstream(dim_segment_ready)
     silver_result.set_upstream(bronze_valid)
 
-    gold_result = submit_gold_job(silver_result)
+    submit_gold_job(silver_result)
 
 
 segment_time_pipeline()

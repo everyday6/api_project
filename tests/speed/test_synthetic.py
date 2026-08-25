@@ -1,7 +1,6 @@
 import random
 
 import pandas as pd
-import pytest
 
 from src.speed import synthetic
 

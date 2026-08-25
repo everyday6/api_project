@@ -19,6 +19,7 @@ from shapely import wkt as shapely_wkt
 
 from src.common.config import GOLD2_DIR, LION_CRS
 from src.common.logger import get_logger
+from src.common.utils import save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_synthetic")
 
@@ -139,8 +140,7 @@ def load_or_build_reference_table(
 
     table = build_reference_table(routable, posted_speed)
 
-    reference_path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_parquet(str(reference_path), index=False)
+    save_parquet(table, reference_path.parent, reference_path.name)
     logger.info(f"[speed_synthetic] 참고표 캐시 저장 -> {reference_path}")
 
     return table

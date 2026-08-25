@@ -63,33 +63,6 @@ def _upload_tree(local_root: Path, destination) -> None:
         (destination / relative_path.as_posix()).upload_from(local_path)
 
 
-def check_new_lion_release(marker_dir: Path = BRONZE_ROOT) -> bool:
-    """LION ZIP의 Last-Modified 헤더가 마지막 확인 시점과 다르면 True를
-    반환한다. 마커 파일이 없으면(최초 실행) 항상 True."""
-
-    marker_path = marker_dir / "_last_checked_last_modified.txt"
-
-    resp = requests.head(LION_ZIP_URL, headers=HEADERS, timeout=30)
-    resp.raise_for_status()
-    current_last_modified = resp.headers.get("Last-Modified", "")
-
-    if not marker_path.exists():
-        marker_dir.mkdir(parents=True, exist_ok=True)
-        marker_path.write_text(current_last_modified)
-        logger.info(f"[lion] 마커 없음(최초 실행) -> 신규 릴리즈로 처리: {current_last_modified}")
-        return True
-
-    previous_last_modified = marker_path.read_text()
-
-    if current_last_modified == previous_last_modified:
-        logger.info(f"[lion] 신규 릴리즈 없음: {current_last_modified}")
-        return False
-
-    marker_path.write_text(current_last_modified)
-    logger.info(f"[lion] 신규 릴리즈 감지: {previous_last_modified} -> {current_last_modified}")
-    return True
-
-
 def ingest_lion(version_date: str | None = None, bronze_root=BRONZE_ROOT) -> str:
     """
     version_date: 'YYYY-MM-DD' 형식. 안 주면 오늘 날짜로 자동 태깅.

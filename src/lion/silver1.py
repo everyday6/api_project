@@ -32,7 +32,7 @@ from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
-from src.common.utils import clean_street
+from src.common.utils import clean_street, save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
@@ -170,8 +170,7 @@ def build_dim_segment_staged(
     run_id = uuid4().hex
     run_path = _staging_run_path(run_id, staging_root)
     stage_path = run_path / "dim_segment.parquet"
-    stage_path.parent.mkdir(parents=True, exist_ok=True)
-    dim_segment.to_parquet(str(stage_path), index=False)
+    save_parquet(dim_segment, stage_path.parent, stage_path.name)
 
     logger.info(
         "[lion_silver] staging 저장 완료: rows=%s source=%s path=%s",

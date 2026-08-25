@@ -15,8 +15,6 @@ from __future__ import annotations
 from src.common import db
 from src.common.config import SERVING_TABLE_TYPE4
 
-TYPE_TOLL = 4
-
 
 def get_toll_value(segment_id: str) -> float:
     """서빙 조회 함수(단건). 시설/zone에 해당 안 하는 segment는 0을 반환한다

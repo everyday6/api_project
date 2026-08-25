@@ -23,6 +23,7 @@ import pandas as pd
 from src.common.config import BRONZE_DIR, DATASETS
 from src.common.logger import get_logger
 from src.common.socrata import fetch_all, make_session
+from src.common.utils import save_parquet
 from src.lion.bronze import BRONZE_ROOT as LION_BRONZE_ROOT
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.silver2.segment_speed_match import match_links_to_segments
@@ -164,9 +165,9 @@ def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
     if not synthetic_df.empty:
         df = pd.concat([df, synthetic_df], ignore_index=True)
 
-    bronze_root.mkdir(parents=True, exist_ok=True)
-    out_path = bronze_root / f"batch_end={max_data_as_of.replace(':', '')}.parquet"
-    df.to_parquet(str(out_path), index=False)
+    out_path = save_parquet(
+        df, bronze_root, f"batch_end={max_data_as_of.replace(':', '')}.parquet"
+    )
 
     # parquet 저장이 성공한 뒤에만 마커를 갱신한다 — 저장이 실패하면 마커를
     # 건드리지 않아야 재시도가 이번 배치를 통째로 다시 수집할 수 있다.
