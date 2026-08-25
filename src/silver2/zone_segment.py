@@ -17,6 +17,7 @@ from shapely.strtree import STRtree
 
 from src.common.config import SILVER1_DIR, SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
+from src.common.utils import save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
 
@@ -207,8 +208,7 @@ def build_map_zone_segment_staged(
     run_id = uuid4().hex
     run_path = _staging_run_path(run_id, staging_root)
     stage_path = run_path / "map_zone_segment.parquet"
-    stage_path.parent.mkdir(parents=True, exist_ok=True)
-    mapping.to_parquet(str(stage_path), index=False)
+    save_parquet(mapping, stage_path.parent, stage_path.name)
     mapping_version = _content_hash(mapping)
     logger.info(
         "segment-zone staging 저장 완료: %s행(nearest=%s행) version=%s -> %s",
