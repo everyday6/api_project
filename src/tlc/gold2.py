@@ -560,11 +560,18 @@ def write_type3_rolling_to_rds(
     실제로 실행되는 날짜(오늘)로 따로 채운다.
     """
 
-    to_write = rolling.select("segment_id", "dow", "time", "value").repartition(
-        TYPE3_RDS_WRITE_PARTITIONS
+    # count()와 foreachPartition() 둘 다 to_write를 액션으로 쓴다 - persist
+    # 없으면 매번 join까지 포함한 전체 계산을 처음부터 다시 한다(실제로
+    # 겪은 비효율: task 총합이 200이 아니라 401로 나옴 - repartition 셔플이
+    # 두 번 도는 흔적).
+    to_write = (
+        rolling.select("segment_id", "dow", "time", "value")
+        .repartition(TYPE3_RDS_WRITE_PARTITIONS)
+        .persist()
     )
     written = to_write.count()
     if written == 0:
+        to_write.unpersist()
         return 0
 
     # Postgres 식별자는 63바이트를 넘으면 그냥 잘라버린다(에러 없이 조용히
