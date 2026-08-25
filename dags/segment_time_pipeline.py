@@ -72,7 +72,7 @@ def segment_time_pipeline():
             )
         return exists
 
-    @task
+    @task(pool="silver_pool")
     def submit_silver_job(speed_bronze_path: str) -> dict:
         run_id = uuid.uuid4().hex
         silver2_path = EMR_JOBS_DIR / "outputs" / f"nav_time_silver2_{run_id}.parquet"
@@ -92,7 +92,7 @@ def segment_time_pipeline():
         result = read_json_result(str(output_s3))
         return {"silver2_path": str(silver2_path), **result}
 
-    @task
+    @task(pool="silver_pool")
     def submit_gold_job(silver_result: dict) -> dict:
         run_id = uuid.uuid4().hex
         output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_gold_{run_id}.json"

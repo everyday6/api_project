@@ -364,7 +364,16 @@ def expand_zone_values_to_segments(
     안 되면(실측 1~2개) 이 7,300만 건이 태스크 한두 개에 몰려서 OOM으로
     executor가 죽는 사고가 실제로 있었다(shuffle map stage에서 exit code
     137로 반복 종료). join 전에 segments를 넉넉히 repartition해서 fan-out
-    결과가 여러 태스크에 고르게 퍼지게 한다."""
+    결과가 여러 태스크에 고르게 퍼지게 한다.
+
+    repartition 기준은 zone_id가 아니라 segment_id다 - zone마다 소속
+    segment 수가 크게 달라서(실측 최소 22개~최대 3,435개) zone_id로
+    나누면 큰 zone 하나가 파티션 하나를 통째로 차지해 여전히 skew가
+    남는다(실측: 200개 중 141개 파티션만 쓰이고 최대/최소 파티션 크기
+    비율이 105배). segment_id는 zone보다 훨씬 촘촘한 고유값(21만 개)이라
+    파티션 200개에 거의 균등하게 퍼진다(같은 실측 기준 최대/최소 비율
+    1.2배) - broadcast join이라 큰 쪽(segments)의 파티션 키가 join 키와
+    같을 필요가 없어서 결과는 그대로다."""
 
     missing_rolling = {"zone_id", "type", "dow", "time", "value"} - set(
         rolling.columns
@@ -378,7 +387,7 @@ def expand_zone_values_to_segments(
     segments = mapping.select(
         col("segment_id").cast("string").alias("segment_id"),
         col("zone_id").cast("int").alias("zone_id"),
-    ).repartition(SEGMENT_EXPANSION_PARTITIONS, "zone_id")
+    ).repartition(SEGMENT_EXPANSION_PARTITIONS, "segment_id")
     return (
         segments
         .join(broadcast(rolling), on="zone_id", how="inner")

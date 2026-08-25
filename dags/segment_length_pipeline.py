@@ -47,7 +47,7 @@ def segment_length_pipeline():
         path = build_dim_segment()
         return validate_dim_segment(path)
 
-    @task
+    @task(pool="silver_pool")
     def submit_nav_length_job(dim_segment_path: str) -> dict:
         run_id = uuid.uuid4().hex
         output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_length_{run_id}.json"
