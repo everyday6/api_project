@@ -128,6 +128,25 @@ def test_get_type3_values_batches_and_preserves_input_order():
     assert max(len(call) for call in conn.calls) == 100
 
 
+def test_get_type3_values_logs_rds_query_duration(caplog):
+    # db.py의 batch_get_items()와 같은 형식의 로그 - Grafana의 "타입별 RDS
+    # 쿼리 응답시간" 패널이 table 필드로 두 경로(db.py/api.py)를 같이
+    # 집계한다.
+    conn = FakeConnection({"0077356": 18.5})
+
+    with caplog.at_level("INFO", logger="src.serving.api"):
+        api.get_type3_values(
+            ["0077356"],
+            datetime(2026, 8, 21, 12, 0),
+            conn=conn,
+            table_name="navigation-values",
+        )
+
+    duration_logs = [r.message for r in caplog.records if "[rds_query_duration]" in r.message]
+    assert len(duration_logs) == 1
+    assert "table=navigation-values" in duration_logs[0]
+
+
 def test_get_type3_values_uses_cache_then_zero_on_rds_failure():
     requested_at = datetime(2026, 8, 21, 12, 0)
     api.get_type3_values(

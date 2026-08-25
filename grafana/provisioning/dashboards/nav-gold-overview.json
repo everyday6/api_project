@@ -1101,8 +1101,8 @@
     {
       "id": 81,
       "type": "timeseries",
-      "title": "RDS 쿼리 응답시간 (p50/p95/p99)",
-      "description": "RDS 자체 CloudWatch 지표(ReadLatency 등)는 디스크 I/O 지연의 평균값이라 서빙이 실제 체감하는 쿼리 응답시간과 다르다. src/common/db.py의 batch_get_items()가 남기는 [rds_query_duration] 로그(호출 1건당 소요 ms)를 직접 집계한다.",
+      "title": "타입별 RDS 쿼리 응답시간 (p50/p95/p99)",
+      "description": "RDS 자체 CloudWatch 지표(ReadLatency 등)는 디스크 I/O 지연의 평균값이라 서빙이 실제 체감하는 쿼리 응답시간과 다르다. [rds_query_duration] 로그를 table별로 나눠서 집계한다 - Type1/2/4는 src/common/db.py의 batch_get_items(), Type3는 src/serving/api.py의 get_type3_values()가 각각 남긴다(서로 다른 코드 경로라 별도로 계측했다). 테이블(=타입)마다 색이 달라진다.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -1128,7 +1128,7 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
-          "queryString": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+          "queryString": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by tbl, bin(1m)"
         }
       ],
       "fieldConfig": {
