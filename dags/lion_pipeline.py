@@ -5,6 +5,11 @@ NYC DCP LION(도로망) Bronze와 Silver1을 담당하는 도메인 파이프라
 분기마다 새 릴리즈가 나오는 전체 스냅샷 데이터라, 증분 개념 없이 매번
 통째로 받는다.
 
+ingest_lion이 ETag 기반 변경 감지를 갖추고 있다(src/lion/bronze.py 참고) -
+같은 분기에 재시도/수동 재실행이 겹쳐도 원본이 그대로면 다운로드,
+build_dim_segment_staged 이후 전체(validate/publish/cleanup), 두 Asset
+emit까지 전부 스킵된다.
+
 ingest_lion은 Asset("lion_bronze_updated")를 outlet으로 내보낸다 —
 toll_silver_gold_pipeline이 이 Asset을 구독해서, 분기 LION 갱신 때도
 (요금표가 안 바뀌어도) segment 매핑을 다시 계산하도록 하기 위함이다.
@@ -72,7 +77,7 @@ with DAG(
         task_id="build_dim_segment_staged",
         python_callable=build_dim_segment_staged,
         op_kwargs={
-            "bronze_version_path": "{{ ti.xcom_pull(task_ids='ingest_lion') }}",
+            "bronze_version_result": "{{ ti.xcom_pull(task_ids='ingest_lion') }}",
         },
     )
 

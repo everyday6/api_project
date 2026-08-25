@@ -8,11 +8,25 @@ toll_bronze_pipeline이 요금표/시설목록/CBD 폴리곤을 갱신하거나
 "gold_pipeline"이 아니라 "silver_gold_pipeline"으로 붙인 이유는 실제로
 Silver2 매핑 태스크가 여기 포함돼 있어서다(순수 Gold 계산만 하는 DAG가
 아님). 요금표가 1년에 한 번 정도만 바뀌므로 cron 스케줄 없이 Asset
-트리거만 쓴다(gold_closure_penalty와 동일한 패턴).
+트리거만 쓴다(zone_segment_pipeline과 동일한 패턴).
 
 두 Asset을 리스트로 넘기면 Airflow는 AND로 해석해서 "둘 다" 갱신돼야
 트리거한다(둘 중 하나만 바뀌어도 반응해야 하는 이 상황엔 안 맞음) —
 그래서 리스트 대신 `|` 연산자로 OR 조건을 명시한다.
+
+build_lion_facility_mapping_task와 build_lion_cbd_mapping_task가 병렬로
+돈다. on_failure_callback은 DAG 레벨이 아니라 default_args(태스크
+레벨)에 둔다 - Airflow가 DAG 레벨 on_failure_callback을 호출할 때는
+그 run에서 실패한 태스크가 여러 개여도 가장 늦게 끝난 것 하나만 골라
+context를 만들어 딱 한 번 호출한다(airflow.models.dagrun의
+ti_causing_failure 로직). 즉 두 매핑 태스크가 같은 run에서 동시에
+실패하면 DAG 레벨로는 둘 중 하나의 실패만 Slack에 보이고 나머지는
+누락된다. 태스크 레벨로 두면 실패한 태스크 수만큼 정확히 그만큼
+알림이 오고 각각 어떤 태스크·로그인지 다 남는다 - 여긴 서로 다른 일을
+하는 별개 태스크들이라(같은 태스크의 mapped 인스턴스가 아님) 이 방식이
+맞다(tlc_ingest_daily의 DAG 레벨 콜백은 .expand()로 같은 태스크가
+파일 수만큼 복제되는 경우의 알림 폭주를 막기 위한 것으로, 여긴 해당
+안 됨).
 """
 
 from datetime import timedelta

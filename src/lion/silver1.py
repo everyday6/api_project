@@ -28,6 +28,7 @@ from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
+from airflow.exceptions import AirflowSkipException
 from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
@@ -149,12 +150,26 @@ def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
 
 
 def build_dim_segment_staged(
-    bronze_version_path: str,
+    bronze_version_result: dict,
     staging_root=DIM_SEGMENT_STAGING_ROOT,
 ) -> dict:
-    """지정된 Bronze 스냅샷을 정제해 실행별 임시 경로에 저장한다."""
+    """지정된 Bronze 스냅샷을 정제해 실행별 임시 경로에 저장한다.
 
-    version_dir = _as_path(bronze_version_path)
+    bronze_version_result는 ingest_lion의 반환값(XCom)이다. 원본이 안
+    바뀌었으면(changed=False) 재계산할 게 없으니 건너뛴다 -
+    AirflowSkipException을 던지면 Airflow 기본 trigger_rule(all_success)에
+    따라 뒤따르는 validate_staged_dim_segment/publish_dim_segment/
+    cleanup_dim_segment_staging도 자동으로 같이 스킵되고, publish의
+    outlet Asset(lion_dim_segment_ready)도 emit되지 않는다 - 그래서
+    별도 태스크나 플래그 전파 없이도 downstream 전체가 조용히 스킵된다
+    (src/taxi_zone/silver1.py의 동일 패턴 참고)."""
+
+    if not bronze_version_result.get("changed", True):
+        raise AirflowSkipException(
+            "LION 원본이 안 바뀌어 Silver1 재생성을 건너뜁니다"
+        )
+
+    version_dir = _as_path(bronze_version_result["path"])
     if not (version_dir / "_metadata.txt").exists():
         raise FileNotFoundError(f"완료되지 않은 LION Bronze 스냅샷입니다: {version_dir}")
 
