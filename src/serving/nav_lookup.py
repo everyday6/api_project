@@ -13,8 +13,8 @@ config.py 참고)로 서빙한다. 한 행 안에 오늘 실측값(value)과 그
 별도 폴백 계층(메모리 캐시 -> S3 Gold 스냅샷)을 추가로 둔다:
 
   [RDS 정상 응답]
-  1. Fresh Exact — (segment_id, time) 행의 value. collected_date가 오늘인
-     경우만 채택한다.
+  1. Fresh Exact — (segment_id, time) 행의 value. last_sample_at의 날짜가
+     오늘인 경우만 채택한다.
   2. Historical AVG — 같은 행의 avg(이 시간대의 과거 평균 - src/nav_time/
      gold2.py가 실측이 들어올 때마다 증분 갱신한다).
   3. 코드 상수
@@ -53,16 +53,28 @@ Type2(길이)는 segment_metrics_type2(segment_id 단일키)로 서빙한다 - �
 
 from __future__ import annotations
 
-from datetime import date
+import time
+from datetime import date, datetime
 
+import psycopg2
 from psycopg2 import sql
 
 from src.common import gold_snapshot
 from src.common.config import GLOBAL_PARTITION_KEY, SERVING_TABLE_TYPE1, SERVING_TABLE_TYPE2
-from src.common.db import batch_get_items, get_shared_connection
+from src.common.db import batch_get_items, new_connection
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
+
+# RDS 자체 장애(연결 불가/응답 없음)를 얼마나 기다렸다가 fallback으로
+# 넘어갈지에 대한 값 - 같은 리전 안에서 정상 조회는 수십 ms 안에 끝나므로
+# 1초/1000ms는 그 대비 넉넉한 여유값이다. 정확한 실측(p50/p99)은 아직
+# 없어서 CloudWatch 데이터가 쌓이면 재조정이 필요하다(TODO 팀 검토 필요).
+# db.py의 공유 커넥션(배치 쓰기와 공용)과는 별도로 이 값만 쓰는 커넥션을
+# 둔다 - 배치 쓰기는 대량 upsert라 1초 넘게 걸리는 게 정상이라, 공유
+# 커넥션에 이 타임아웃을 걸면 정상 동작까지 실패로 처리된다.
+_RDS_CONNECT_TIMEOUT_SECONDS = 1
+_RDS_STATEMENT_TIMEOUT_MS = 1000
 
 # RDS/GLOBAL#DEFAULT/메모리/S3까지 전부 실패했을 때 쓰는 최후의 상수. 외부
 # 호출이 전혀 없어 어떤 저장소도 완전히 응답 불가능한 상황에서도 동작한다.
@@ -82,6 +94,29 @@ _memory_cache: dict[tuple[str, str], dict] = {}
 # 동안 세그먼트 수만큼 S3 호출이 쌓이는 문제가 재발한다.
 _s3_snapshot_loaded = False
 _s3_snapshot: dict[str, dict[str, dict]] = {}
+
+# 서빙 전용 fast-fail RDS 커넥션. db.py의 공유 커넥션과 별개로 지연 생성해서
+# Lambda 웜스타트 사이에 재사용한다.
+_fast_rds_connection = None
+
+
+def _get_fast_rds_connection():
+    """짧은 connect_timeout/statement_timeout이 걸린 커넥션을 재사용한다.
+    끊어졌으면(RDS 재부팅, 유휴 타임아웃 등) db.py._get_connection()과 동일한
+    방식으로 재연결한다."""
+    global _fast_rds_connection
+    if _fast_rds_connection is not None and not _fast_rds_connection.closed:
+        try:
+            with _fast_rds_connection.cursor() as cur:
+                cur.execute("SELECT 1")
+            return _fast_rds_connection
+        except psycopg2.Error:
+            logger.warning("fast-fail RDS 커넥션이 끊어져 재연결합니다")
+    _fast_rds_connection = new_connection(
+        connect_timeout=_RDS_CONNECT_TIMEOUT_SECONDS,
+        statement_timeout_ms=_RDS_STATEMENT_TIMEOUT_MS,
+    )
+    return _fast_rds_connection
 
 
 def time_to_bucket(time_str: str) -> str:
@@ -118,42 +153,52 @@ def _batch_fetch_type1_rows(segment_ids: list[str], table_name: str) -> dict[str
     둘 다)로만 조회할 수 있어 이 "segment_id만으로 그 세그먼트의 모든 슬롯"
     조회에는 못 쓴다 - 그래서 커넥션을 직접 빌려 커스텀 쿼리를 짠다.
 
-    반환값은 segment_id -> {time: {"value","avg","collected_date"}}.
+    반환값은 segment_id -> {time: {"value","avg","last_sample_at"}}.
     RDS 연결/쿼리 실패는 삼키지 않고 그대로 던진다 - 호출부가 이걸로 "RDS
-    자체가 죽었다"를 판단해서 메모리/S3 폴백으로 넘어간다."""
+    자체가 죽었다"를 판단해서 메모리/S3 폴백으로 넘어간다. 커넥션은
+    _get_fast_rds_connection()의 짧은 connect/statement 타임아웃이 걸린
+    걸 써서, RDS가 느리기만 해도(완전히 다운되지 않아도) 이 판단이
+    제때 내려지게 한다."""
     if not segment_ids:
         return {}
 
     unique_ids = list(dict.fromkeys(segment_ids))
-    conn = get_shared_connection()
-    with conn.cursor() as cur:
-        cur.execute(
-            sql.SQL(
-                "SELECT segment_id, time, value, avg, collected_date "
-                "FROM {table} WHERE segment_id = ANY(%s)"
-            ).format(table=sql.Identifier(table_name)),
-            (unique_ids,),
+    started = time.monotonic()
+    try:
+        conn = _get_fast_rds_connection()
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL(
+                    "SELECT segment_id, time, value, avg, last_sample_at "
+                    "FROM {table} WHERE segment_id = ANY(%s)"
+                ).format(table=sql.Identifier(table_name)),
+                (unique_ids,),
+            )
+            rows = cur.fetchall()
+    finally:
+        logger.info(
+            f"[nav_lookup] RDS type1 배치 조회 소요 시간: "
+            f"{(time.monotonic() - started) * 1000:.0f}ms"
         )
-        rows = cur.fetchall()
 
     result: dict[str, dict[str, dict]] = {}
-    for segment_id, time_slot, value, avg, collected_date in rows:
+    for segment_id, time_slot, value, avg, last_sample_at in rows:
         result.setdefault(segment_id, {})[time_slot] = {
             "value": float(value) if value is not None else None,
             "avg": float(avg) if avg is not None else None,
-            "collected_date": collected_date,
+            "last_sample_at": last_sample_at,
         }
     return result
 
 
-def _is_fresh(collected_date) -> bool:
-    """collected_date가 오늘인지 확인한다. 시:분 단위가 아니라 "오늘 수집된
-    값인지"만 본다(TODO 팀 검토 필요 - 하루 단위 신선도로 충분하다는 판단).
-    값이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로 "신선하지
-    않음"으로 처리해 다음 단계로 내려가게 한다."""
-    if not isinstance(collected_date, date):
+def _is_fresh(last_sample_at) -> bool:
+    """last_sample_at의 날짜가 오늘인지 확인한다. 시:분 단위가 아니라 "오늘
+    수집된 값인지"만 본다(TODO 팀 검토 필요 - 하루 단위 신선도로 충분하다는
+    판단). 값이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로
+    "신선하지 않음"으로 처리해 다음 단계로 내려가게 한다."""
+    if not isinstance(last_sample_at, datetime):
         return False
-    return collected_date == date.today()
+    return last_sample_at.date() == date.today()
 
 
 def _resolve_from_row(row: dict | None) -> int | None:
@@ -162,7 +207,7 @@ def _resolve_from_row(row: dict | None) -> int | None:
     없으면 None을 돌려줘서 호출부가 다음 단계로 내려가게 한다."""
     if row is None:
         return None
-    if row.get("value") is not None and _is_fresh(row.get("collected_date")):
+    if row.get("value") is not None and _is_fresh(row.get("last_sample_at")):
         return round(row["value"])
     if row.get("avg") is not None:
         return round(row["avg"])
@@ -231,14 +276,20 @@ def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: 
 
 
 def _lookup_global_default(table_name: str) -> int:
+    started = time.monotonic()
     try:
         key = {"segment_id": GLOBAL_PARTITION_KEY}
-        items = batch_get_items(table_name, [key])
+        items = batch_get_items(table_name, [key], conn=_get_fast_rds_connection())
         item = items.get(tuple(key.values()))
         if item is not None:
             return round(item["value"])
     except Exception:
         logger.exception(f"RDS GLOBAL 기본값 조회 실패: table={table_name}")
+    finally:
+        logger.info(
+            f"[nav_lookup] RDS GLOBAL 기본값 조회 소요 시간: "
+            f"{(time.monotonic() - started) * 1000:.0f}ms"
+        )
 
     logger.warning("GLOBAL 기본값까지 실패 -> 코드 상수 사용: type=2")
     return _HARDCODED_DEFAULTS[2]
@@ -250,9 +301,10 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
     unique_ids = list(dict.fromkeys(segment_ids))
     resolved: dict[str, int] = {}
 
+    started = time.monotonic()
     try:
         keys = [{"segment_id": sid} for sid in unique_ids]
-        items = batch_get_items(table_name, keys)
+        items = batch_get_items(table_name, keys, conn=_get_fast_rds_connection())
         for sid in unique_ids:
             item = items.get((sid,))
             if item is None:
@@ -266,6 +318,11 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
                 )
     except Exception:
         logger.exception(f"RDS batch_get_items 실패: table={table_name}")
+    finally:
+        logger.info(
+            f"[nav_lookup] RDS type2 배치 조회 소요 시간: "
+            f"{(time.monotonic() - started) * 1000:.0f}ms"
+        )
 
     remaining = [sid for sid in unique_ids if sid not in resolved]
     if remaining:

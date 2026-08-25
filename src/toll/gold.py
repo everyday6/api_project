@@ -7,7 +7,7 @@ Silver2의 두 매핑(zone 안 segment, 시설 매칭 segment)에 요금표(Bron
 CBD zone 안이면서 동시에 다리/터널 시설이기도 한 경우(zone 진입 지점의
 다리 segment 등) 클라이언트가 매번 두 타입을 다 조회해서 더해야 했다.
 "택시가 이 segment를 지나는 데 드는 통행료 총액"이 실제로 필요한 값이므로,
-여기서 미리 합산해 type=4(TYPE_TOLL) 하나로 합쳤다 — nav-gold 전체
+여기서 미리 합산해 type=4 하나로 합쳤다 — nav-gold 전체
 설계(시간=1/길이=2/수요=3/통행료=4)의 4타입 구성과도 맞다.
 
 통행료는 시간대에 따라 안 바뀌므로(택시 정액 요금 — 스펙의 Global
@@ -30,7 +30,7 @@ from src.common.config import (
 )
 from src.common.logger import get_logger
 from src.toll.bronze import BRONZE_ROOT
-from src.toll.serving import TYPE_TOLL, get_toll_value  # noqa: F401 (하위 호환 재수출)
+from src.toll.serving import get_toll_value  # noqa: F401 (하위 호환 재수출)
 from src.toll.silver2 import MAP_LION_CBD_PATH, MAP_LION_FACILITY_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_gold")
@@ -85,7 +85,10 @@ def build_gold_items(
     지점의 다리 segment).
 
     toll_amount(요금표)는 정적 참조값이라 "수집일"이 따로 없다 -
-    collected_date/updated_date 둘 다 이 Gold 실행일로 채운다."""
+    updated_date(이 Gold 실행일)만 채운다. 예전엔 collected_date도 항상
+    같은 값으로 같이 채웠는데, 실행일 하나를 두 컬럼에 중복 저장하는
+    것뿐이라 컬럼 자체를 없앴다(2026-08-25 스키마 정리 -
+    src/common/config.py의 SERVING_TABLE_TYPE4_COLUMNS 참고)."""
 
     congestion_values = _congestion_values(rate_table, zone_map)
     road_toll_values = _road_toll_values(rate_table, facility_map)
@@ -98,7 +101,6 @@ def build_gold_items(
             "segment_id": segment_id,
             "value": congestion_values.get(segment_id, 0)
             + road_toll_values.get(segment_id, 0),
-            "collected_date": today,
             "updated_date": today,
         }
         for segment_id in segment_ids

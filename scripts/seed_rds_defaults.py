@@ -51,7 +51,6 @@ def seed_defaults(type2_default: int = DEFAULT_TYPE2_LENGTH_FT) -> None:
         {
             "segment_id": GLOBAL_PARTITION_KEY,
             "value": type2_default,
-            "collected_date": today,
             "updated_date": today,
         },
         key_columns=SERVING_TABLE_TYPE2_KEY_COLUMNS,

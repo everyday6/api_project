@@ -95,7 +95,7 @@ def test_compute_time_seconds_excludes_zero_speed_segment(spark):
     assert result[0]["segment_id"] == "1"
 
 
-def test_compute_time_seconds_includes_collected_date(spark):
+def test_compute_time_seconds_includes_last_observed_at(spark):
     df = spark.createDataFrame([
         {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
     ])
@@ -103,12 +103,12 @@ def test_compute_time_seconds_includes_collected_date(spark):
 
     result = gold2.compute_time_seconds(df, dim_segment_length_df).collect()
 
-    assert result[0]["collected_date"] == date(2026, 8, 21)
+    assert result[0]["last_observed_at"] == datetime(2026, 8, 21, 12, 5)
 
 
-def test_compute_time_seconds_collected_date_uses_latest_observed_at_when_dates_mixed(spark):
+def test_compute_time_seconds_last_observed_at_uses_latest_when_dates_mixed(spark):
     # 같은 세그먼트/버킷(0000)에 서로 다른 날짜의 판독값이 섞여 들어오는 경우
-    # (자정 경계 등) -> 가장 최근 observed_at의 날짜를 collected_date로 쓴다.
+    # (자정 경계 등) -> 가장 최근 observed_at을 last_observed_at으로 쓴다.
     df = spark.createDataFrame([
         {"segment_id": "1", "speed": 20.0, "observed_at": datetime(2026, 8, 21, 0, 5)},
         {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 22, 0, 10)},
@@ -119,7 +119,43 @@ def test_compute_time_seconds_collected_date_uses_latest_observed_at_when_dates_
 
     assert len(result) == 1
     assert result[0]["bucket"] == "0000"
-    assert result[0]["collected_date"] == date(2026, 8, 22)
+    assert result[0]["last_observed_at"] == datetime(2026, 8, 22, 0, 10)
+
+
+def test_compute_time_seconds_zero_length_produces_zero_time(spark):
+    # length_ft<=0인 세그먼트가 Gold1(속도만 거름)을 통과해 여기까지 오면
+    # time_seconds=0이 그대로 계산된다 - validate_bucket_time_seconds가
+    # 이걸 잡아야 하는 이유를 보여주는 케이스.
+    df = spark.createDataFrame([
+        {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
+    ])
+    dim_segment_length_df = pd.DataFrame([{"segment_id": "1", "length_ft": 0.0}])
+
+    result = gold2.compute_time_seconds(df, dim_segment_length_df).collect()
+
+    assert len(result) == 1
+    assert result[0]["time_seconds"] == 0.0
+
+
+def test_validate_bucket_time_seconds_passes_through_valid_rows(spark):
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 120.0, "last_observed_at": datetime(2026, 8, 21, 12, 0)},
+    ])
+
+    result = gold2.validate_bucket_time_seconds(df)
+
+    assert result is df
+
+
+def test_validate_bucket_time_seconds_rejects_zero_or_negative(spark):
+    df = spark.createDataFrame([
+        {"segment_id": "1", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
+    ])
+    dim_segment_length_df = pd.DataFrame([{"segment_id": "1", "length_ft": 0.0}])
+    bucket_df = gold2.compute_time_seconds(df, dim_segment_length_df)
+
+    with pytest.raises(ValueError, match="0 이하"):
+        gold2.validate_bucket_time_seconds(bucket_df)
 
 
 @requires_postgres
@@ -128,9 +164,10 @@ def test_to_serving_items_incrementally_updates_avg_per_slot(spark):
     # 세그먼트라도 슬롯이 다르면 서로 다른 avg를 갖는다.
     _create_test_table()
 
-    # 1) 빈 테이블 -> 슬롯(1, 1200)에 30 upsert -> avg=30, count=1
+    # 1) 빈 테이블 -> 슬롯(1, 1200)에 30 upsert(배치 t1) -> avg=30, count=1
+    t1 = datetime(2026, 8, 21, 12, 0)
     df1 = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": TODAY},
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "last_observed_at": t1},
     ])
     items1 = gold2.to_serving_items(df1, TABLE_NAME, today=TODAY)
     gold2.write_to_rds(items1, TABLE_NAME)
@@ -142,7 +179,7 @@ def test_to_serving_items_incrementally_updates_avg_per_slot(spark):
 
     # 2) 다른 슬롯(1, 1230)에 50 upsert -> 슬롯 1200과 무관하게 avg=50, count=1
     df2 = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0, "collected_date": TODAY},
+        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0, "last_observed_at": datetime(2026, 8, 21, 12, 30)},
     ])
     items2 = gold2.to_serving_items(df2, TABLE_NAME, today=TODAY)
     gold2.write_to_rds(items2, TABLE_NAME)
@@ -152,9 +189,10 @@ def test_to_serving_items_incrementally_updates_avg_per_slot(spark):
     assert by_key2[("1", "1230")]["avg"] == 50
     assert by_key2[("1", "1230")]["count"] == 1
 
-    # 3) 슬롯 1200을 60으로 교체 -> avg=(30+60)/2=45, count=2 (슬롯 1230엔 영향 없음)
+    # 3) 슬롯 1200에 진짜 새 배치(t2)가 60으로 들어옴 -> avg=(30+60)/2=45, count=2
+    t2 = datetime(2026, 8, 21, 12, 30)
     df3 = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1200", "time_seconds": 60.0, "collected_date": TODAY},
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 60.0, "last_observed_at": t2},
     ])
     items3 = gold2.to_serving_items(df3, TABLE_NAME, today=TODAY)
     gold2.write_to_rds(items3, TABLE_NAME)
@@ -163,6 +201,30 @@ def test_to_serving_items_incrementally_updates_avg_per_slot(spark):
     assert by_key3[("1", "1200")]["value"] == 60
     assert by_key3[("1", "1200")]["avg"] == 45
     assert by_key3[("1", "1200")]["count"] == 2
+
+    # 4) 같은 배치(t2)가 Airflow 재시도 등으로 다시 들어옴 -> avg/count가
+    # 그대로 승계돼야 한다(이미 반영한 배치를 또 반영해 중복 카운트되면 안 됨).
+    df4 = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 60.0, "last_observed_at": t2},
+    ])
+    items4 = gold2.to_serving_items(df4, TABLE_NAME, today=TODAY)
+    gold2.write_to_rds(items4, TABLE_NAME)
+
+    by_key4 = _items_by_key(items4)
+    assert by_key4[("1", "1200")]["avg"] == 45
+    assert by_key4[("1", "1200")]["count"] == 2
+
+    # 5) 진짜 다음 배치(t3)가 90으로 들어옴 -> avg=(30+60+90)/3=60, count=3
+    t3 = datetime(2026, 8, 21, 13, 0)
+    df5 = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 90.0, "last_observed_at": t3},
+    ])
+    items5 = gold2.to_serving_items(df5, TABLE_NAME, today=TODAY)
+    gold2.write_to_rds(items5, TABLE_NAME)
+
+    by_key5 = _items_by_key(items5)
+    assert by_key5[("1", "1200")]["avg"] == 60
+    assert by_key5[("1", "1200")]["count"] == 3
 
 
 @requires_postgres
@@ -175,7 +237,7 @@ def test_to_serving_items_handles_legacy_row_without_count(spark):
     )
 
     df = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": TODAY},
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "last_observed_at": datetime(2026, 8, 21, 12, 0)},
     ])
 
     # KeyError 없이 정상 동작해야 한다.
@@ -195,8 +257,8 @@ def test_to_serving_items_folds_multiple_slots_of_same_segment_independently(spa
     _create_test_table()
 
     df = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": TODAY},
-        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0, "collected_date": TODAY},
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "last_observed_at": datetime(2026, 8, 21, 12, 0)},
+        {"segment_id": "1", "bucket": "1230", "time_seconds": 50.0, "last_observed_at": datetime(2026, 8, 21, 12, 30)},
     ])
 
     items = gold2.to_serving_items(df, TABLE_NAME, today=TODAY)
@@ -208,16 +270,38 @@ def test_to_serving_items_folds_multiple_slots_of_same_segment_independently(spa
     assert by_key[("1", "1230")]["avg"] == 50
 
 
-def test_to_serving_items_includes_collected_date_and_updated_date(spark):
+def test_to_serving_items_caps_avg_smoothing_but_not_stored_count(spark):
+    # count는 10을 넘어도 계속(정직하게) 늘어나지만, avg 계산에서 나누는
+    # 수는 AVG_SMOOTHING_WINDOW(10)에서 멈춘다 - 그래야 배치가 아무리
+    # 많이 쌓여도 새 값의 영향력이 최소 1/10로 유지된다.
+    old_row = {"value": 60, "avg": 60, "count": 10, "last_sample_at": "2026-08-01T00:00:00"}
     df = spark.createDataFrame([
-        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "collected_date": TODAY},
+        {
+            "segment_id": "1", "bucket": "1200", "time_seconds": 200.0,
+            "last_observed_at": datetime(2026, 8, 21, 12, 0),
+        },
+    ])
+
+    with patch.object(gold2, "batch_get_items", return_value={("1", "1200"): old_row}):
+        items = gold2.to_serving_items(df, TABLE_NAME, today=TODAY)
+
+    by_key = _items_by_key(items)
+    # count는 정직하게 11로 증가.
+    assert by_key[("1", "1200")]["count"] == 11
+    # 근데 나누는 수는 11이 아니라 10으로 묶여서: 60 + (200-60)/10 = 74.
+    assert by_key[("1", "1200")]["avg"] == 74
+
+
+def test_to_serving_items_includes_last_sample_at_and_updated_date(spark):
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "last_observed_at": datetime(2026, 8, 21, 12, 0)},
     ])
 
     with patch.object(gold2, "batch_get_items", return_value={}):
         items = gold2.to_serving_items(df, TABLE_NAME, today=TODAY)
 
     by_key = _items_by_key(items)
-    assert by_key[("1", "1200")]["collected_date"] == "2026-08-21"
+    assert by_key[("1", "1200")]["last_sample_at"] == "2026-08-21T12:00:00"
     assert by_key[("1", "1200")]["updated_date"] == "2026-08-21"
 
 

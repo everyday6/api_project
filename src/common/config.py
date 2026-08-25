@@ -34,7 +34,6 @@ TLC_TYPE3_ROLLING_WEEKS = int(os.getenv("TLC_TYPE3_ROLLING_WEEKS", "8"))
 
 # 로컬 경로
 PROJECT_ROOT = Path(__file__).resolve().parents[2]
-CONFIG_DIR = PROJECT_ROOT / "config"
 LOG_DIR = PROJECT_ROOT / "logs"
 TMP_DIR = PROJECT_ROOT / "data" / "tmp"
 
@@ -49,14 +48,12 @@ if APP_ENV == "local":
     BRONZE_DIR = PROJECT_ROOT / "data" / "bronze"
     SILVER1_DIR = PROJECT_ROOT / "data" / "silver1"
     SILVER2_DIR = PROJECT_ROOT / "data" / "silver2"
-    GOLD1_DIR = PROJECT_ROOT / "data" / "gold1"
     GOLD2_DIR = PROJECT_ROOT / "data" / "gold2"
     GOLD_CACHE_DIR = PROJECT_ROOT / "data" / "gold_cache"
 else:
     BRONZE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/bronze")
     SILVER1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver1")
     SILVER2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/silver2")
-    GOLD1_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold1")
     GOLD2_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold2")
     GOLD_CACHE_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/gold_cache")
 
@@ -167,17 +164,25 @@ SERVING_TABLE_TYPE1_COLUMNS = {
     "value": "NUMERIC NOT NULL",
     "avg": "NUMERIC",
     "count": "INTEGER",
-    "collected_date": "DATE",
+    # 이 슬롯 avg에 마지막으로 반영한 원본 판독값의 시각(observed_at 중
+    # 최댓값). 같은 배치가 Airflow 재시도로 다시 들어와도 avg/count를 또
+    # 증가시키지 않기 위한 식별자다 - collected_date(날짜 단위)는 같은 날
+    # 다시 들어오는 배치(재시도든, 지연 도착 데이터로 인한 진짜 새
+    # 배치든)를 구분 못 해서 이 용도로 못 쓴다(src/nav_time/gold2.py
+    # to_serving_items 참고). 이 값에서 날짜만 뽑으면 collected_date와
+    # 같은 정보라 별도 컬럼을 안 둔다.
+    "last_sample_at": "TIMESTAMP",
     "updated_date": "DATE",
 }
 SERVING_TABLE_TYPE1_KEY_COLUMNS = ("segment_id", "time")
 
 SERVING_TABLE_TYPE2 = os.getenv("SERVING_TABLE_TYPE2", "segment_metrics_type2")
 # 길이는 시간과 무관해 세그먼트당 행 하나뿐이다. GLOBAL 행도 같은 value
-# 컬럼에 기본값을 가진다.
+# 컬럼에 기본값을 가진다. length_ft는 정적 참조값이라 "수집일"이라는
+# 개념이 따로 없다 - collected_date는 항상 updated_date와 같은 값(Gold2
+# 실행일)으로 채워지던 중복 컬럼이라 없앴다(2026-08-25 스키마 정리).
 SERVING_TABLE_TYPE2_COLUMNS = {
     "value": "NUMERIC NOT NULL",
-    "collected_date": "DATE",
     "updated_date": "DATE",
 }
 SERVING_TABLE_TYPE2_KEY_COLUMNS = ("segment_id",)
@@ -198,10 +203,10 @@ SERVING_TABLE_TYPE3_COLUMNS = {
 SERVING_TABLE_TYPE3_KEY_COLUMNS = ("segment_id", "dow", "time")
 
 SERVING_TABLE_TYPE4 = os.getenv("SERVING_TABLE_TYPE4", "segment_metrics_type4")
-# 통행료도 시간/요일 무관 - 세그먼트당 행 하나뿐이다.
+# 통행료도 시간/요일 무관 - 세그먼트당 행 하나뿐이다. Type2와 같은 이유로
+# collected_date를 없앴다 - 정적 요금표라 updated_date와 항상 같은 값이었다.
 SERVING_TABLE_TYPE4_COLUMNS = {
     "value": "NUMERIC NOT NULL",
-    "collected_date": "DATE",
     "updated_date": "DATE",
 }
 SERVING_TABLE_TYPE4_KEY_COLUMNS = ("segment_id",)
