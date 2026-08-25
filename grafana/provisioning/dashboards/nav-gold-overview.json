@@ -107,8 +107,8 @@
     {
       "id": 11,
       "type": "timeseries",
-      "title": "CPU / Memory Allocated",
-      "description": "계정 vCPU 할당량 한도(quota)에 근접하는지 여기서 추세를 볼 수 있음",
+      "title": "CPU / Memory Allocated (전체 WorkerType/CapacityType 합산)",
+      "description": "계정 vCPU 할당량 한도(quota)에 근접하는지 여기서 추세를 볼 수 있음. 실제 지표는 ApplicationId+ApplicationName+WorkerType+CapacityAllocationType 조합으로만 존재해서, ApplicationId만으로 부분 매칭(matchExact: false)한다 - Spark_Driver/Kernel/Executor x OnDemand/PreInit 조합별로 여러 시리즈가 따로 나온다.",
       "gridPos": { "h": 8, "w": 12, "x": 0, "y": 18 },
       "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
       "targets": [
@@ -117,6 +117,7 @@
           "namespace": "AWS/EMRServerless",
           "metricName": "CPUAllocated",
           "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "matchExact": false,
           "statistic": "Maximum",
           "region": "default"
         },
@@ -125,6 +126,7 @@
           "namespace": "AWS/EMRServerless",
           "metricName": "MemoryAllocated",
           "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "matchExact": false,
           "statistic": "Maximum",
           "region": "default"
         }
@@ -134,32 +136,36 @@
     {
       "id": 12,
       "type": "timeseries",
-      "title": "Job 상태별 개수 (Running / Success / Failed)",
+      "title": "Worker 개수 (Running / Pending / Idle)",
+      "description": "EMR Serverless는 job 성공/실패 카운트를 CloudWatch로 보내지 않는다(계정에서 확인됨) - 대신 워커(Spark_Driver/Kernel/Executor) 단위 지표만 있어서, 활동량 추세를 이걸로 대체 확인한다.",
       "gridPos": { "h": 8, "w": 12, "x": 12, "y": 18 },
       "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
       "targets": [
         {
           "refId": "A",
           "namespace": "AWS/EMRServerless",
-          "metricName": "RunningJobCount",
+          "metricName": "RunningWorkerCount",
           "dimensions": { "ApplicationId": "00g870ett46id32p" },
+          "matchExact": false,
           "statistic": "Maximum",
           "region": "default"
         },
         {
           "refId": "B",
           "namespace": "AWS/EMRServerless",
-          "metricName": "SuccessJobCount",
+          "metricName": "PendingCreationWorkerCount",
           "dimensions": { "ApplicationId": "00g870ett46id32p" },
-          "statistic": "Sum",
+          "matchExact": false,
+          "statistic": "Maximum",
           "region": "default"
         },
         {
           "refId": "C",
           "namespace": "AWS/EMRServerless",
-          "metricName": "FailedJobCount",
+          "metricName": "IdleWorkerCount",
           "dimensions": { "ApplicationId": "00g870ett46id32p" },
-          "statistic": "Sum",
+          "matchExact": false,
+          "statistic": "Maximum",
           "region": "default"
         }
       ],
