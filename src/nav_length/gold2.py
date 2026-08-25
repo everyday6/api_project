@@ -10,7 +10,7 @@ from __future__ import annotations
 import statistics
 from datetime import date
 
-from pyspark.sql import DataFrame
+import pandas as pd
 
 from src.common import gold_snapshot
 from src.common.config import GLOBAL_PARTITION_KEY, SERVING_TABLE_TYPE2_KEY_COLUMNS
@@ -20,10 +20,10 @@ from src.common.logger import get_logger
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_length_gold2")
 
 
-def to_serving_items(df: DataFrame, *, today: date | None = None) -> list[dict]:
-    """(segment_id, length_ft) Spark DataFrame을 RDS 항목 리스트로 변환한다.
+def to_serving_items(df: pd.DataFrame, *, today: date | None = None) -> list[dict]:
+    """(segment_id, length_ft) pandas DataFrame을 RDS 항목 리스트로 변환한다.
 
-    결과가 작아(세그먼트당 1개, 최대 몇십만 건) 드라이버로 collect해도 안전하다.
+    결과가 작아(세그먼트당 1개, 최대 몇십만 건) 파이썬 리스트로 다뤄도 안전하다.
 
     length_ft는 LION 원본을 그대로 반영한 정적 참조값이라 "수집일"이라는
     개념이 따로 없다 - updated_date(이 Gold2 실행일)만 채운다. 예전엔
@@ -41,12 +41,12 @@ def to_serving_items(df: DataFrame, *, today: date | None = None) -> list[dict]:
     실제 데이터 기반 값을 유지할 수 있다.
     """
     today = (today or date.today()).isoformat()
-    rows = df.select("segment_id", "length_ft").collect()
+    rows = df[["segment_id", "length_ft"]].itertuples(index=False)
 
     items = [
         {
-            "segment_id": row["segment_id"],
-            "value": round(row["length_ft"]),
+            "segment_id": row.segment_id,
+            "value": round(row.length_ft),
             "updated_date": today,
         }
         for row in rows

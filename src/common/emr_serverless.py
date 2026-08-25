@@ -7,7 +7,7 @@ src/ 전체를 zip으로 묶어 --py-files로 넘겨서, 잡 스크립트가 src
 기존 순수 변환 함수를 그대로 import해서 쓸 수 있게 한다 — 변환 로직을
 spark_jobs 쪽에 복제하지 않기 위함이다.
 
-우리 Spark job(nav_length_job.py, nav_time_silver_job.py, nav_time_gold_job.py 등)은 pandas/geopandas/
+우리 Spark job(nav_time_silver_job.py, nav_time_gold_job.py 등)은 pandas/geopandas/
 shapely/pyproj/cloudpathlib 같은 서드파티 라이브러리도 쓰는데, EMR
 Serverless 기본 이미지에는 이게 없다. --py-files는 순수 파이썬 코드만
 배포하고 패키지를 설치해주지 않으므로, venv-pack으로 미리 패키징해둔
@@ -79,7 +79,7 @@ def _rds_env_conf() -> str:
     """RDS(PostgreSQL) 접속 정보를 driver/executor 환경변수로 주입하는 spark-submit
     conf 조각을 만든다. 호출 전에 _validate_rds_env()로 이미 검증됐다고 가정한다.
 
-    nav_time_silver_job.py/nav_time_gold_job.py/nav_length_job.py는 드라이버에서, tlc_pipeline_job.py의
+    nav_time_silver_job.py/nav_time_gold_job.py는 드라이버에서, tlc_pipeline_job.py의
     Type3 롤링 발행은 foreachPartition으로 executor에서 db.py의 write 함수를
     호출하므로 둘 다 필요하다.
 
