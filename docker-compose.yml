@@ -416,10 +416,19 @@ services:
     # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
     restart: unless-stopped
 
+    depends_on:
+      postgres:
+        condition: service_healthy
+
     environment:
       AWS_REGION: ${AWS_REGION}
       GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USERNAME:-admin}
       GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD가 .env에 설정되어야 합니다}
+      # Airflow 메타데이터 DB(dag_run/task_instance)를 Postgres 데이터소스로
+      # 붙이는 데 재사용 - grafana/provisioning/datasources/airflow-postgres.yaml 참고.
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
 
     volumes:
       - grafana_data:/var/lib/grafana

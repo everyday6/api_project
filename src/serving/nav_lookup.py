@@ -201,17 +201,21 @@ def _is_fresh(last_sample_at) -> bool:
     return last_sample_at.date() == date.today()
 
 
-def _resolve_from_row(row: dict | None) -> int | None:
+def _resolve_from_row(row: dict | None) -> tuple[int | None, str | None]:
     """한 (segment_id, time) 행(또는 메모리 캐시/S3 스냅샷의 같은 모양
     dict)에서 Fresh Exact -> Historical AVG 순서로 값을 뽑는다. 둘 다
-    없으면 None을 돌려줘서 호출부가 다음 단계로 내려가게 한다."""
+    없으면 (None, None)을 돌려줘서 호출부가 다음 단계로 내려가게 한다.
+
+    두 번째 반환값(tier)은 어떤 단계에서 값을 뽑았는지("fresh"/"avg")다 -
+    Grafana 대시보드용 fallback 히트율 집계에 쓴다(_resolve_time_values
+    참고)."""
     if row is None:
         return None
     if row.get("value") is not None and _is_fresh(row.get("last_sample_at")):
         return round(row["value"])
     if row.get("avg") is not None:
-        return round(row["avg"])
-    return None
+        return round(row["avg"]), "avg"
+    return None, None
 
 
 def _remember_in_memory(segment_id: str, time_slot: str, row: dict) -> None:
@@ -230,7 +234,7 @@ def _load_s3_snapshot_once() -> None:
     _s3_snapshot_loaded = True
 
 
-def _resolve_from_fallback(segment_id: str, time_slot: str) -> int:
+def _resolve_from_fallback(segment_id: str, time_slot: str) -> tuple[int, str]:
     """RDS 자체가 응답 불가능할 때: 메모리 캐시 -> S3 스냅샷(최초 미스 때
     한 번만 로드) -> 코드 상수 순서로 내려간다."""
     row = _memory_cache.get((segment_id, time_slot))
@@ -241,15 +245,15 @@ def _resolve_from_fallback(segment_id: str, time_slot: str) -> int:
         if row is not None:
             _remember_in_memory(segment_id, time_slot, row)
 
-    value = _resolve_from_row(row)
+    value, tier = _resolve_from_row(row)
     if value is not None:
-        return value
+        return value, tier
 
     logger.warning(
         f"메모리 캐시/S3 스냅샷에도 값 없음 -> 코드 상수 사용: "
         f"segment_id={segment_id} time={time_slot}"
     )
-    return _HARDCODED_DEFAULTS[1]
+    return _HARDCODED_DEFAULTS[1], "hardcoded"
 
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
@@ -357,6 +361,10 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
 
     values: list[int] = []
     elapsed_seconds = 0
+    # Grafana 대시보드의 fallback 히트율(fresh/avg/hardcoded 비율) 집계용 -
+    # 세그먼트마다 로그를 남기면 요청당 수백 줄까지 늘어날 수 있어서, 요청
+    # 하나당 요약 한 줄만 마지막에 남긴다.
+    tier_counts = {"fresh": 0, "avg": 0, "hardcoded": 0}
 
     for sid in segment_ids:
         lookup_time = _add_seconds(time_str, elapsed_seconds)
@@ -364,19 +372,25 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
 
         if rows_by_segment is None:
             # RDS 자체가 응답 불가능했던 경우 - 메모리/S3 폴백으로 내려간다.
-            value = _resolve_from_fallback(sid, bucket)
+            value, tier = _resolve_from_fallback(sid, bucket)
         else:
             row = rows_by_segment.get(sid, {}).get(bucket)
             if row is not None:
                 _remember_in_memory(sid, bucket, row)
-            value = _resolve_from_row(row)
+            value, tier = _resolve_from_row(row)
             if value is None:
                 # RDS는 정상 응답했지만 이 슬롯 자체가 없는 경우 - "RDS가
                 # 죽었을 때의 예전 값"과 성격이 다르므로 메모리/S3로 내려가지
                 # 않고 곧장 코드 상수로 간다.
-                value = _HARDCODED_DEFAULTS[1]
+                value, tier = _HARDCODED_DEFAULTS[1], "hardcoded"
 
+        tier_counts[tier] += 1
         values.append(value)
         elapsed_seconds += value
 
+    logger.info(
+        f"[fallback_tier_summary] type=1 fresh={tier_counts['fresh']} "
+        f"avg={tier_counts['avg']} hardcoded={tier_counts['hardcoded']} "
+        f"total={len(segment_ids)}"
+    )
     return values

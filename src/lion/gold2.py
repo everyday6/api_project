@@ -19,6 +19,7 @@ import pandas as pd
 
 from src.common.config import GOLD2_DIR
 from src.common.logger import get_logger
+from src.common.utils import save_parquet
 from src.lion.silver1 import DIM_SEGMENT_BASE_PATH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_gold2")
@@ -60,8 +61,7 @@ def build_dim_segment(dim_segment_base_path: Path = DIM_SEGMENT_BASE_PATH) -> st
         "is_routable", "node_from", "node_to", "speed_limit_mph",
     ]]
 
-    GOLD2_DIR.mkdir(parents=True, exist_ok=True)
-    dim_segment.to_parquet(str(DIM_SEGMENT_PATH), index=False)
+    save_parquet(dim_segment, DIM_SEGMENT_PATH.parent, DIM_SEGMENT_PATH.name)
 
     logger.info(f"[lion_gold2] dim_segment(Gold2) {len(dim_segment)}행 저장 -> {DIM_SEGMENT_PATH}")
     return str(DIM_SEGMENT_PATH)

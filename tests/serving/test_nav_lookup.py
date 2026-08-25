@@ -66,17 +66,18 @@ def test_is_fresh_false_for_missing_or_malformed_value():
 
 def test_resolve_from_row_prefers_fresh_exact():
     row = {"value": 30, "avg": 40, "last_sample_at": TODAY}
-    assert nav_lookup._resolve_from_row(row) == 30
+    assert nav_lookup._resolve_from_row(row) == (30, "fresh")
 
 
 def test_resolve_from_row_falls_back_to_avg_when_value_is_stale():
     row = {"value": 30, "avg": 40, "last_sample_at": YESTERDAY}
-    assert nav_lookup._resolve_from_row(row) == 40
+    assert nav_lookup._resolve_from_row(row) == (40, "avg")
+
 
 
 def test_resolve_from_row_returns_none_when_row_is_none_or_empty():
-    assert nav_lookup._resolve_from_row(None) is None
-    assert nav_lookup._resolve_from_row({"value": None, "avg": None}) is None
+    assert nav_lookup._resolve_from_row(None) == (None, None)
+    assert nav_lookup._resolve_from_row({"value": None, "avg": None}) == (None, None)
 
 
 # ---------------------------------------------------------------------------
@@ -187,6 +188,26 @@ def test_resolve_time_values_uses_cumulative_elapsed_time_per_segment():
         result = nav_lookup.resolve_segment_values(["1", "2"], 1, "12:00")
 
     assert result == [1800, 999]
+
+
+def test_resolve_time_values_logs_fallback_tier_summary(caplog):
+    # Grafana의 fallback 히트율 대시보드(CloudWatch Logs Insights)가 이
+    # 요약 로그 한 줄을 집계한다 - 세그먼트마다 로그를 안 남기고 요청당
+    # 한 번만 남기는지, tier별 개수가 맞는지 확인한다.
+    rows = {
+        "fresh_seg": {"1200": {"value": 10, "avg": None, "collected_date": TODAY}},
+        "avg_seg": {"1200": {"value": None, "avg": 20, "collected_date": None}},
+    }
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", return_value=rows), \
+         caplog.at_level("INFO", logger="src.serving.nav_lookup"):
+        nav_lookup.resolve_segment_values(["fresh_seg", "avg_seg", "missing_seg"], 1, "12:00")
+
+    summary_logs = [r.message for r in caplog.records if "[fallback_tier_summary]" in r.message]
+    assert len(summary_logs) == 1
+    assert "fresh=1" in summary_logs[0]
+    assert "avg=1" in summary_logs[0]
+    assert "hardcoded=1" in summary_logs[0]
+    assert "total=3" in summary_logs[0]
 
 
 def test_resolve_time_values_same_segment_twice_uses_different_buckets():
