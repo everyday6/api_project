@@ -14,12 +14,15 @@ Geofence: Beginning June 2024" 데이터셋(srxy-5nxn)에서 받는다. 비슷�
 
 from __future__ import annotations
 
+import json
 import shutil
+import tempfile
 from pathlib import Path
 
 import requests
 
-from src.common.config import BRONZE_DIR
+from src.common.config import BRONZE_DIR, TMP_DIR
+from src.common.file_validation import validate_json, validate_non_empty, validate_yaml
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_bronze")
@@ -52,6 +55,8 @@ def _copy_file_to_bronze(source_path: str, out_path) -> None:
 def upload_rates(source_path: str = "config/toll_rates.yaml", bronze_root: Path = BRONZE_ROOT) -> Path:
     """toll_rates.yaml을 그대로 Bronze에 올린다."""
 
+    validate_yaml(source_path)
+
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / "toll_rates.yaml"
     _copy_file_to_bronze(source_path, out_path)
@@ -63,6 +68,8 @@ def upload_rates(source_path: str = "config/toll_rates.yaml", bronze_root: Path 
 def upload_facilities(source_path: str = "config/toll_facilities.yaml", bronze_root: Path = BRONZE_ROOT) -> Path:
     """toll_facilities.yaml을 그대로 Bronze에 올린다."""
 
+    validate_yaml(source_path)
+
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / "toll_facilities.yaml"
     _copy_file_to_bronze(source_path, out_path)
@@ -71,8 +78,25 @@ def upload_facilities(source_path: str = "config/toll_facilities.yaml", bronze_r
     return out_path
 
 
+def _validate_cbd_geofence_content(path: Path) -> None:
+    """형식(JSON) 검증은 file_validation.validate_json()에 맡기고, 여기서는
+    "CBD Geofence로서 의미가 있는가"만 본다(도메인 검증이라 공통 모듈에
+    안 둔다) - Socrata가 200을 주면서 몸통에 {"error": "..."} 같은 유효한
+    JSON을 담아 보내는 경우까지는 validate_json()만으론 못 잡는다."""
+    payload = json.loads(path.read_text())
+    if payload.get("type") != "FeatureCollection":
+        raise ValueError(f"CBD Geofence 응답이 FeatureCollection이 아닙니다: {path}")
+    if not payload.get("features"):
+        raise ValueError(f"CBD Geofence 응답의 features가 비어 있습니다: {path}")
+
+
 def upload_cbd_geofence(url: str = CBD_GEOFENCE_URL, bronze_root: Path = BRONZE_ROOT) -> Path:
-    """MTA CBD Geofence GeoJSON을 받아서 그대로 Bronze에 저장한다."""
+    """MTA CBD Geofence GeoJSON을 받아서 그대로 Bronze에 저장한다.
+
+    로컬 tmp 파일에 먼저 받아서 검증하고, 통과해야만 Bronze(운영 경로)에
+    반영한다 - 운영 경로에 먼저 쓰고 검증하면, 잘못된 응답이 이미 있던
+    정상 파일을 덮어쓴 뒤에야 실패해서 그 순간부터 하위 파이프라인이
+    깨진 파일을 그대로 쓰게 된다."""
 
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / "cbd_geofence.geojson"
@@ -80,7 +104,21 @@ def upload_cbd_geofence(url: str = CBD_GEOFENCE_URL, bronze_root: Path = BRONZE_
     logger.info(f"[toll_bronze] CBD geofence 다운로드 시작: {url}")
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
-    out_path.write_bytes(resp.content)
+
+    TMP_DIR.mkdir(parents=True, exist_ok=True)
+    with tempfile.TemporaryDirectory(prefix="toll_cbd_geofence_", dir=TMP_DIR) as tmp:
+        tmp_path = Path(tmp) / "cbd_geofence.geojson"
+        tmp_path.write_bytes(resp.content)
+
+        # 다 받은 뒤에 실제로 유효한 JSON인지, CBD Geofence로서 의미가
+        # 있는지 확인한다 - Socrata가 200을 주면서 에러 HTML/빈 응답을
+        # 몸통에 담는 경우까지 잡기 위함. 여기서 실패하면 아직 운영
+        # 경로(out_path)는 안 건드린 상태다.
+        validate_non_empty(tmp_path)
+        validate_json(tmp_path)
+        _validate_cbd_geofence_content(tmp_path)
+
+        _copy_file_to_bronze(str(tmp_path), out_path)
 
     logger.info(f"[toll_bronze] CBD geofence 업로드 완료 -> {out_path}")
     return out_path
