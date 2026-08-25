@@ -21,7 +21,6 @@ from src.common.config import (
     TLC_TYPE3_ROLLING_WEEKS,
 )
 from src.common.logger import get_logger
-from src.common.downloader import get_recent_service_months
 from src.common.spark import to_spark_path
 from src.silver2.zone_segment import MAP_ZONE_SEGMENT_VERSION_PATH, current_mapping_version
 from src.tlc.emr import run_tlc_emr_operation
@@ -56,29 +55,31 @@ def _complete_silver_paths_for_month(
     return completed_paths, missing_types
 
 
-def _month_success_marker(month: str, marker_root=TYPE3_MONTH_MARKER_ROOT):
-    return marker_root / f"month={month}" / "_SUCCESS"
-
-
 def _staging_run_path(run_id: str, staging_root=TYPE3_STAGING_ROOT):
     if not RUN_ID_PATTERN.fullmatch(run_id):
         raise ValueError(f"잘못된 Type 3 staging run_id입니다: {run_id}")
     return staging_root / f"run_id={run_id}"
 
 
-def _find_pending_type3_months(
-    service_months: list[str],
-    silver_root=TLC_SILVER1_ROOT,
-    marker_root=TYPE3_MONTH_MARKER_ROOT,
-) -> list[str]:
-    """Silver1 네 종류가 완성됐고 Zone Gold2 완료 마커가 없는 월을 찾는다."""
+_SERVICE_MONTH_PATTERN = re.compile(r"_tripdata_(\d{4}-\d{2})\.parquet$")
 
-    pending = []
-    for month in service_months:
-        _, missing_types = _complete_silver_paths_for_month(month, silver_root)
-        if not missing_types and not _month_success_marker(month, marker_root).exists():
-            pending.append(month)
-    return sorted(pending)
+
+def _months_from_silver_results(silver_results: list[dict]) -> list[str]:
+    """오늘 새로 Silver1까지 끝난 파일들에서 서비스 월(YYYY-MM)만 뽑는다
+    (중복 제거, 정렬).
+
+    이전엔 실행마다 최근 4개월 전체를 다시 스캔해서 예전에 실패로 밀린
+    달까지 자동으로 다시 찾아 재시도했지만, 그 복구는 사람이 Slack 실패
+    알림을 보고 수동으로 재실행하는 쪽으로 단순화했다 - 이 함수는 오직
+    "오늘 새로 받은 파일이 속한 달"만 후보로 낸다. 실제로 그 달의 4개
+    taxi_type이 다 갖춰졌는지는 build_type3_staged_records가 다시 확인한다."""
+
+    months = set()
+    for item in silver_results:
+        match = _SERVICE_MONTH_PATTERN.search(item["filename"])
+        if match:
+            months.add(match.group(1))
+    return sorted(months)
 
 
 def _type3_metadata_is_current(
@@ -132,20 +133,17 @@ def _type3_reference_exists(map_zone_segment_path=MAP_ZONE_SEGMENT_PATH) -> bool
     return map_zone_segment_path.exists()
 
 
-@task(trigger_rule="none_failed")
-def find_pending_type3_months(_silver_results=None) -> list[str]:
-    """신규 Silver가 없어도 최근 Silver1/Zone Gold2 상태를 다시 맞춘다."""
-
-    service_months = [value.strftime("%Y-%m") for value in get_recent_service_months()]
-    pending = _find_pending_type3_months(service_months)
-    logger.info("Type 3 처리 대기 월: %s", pending)
-    return pending
-
-
 @task(pool="silver_pool")
-def build_type3_staged_records(months: list[str]) -> dict:
-    """EMR에서 완료되지 않은 월의 Zone Gold2 결과를 임시 경로에 저장한다."""
+def build_type3_staged_records(silver_results: list[dict]) -> dict:
+    """오늘 새로 Silver1까지 끝난 파일들의 서비스 월에 대해서만, EMR에서
+    Zone Gold2 결과를 임시 경로에 저장한다.
 
+    신규 파일만 처리한다 - 이전 실행에서 실패해 밀린 달이 있어도 여기서
+    자동으로 다시 찾아 재시도하지 않는다. 그 경우엔 실패한 태스크의
+    retries가 소진되며 Slack 알림이 오고, 사람이 원인을 고친 뒤 그
+    실행을 수동으로 재시도한다."""
+
+    months = _months_from_silver_results(silver_results)
     if not months:
         raise AirflowSkipException("처리할 Type 3 월이 없어 갱신을 건너뜁니다")
 
@@ -270,6 +268,65 @@ def check_type3_reference_ready(_publish_plan=None) -> bool:
             MAP_ZONE_SEGMENT_PATH,
         )
     return exists
+
+
+# check_type3_publish_needed가 gap을 감지하면 같은 실행에서 곧바로 발행까지
+# 끝나는 게 정상이라, S3 Gold2의 최신 롤링 window_end와 RDS에 실제 반영된
+# window_end 사이 gap은 건강한 상태에서 거의 항상 0이어야 한다. 이 값을
+# 넘게 벌어져 있으면 "TLC가 아직 새 월을 안 줌"(정상, 몇 달씩 불규칙) 때문이
+# 아니라 - 그 경우엔 Gold2도 같이 오래돼 있어 gap이 안 생긴다 - 발행 단계
+# 자체가 멈췄다는 신호로 본다(예: check_type3_reference_ready가 매핑 파일
+# 누락으로 며칠째 조용히 skip 중인 경우).
+TYPE3_FRESHNESS_MAX_LAG_DAYS = 3
+
+
+def _type3_rds_lag_days(gold_window_end: date, publish_state: dict) -> int:
+    """S3 Gold2 최신 롤링 window_end와 RDS에 마지막으로 반영된 window_end
+    사이 며칠 차이나는지 계산한다(순수 함수 - 테스트용으로 분리)."""
+
+    rds_window_end_raw = publish_state.get("window_end")
+    if rds_window_end_raw is None:
+        raise ValueError(
+            "RDS Type 3 배포 상태가 없습니다(아직 한 번도 publish된 적이 "
+            "없거나 상태 파일이 손상됨) - 최초 배포 여부를 확인하세요"
+        )
+    rds_window_end = date.fromisoformat(rds_window_end_raw)
+    return (gold_window_end - rds_window_end).days
+
+
+@task(trigger_rule="none_failed")
+def check_type3_rds_freshness(_published_values=None) -> None:
+    """RDS Type 3의 window_end가 S3 Gold2 최신 롤링 window_end보다
+    TYPE3_FRESHNESS_MAX_LAG_DAYS일 이상 뒤처져 있으면 실패시킨다.
+
+    기준을 오늘 날짜가 아니라 S3 Gold2에 이미 쌓여 있는 최신 데이터로 잡는
+    이유: TLC 공개가 몇 달씩 불규칙하게 늦어져도 Gold2와 RDS는 같은 실행
+    안에서 함께 갱신되므로, 둘 사이 gap은 TLC의 공개 지연과 무관하게 거의
+    항상 0이다 - "아직 새 데이터가 없음"과 "파이프라인이 멈췄음"을 이 gap이
+    자동으로 구분해준다.
+
+    하루 한 번 도는 배치 태스크라 실패 시 알림이 스팸으로 쌓일 걱정이
+    없다(API 요청마다 도는 서빙 경로 함수와 다름) - 실패하면 기존
+    on_failure_callback(Slack)이 그대로 재사용된다."""
+
+    _, _, gold_window_end = select_latest_date_partitions(
+        TYPE3_DAILY_ROOT.glob("date=*"),
+        TLC_TYPE3_ROLLING_WEEKS * 7,
+    )
+
+    lag_days = _type3_rds_lag_days(gold_window_end, _read_type3_publish_state())
+    if lag_days > TYPE3_FRESHNESS_MAX_LAG_DAYS:
+        raise ValueError(
+            f"RDS Type 3가 S3 Gold2보다 {lag_days}일 뒤처져 있습니다 "
+            f"(gold_window_end={gold_window_end}) - check_type3_reference_ready 등 "
+            "발행 단계가 계속 조용히 skip되고 있는지 확인 필요"
+        )
+
+    logger.info(
+        "RDS Type 3 최신성 정상: gold_window_end=%s lag_days=%s",
+        gold_window_end,
+        lag_days,
+    )
 
 
 @task(pool="silver_pool")
