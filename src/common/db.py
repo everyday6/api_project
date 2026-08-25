@@ -27,6 +27,7 @@ type2/3/4는 segment_id) — 이 모듈은 그 차이를 몰라도 되게 설계
 from __future__ import annotations
 
 import re
+import time
 from datetime import date, datetime
 from decimal import Decimal
 
@@ -227,6 +228,11 @@ def batch_get_items(table_name: str, keys: list[dict], *, conn=None) -> dict[tup
     conn을 넘기면 그 커넥션을 쓴다(batch_write_items와 동일한 패턴) - 서빙
     조회가 fast-fail 전용 커넥션(짧은 statement_timeout)을 쓰고 싶을 때
     공유 커넥션 대신 이걸로 지정한다.
+
+    호출 하나(청크 여러 개 포함)에 걸린 시간을 로그로 남긴다 - RDS 자체
+    CloudWatch 지표(ReadLatency 등)는 평균값에 디스크 I/O 지연이라, 서빙이
+    실제 체감하는 쿼리 응답시간의 p50/p95/p99는 이 로그를 CloudWatch Logs
+    Insights로 집계해서 봐야 한다(Grafana "데이터 신선도" 행 옆 참고).
     """
     if not keys:
         return {}
@@ -252,6 +258,7 @@ def batch_get_items(table_name: str, keys: list[dict], *, conn=None) -> dict[tup
             keys=sql.SQL(", ").join(sql.Identifier(name) for name in key_columns),
         )
 
+    start = time.perf_counter()
     for chunk in _chunk(keys, _BATCH_GET_CHUNK):
         key_values = tuple(tuple(key[name] for name in key_columns) for key in chunk)
         with conn.cursor() as cur:
@@ -265,6 +272,8 @@ def batch_get_items(table_name: str, keys: list[dict], *, conn=None) -> dict[tup
                     if value is not None:
                         item[key] = _normalize_value(value)
                 result[tuple(item[name] for name in key_columns)] = item
+    elapsed_ms = (time.perf_counter() - start) * 1000
+    logger.info(f"[rds_query_duration] table={table_name} ms={elapsed_ms:.1f}")
 
     return result
 

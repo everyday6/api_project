@@ -514,6 +514,54 @@
         }
       ],
       "fieldConfig": { "defaults": {}, "overrides": [] }
+    },
+    {
+      "id": 80,
+      "type": "row",
+      "title": "서빙 성능 (앱 레벨 로그 기반 - CloudWatch Logs Insights)",
+      "gridPos": { "h": 1, "w": 24, "x": 0, "y": 97 }
+    },
+    {
+      "id": 81,
+      "type": "timeseries",
+      "title": "RDS 쿼리 응답시간 (p50/p95/p99)",
+      "description": "RDS 자체 CloudWatch 지표(ReadLatency 등)는 디스크 I/O 지연의 평균값이라 서빙이 실제 체감하는 쿼리 응답시간과 다르다. src/common/db.py의 batch_get_items()가 남기는 [rds_query_duration] 로그(호출 1건당 소요 ms)를 직접 집계한다.",
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 98 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            { "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*", "name": "/aws/lambda/nav-api" }
+          ],
+          "queryString": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "ms" }, "overrides": [] }
+    },
+    {
+      "id": 82,
+      "type": "timeseries",
+      "title": "Type1 fallback 계층 비율 (fresh / avg / hardcoded)",
+      "description": "src/serving/nav_lookup.py가 요청당 한 번 남기는 [fallback_tier_summary] 로그를 집계한다. fresh 비율이 낮고 hardcoded 비율이 높아지면 type1 파이프라인이 최신 데이터를 못 채우고 있다는 신호다.",
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 98 },
+      "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": { "type": "cloudwatch", "uid": "cloudwatch" },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            { "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*", "name": "/aws/lambda/nav-api" }
+          ],
+          "queryString": "fields @timestamp, @message | filter @message like /fallback_tier_summary/ | parse @message \"fresh=* avg=* hardcoded=* total=*\" as fresh_n, avg_n, hardcoded_n, total_n | stats sum(fresh_n) as fresh_sum, sum(avg_n) as avg_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields fresh_sum * 100.0 / total_sum as fresh_pct, avg_sum * 100.0 / total_sum as avg_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": { "defaults": { "unit": "percent", "max": 100, "min": 0 }, "overrides": [] }
     }
   ]
 }
