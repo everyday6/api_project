@@ -1128,7 +1128,10 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
-          "queryString": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by tbl, bin(1m)"
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by tbl, bin(1m)",
+          "statsGroups": [
+            "tbl"
+          ]
         }
       ],
       "fieldConfig": {
@@ -1168,7 +1171,7 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
-          "queryString": "fields @timestamp, @message | filter @message like /fallback_tier_summary/ | parse @message \"fresh=* avg=* hardcoded=* total=*\" as fresh_n, avg_n, hardcoded_n, total_n | stats sum(fresh_n) as fresh_sum, sum(avg_n) as avg_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields fresh_sum * 100.0 / total_sum as fresh_pct, avg_sum * 100.0 / total_sum as avg_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+          "expression": "fields @timestamp, @message | filter @message like /fallback_tier_summary/ | parse @message \"fresh=* avg=* hardcoded=* total=*\" as fresh_n, avg_n, hardcoded_n, total_n | stats sum(fresh_n) as fresh_sum, sum(avg_n) as avg_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields fresh_sum * 100.0 / total_sum as fresh_pct, avg_sum * 100.0 / total_sum as avg_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
         }
       ],
       "fieldConfig": {
