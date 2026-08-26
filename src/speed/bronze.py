@@ -20,7 +20,7 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.common.config import BRONZE_DIR, DATASETS
+from src.common.config import BRONZE_DIR, BUCKET_MINUTES, DATASETS
 from src.common.logger import get_logger
 from src.common.socrata import fetch_all, make_session
 from src.common.utils import save_parquet
@@ -170,8 +170,28 @@ def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
     df = pd.DataFrame(rows)
     max_data_as_of = str(df["data_as_of"].max())
 
-    links_df = df.drop_duplicates("link_id")[["link_id", "link_points"]]
-    synthetic_df = _synthesize_uncovered_segments(links_df, max_data_as_of)
+    # 마커가 없거나 오래돼서(부트스트랩, 장애 복구 등) 한 번에 여러 30분
+    # 버킷치가 몰려 들어오면, synthetic 보강을 배치 전체에 한 번만 하면 안
+    # 된다 - 그러면 보강된 행이 전부 배치의 최신 시각(max_data_as_of) 하나로
+    # 찍혀서, 그 버킷만 거의 다 채워지고 나머지 버킷은 실제 센서로 잡힌
+    # segment만 남아 듬성듬성해진다(실제로 겪은 사고 - 2026-08-26). 30분
+    # 버킷별로 나눠서 각자 자기 몫의 synthetic을 자기 시각으로 찍어야 모든
+    # 버킷이 고르게 채워진다. 정상 상황(백로그 없이 한 사이클에 버킷 1개)
+    # 에서는 그룹이 1개뿐이라 지금과 동일하게 한 번만 돈다.
+    bucket = pd.to_datetime(df["data_as_of"]).dt.floor(f"{BUCKET_MINUTES}min")
+    synthetic_frames = []
+    for _, bucket_df in df.groupby(bucket):
+        bucket_links_df = bucket_df.drop_duplicates("link_id")[["link_id", "link_points"]]
+        bucket_max_data_as_of = str(bucket_df["data_as_of"].max())
+        synthetic_frames.append(
+            _synthesize_uncovered_segments(bucket_links_df, bucket_max_data_as_of)
+        )
+
+    synthetic_df = (
+        pd.concat(synthetic_frames, ignore_index=True)
+        if synthetic_frames
+        else pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+    )
     if not synthetic_df.empty:
         df = pd.concat([df, synthetic_df], ignore_index=True)
 

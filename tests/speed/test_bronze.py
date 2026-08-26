@@ -179,6 +179,30 @@ def test_collect_speed_data_skips_save_when_validation_fails(tmp_path):
     assert list(validated_df["link_id"]) == ["1"]
 
 
+def test_collect_speed_data_calls_synthesizer_once_per_30min_bucket(tmp_path):
+    # 마커가 오래돼서(부트스트랩/장애 복구) 한 배치에 서로 다른 30분
+    # 버킷(12:05와 12:35 -> 각각 12:00, 12:30 버킷)이 섞여 들어오면,
+    # synthetic 보강을 배치 전체에 한 번이 아니라 버킷마다 따로 불러야
+    # 한다 - 안 그러면 보강된 행이 전부 배치의 최신 시각 하나로만 찍혀서
+    # 앞선 버킷은 실제 센서로 잡힌 것만 남고 듬성듬성해진다(2026-08-26
+    # 실제로 겪은 사고).
+    rows = [
+        {"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"},
+        {"link_id": "2", "link_points": "40.1,-73.1", "speed": "20.0", "data_as_of": "2026-08-21T12:35:00.000"},
+    ]
+    empty_synthetic = pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=empty_synthetic) as mock_synth:
+        bronze.collect_speed_data(bronze_root=tmp_path)
+
+    assert mock_synth.call_count == 2
+    called_timestamps = sorted(call.args[1] for call in mock_synth.call_args_list)
+    assert called_timestamps == ["2026-08-21T12:05:00.000", "2026-08-21T12:35:00.000"]
+    called_links = {call.args[0]["link_id"].iloc[0] for call in mock_synth.call_args_list}
+    assert called_links == {"1", "2"}
+
+
 def test_collect_speed_data_passes_distinct_links_to_synthesizer(tmp_path):
     rows = [
         {"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"},
