@@ -20,7 +20,7 @@
 ## 목차
 
 1. [프로덕트 개요](#1-프로덕트-개요)
-2. [API 예시](#2-api-예시)
+2. [최종 데이터 스키마](#2-최종-데이터-스키마)
 3. [데이터 파이프라인과 아키텍처](#3-데이터-파이프라인과-아키텍처)
 4. [타입별 설계: 데이터가 다르면 답도 다르다](#4-타입별-설계-데이터가-다르면-답도-다르다)
 5. [무조건 응답하는 서비스 만들기](#5-무조건-응답하는-서비스-만들기)
@@ -36,21 +36,66 @@
 
 - **어떤 문제**: 라우팅 알고리즘을 갖고 있지만, 도로별 최신 데이터(통행 소요시간, 길이, 통행료 등) 및 승차 승객 수 데이터가 경로 계산에 바로 활용 가능한 형태로 제공되지 않습니다.
 
-- **해결책**: 내비게이션 경로 탐색 옵션 계산에 필요한 도로 세그먼트(10-20m 수준의 도로 조각)별 정보를 데이터 파이프라인으로 구축해 API로 제공합니다.
+- **해결책**: 택시 내비게이션 경로 탐색에 필요한 도로 세그먼트(10-20m 수준의 도로 조각)별 정보를 데이터 파이프라인으로 구축해 API로 제공합니다.
 
 ---
 ### **주요 기능**
 
-| type | 지표 | 경로 추천 용도 | 방향 |
-| :---: | --- | --- | :---: |
-| 1 | 도로 세그먼트별 통행 소요시간 | 빠른 경로 | 최소화 |
-| 2 | 도로 세그먼트별 길이 | 짧은 경로 | 최소화 |
-| 3 | 도로 세그먼트별 택시 승차 승객 수 (택시 전용) | 승객 많은 경로 | 최대화 |
-| 4 | 도로 세그먼트별 통행료 | 무료 경로 | 최소화 |
+| type | 지표 | 용도 |
+| :---: | --- | --- |
+| 1 | 도로 세그먼트별 통행 소요시간 | 빠른 경로 | 
+| 2 | 도로 세그먼트별 길이 | 짧은 경로 |
+| 3 | 도로 세그먼트별 택시 승차 승객 수 (택시 전용) | 승객 많은 경로 | 
+| 4 | 도로 세그먼트별 통행료 | 무료 경로 |
 
-> type=3은 `pickup` 기준(택시기사가 승객을 만날 가능성 지표), type=4는 혼잡+도로 통행료 합산값 — 경로 합산 시 `sum`이 아닌 `max`로 집계.
+---
 
-## 2. API 예시
+## 2. 최종 데이터 스키마
+
+4개 지표는 `(segment_id, sk) → value` 형태를 공유하지만 grain이 달라 테이블을 4개로 분리했습니다.
+
+**segment_metrics_type1** — 버킷(실측)/AVG(과거평균)/SPEC(추정) 3종 행 공존
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| segment_id | TEXT | PK |
+| sk | TEXT | PK — `"0830"`(버킷) \| `"AVG"` \| `"SPEC"` |
+| value | NUMERIC | 통과시간(초) |
+| collected_date | DATE | 버킷 항목만 |
+| observed_at | TIMESTAMPTZ | 버킷 항목만 — freshness 판정용 |
+| count | INTEGER | AVG 항목만 — 증분 평균 갱신용 |
+
+**segment_metrics_type2** — 세그먼트당 1행
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| segment_id | TEXT | PK |
+| sk | TEXT | PK, 기본값 `'LENGTH'` |
+| value | NUMERIC | 길이(m) |
+
+**segment_metrics_type3** — 값 행 + 재계산 판단용 메타 행 1개 공존
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| segment_id | TEXT | PK — 값 행은 실제 segment_id |
+| sk | TEXT | PK — `"3#MON#0900"`(값) \| `"TYPE#3"`(메타) |
+| value | NUMERIC | 값 행만 — 요일×시간대별 평균 승차 수 |
+| status | TEXT | 메타 행만 — 재계산 완료 여부 |
+| window_start | DATE | 메타 행만 |
+| window_end | DATE | 메타 행만 |
+| rolling_weeks | INTEGER | 메타 행만 |
+| mapping_version | TEXT | 메타 행만 — zone-segment 매핑 버전 |
+| updated_at | TIMESTAMPTZ | 메타 행만 |
+
+**segment_metrics_type4** — 세그먼트당 1행, 통행료 합산값
+
+| 컬럼 | 타입 | 설명 |
+| --- | --- | --- |
+| segment_id | TEXT | PK |
+| sk | TEXT | PK, 기본값 `'TYPE#4'` |
+| value | NUMERIC | 혼잡통행료 + 도로통행료 합산값 |
+
+### **API 요청-응답 예시**
 
 | type | 예시 요청 | 예시 응답 | 소스 |
 | :---: | --- | --- | --- |
@@ -144,42 +189,7 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 
 대부분의 세그먼트가 통행료 대상이 아니라 값이 극도로 희소하고, 정책 변경 시에만 갱신되는 정적 데이터입니다. RDS가 정상 응답했는데 특정 세그먼트가 없는 것은 장애가 아니라 "진짜로 통행료가 없는 도로"라는 정상 응답으로 구분해, RDS 조회 실패(연결 불가)와 값 부재를 서로 다른 상황으로 취급합니다.
 
-<details>
-<summary>부록: Gold 테이블 스키마</summary>
-
-4개 지표는 `(segment_id, sk) → value` 형태를 공유하지만 grain이 달라 테이블을 4개로 분리했습니다.
-
-```sql
--- type1: 버킷(실측)/AVG(과거평균)/SPEC(추정) 3종 행 공존
-CREATE TABLE segment_metrics_type1 (
-  segment_id TEXT NOT NULL, sk TEXT NOT NULL,     -- "0830" | "AVG" | "SPEC"
-  value NUMERIC NOT NULL, collected_date DATE,     -- 버킷만
-  observed_at TIMESTAMPTZ, count INTEGER,          -- 버킷/AVG만
-  PRIMARY KEY (segment_id, sk)
-);
-
--- type2: 세그먼트당 1행
-CREATE TABLE segment_metrics_type2 (
-  segment_id TEXT NOT NULL, sk TEXT NOT NULL DEFAULT 'LENGTH',
-  value NUMERIC NOT NULL, PRIMARY KEY (segment_id, sk)
-);
-
--- type3: 값 행 + 재계산 판단용 메타 행 1개
-CREATE TABLE segment_metrics_type3 (
-  segment_id TEXT NOT NULL, sk TEXT NOT NULL,      -- "3#MON#0900" | "TYPE#3"(메타)
-  value NUMERIC, status TEXT, window_start DATE, window_end DATE,
-  rolling_weeks INTEGER, mapping_version TEXT, updated_at TIMESTAMPTZ,
-  PRIMARY KEY (segment_id, sk)
-);
-
--- type4: 세그먼트당 1행, 통행료 합산값
-CREATE TABLE segment_metrics_type4 (
-  segment_id TEXT NOT NULL, sk TEXT NOT NULL DEFAULT 'TYPE#4',
-  value NUMERIC NOT NULL, PRIMARY KEY (segment_id, sk)
-);
-```
-
-</details>
+> 테이블 스키마는 [2. 최종 데이터 스키마](#2-최종-데이터-스키마)를 참고하세요.
 
 ## 5. 무조건 응답하는 서비스 만들기
 
