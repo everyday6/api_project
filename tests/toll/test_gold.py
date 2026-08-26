@@ -127,7 +127,7 @@ def test_write_gold_items_exports_snapshot_after_rds_write():
     items = [{"segment_id": "S1", "value": 2.75}, {"segment_id": "S2", "value": 17.00}]
 
     with patch.object(gold.db, "ensure_table"), \
-         patch.object(gold.db, "batch_write_items") as mock_write, \
+         patch.object(gold.db, "replace_table_snapshot") as mock_write, \
          patch.object(gold.gold_snapshot, "write_snapshot") as mock_snapshot:
         write_gold_items(items)
 
@@ -141,7 +141,7 @@ def test_write_gold_items_survives_snapshot_export_failure():
     items = [{"segment_id": "S1", "value": 2.75}]
 
     with patch.object(gold.db, "ensure_table"), \
-         patch.object(gold.db, "batch_write_items"), \
+         patch.object(gold.db, "replace_table_snapshot"), \
          patch.object(gold.gold_snapshot, "write_snapshot", side_effect=RuntimeError("S3 down")):
         write_gold_items(items)  # 예외 없이 정상 종료돼야 한다.
 

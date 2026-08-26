@@ -1,4 +1,5 @@
 import pytest
+from psycopg2 import sql
 
 from src.common import db
 from tests.conftest import reset_table
@@ -150,3 +151,141 @@ def test_ensure_table_is_idempotent_with_explicit_primary_key():
     with conn.cursor() as cur:
         cur.execute("SELECT to_regclass(%s)", (TABLE_NAME,))
         assert cur.fetchone()[0] == TABLE_NAME
+
+
+# replace_table_snapshot: Type2/Type4처럼 매번 전체를 다시 계산하는
+# 파이프라인이 쓰는 staging+swap 전체 교체.
+
+SNAPSHOT_TABLE = "test_snapshot_swap"
+
+
+def _create_snapshot_table():
+    reset_table(SNAPSHOT_TABLE, {"value": "NUMERIC"}, ("segment_id",))
+
+
+def test_replace_table_snapshot_removes_rows_absent_from_new_items():
+    _create_snapshot_table()
+    db.batch_write_items(
+        SNAPSHOT_TABLE,
+        [{"segment_id": "OLD", "value": 1}, {"segment_id": "KEEP", "value": 1}],
+        key_columns=("segment_id",),
+    )
+
+    db.replace_table_snapshot(
+        SNAPSHOT_TABLE,
+        [{"segment_id": "KEEP", "value": 2}, {"segment_id": "NEW", "value": 3}],
+        key_columns=("segment_id",),
+    )
+
+    result = db.batch_get_items(
+        SNAPSHOT_TABLE, [{"segment_id": "OLD"}, {"segment_id": "KEEP"}, {"segment_id": "NEW"}]
+    )
+    assert ("OLD",) not in result
+    assert result[("KEEP",)]["value"] == 2
+    assert result[("NEW",)]["value"] == 3
+
+
+def test_replace_table_snapshot_skips_swap_when_items_empty():
+    _create_snapshot_table()
+    db.batch_write_items(
+        SNAPSHOT_TABLE, [{"segment_id": "KEEP", "value": 1}], key_columns=("segment_id",)
+    )
+
+    result = db.replace_table_snapshot(SNAPSHOT_TABLE, [], key_columns=("segment_id",))
+
+    assert result == 0
+    assert db.batch_get_items(SNAPSHOT_TABLE, [{"segment_id": "KEEP"}])
+
+
+def test_replace_table_snapshot_preserves_primary_key_constraint():
+    _create_snapshot_table()
+
+    db.replace_table_snapshot(
+        SNAPSHOT_TABLE, [{"segment_id": "A", "value": 1}], key_columns=("segment_id",)
+    )
+
+    # LIKE ... INCLUDING ALL로 만든 새 테이블도 원래 PK 제약을 그대로
+    # 가져야 한다 - 이미 있는 키("A")를 또 넣으면 여전히 막혀야 한다.
+    conn = db._get_connection()
+    with conn.cursor() as cur:
+        with pytest.raises(Exception):
+            cur.execute(
+                sql.SQL("INSERT INTO {table} (segment_id, value) VALUES (%s, %s)").format(
+                    table=sql.Identifier(SNAPSHOT_TABLE)
+                ),
+                ("A", 2),
+            )
+    conn.rollback()
+    conn.autocommit = True
+
+
+# cleanup_keys_not_in: Type1처럼 증분 upsert만 하는 테이블에서, LION 갱신
+# 시점에 더 이상 유효하지 않은 세그먼트만 targeted delete로 정리하면서
+# 지표(valid_count/stale_keys/deleted_rows)까지 한 번에 얻는다.
+
+CLEANUP_TABLE = "test_stale_cleanup"
+
+
+def _create_cleanup_table():
+    reset_table(CLEANUP_TABLE, {"value": "NUMERIC"}, ("segment_id", "time"))
+
+
+def test_cleanup_keys_not_in_removes_only_stale_rows_and_returns_metrics():
+    _create_cleanup_table()
+    db.batch_write_items(
+        CLEANUP_TABLE,
+        [
+            {"segment_id": "STALE", "time": "0000", "value": 1},
+            {"segment_id": "STALE", "time": "0030", "value": 1},
+            {"segment_id": "VALID", "time": "0000", "value": 1},
+        ],
+        key_columns=("segment_id", "time"),
+    )
+
+    result = db.cleanup_keys_not_in(CLEANUP_TABLE, ["VALID"], key_column="segment_id")
+
+    # STALE의 time 슬롯 2개가 다 지워져도 stale_keys는 세그먼트 단위로
+    # 중복 제거된다("몇 행 지워졌는지"가 아니라 "어떤 세그먼트가
+    # 지워졌는지"가 로그/알림에 필요한 정보라서). deleted_rows는 실제
+    # 지워진 행 수(2)를 그대로 보여준다.
+    assert result == {"valid_count": 1, "stale_keys": ["STALE"], "deleted_rows": 2}
+    remaining = db.batch_get_items(
+        CLEANUP_TABLE,
+        [
+            {"segment_id": "STALE", "time": "0000"},
+            {"segment_id": "STALE", "time": "0030"},
+            {"segment_id": "VALID", "time": "0000"},
+        ],
+    )
+    assert ("STALE", "0000") not in remaining
+    assert ("STALE", "0030") not in remaining
+    assert ("VALID", "0000") in remaining
+
+
+def test_cleanup_keys_not_in_dedupes_valid_values_without_pk_violation():
+    _create_cleanup_table()
+    db.batch_write_items(
+        CLEANUP_TABLE,
+        [{"segment_id": "VALID", "time": "0000", "value": 1}],
+        key_columns=("segment_id", "time"),
+    )
+
+    result = db.cleanup_keys_not_in(
+        CLEANUP_TABLE, ["VALID", "VALID"], key_column="segment_id"
+    )
+
+    assert result == {"valid_count": 1, "stale_keys": [], "deleted_rows": 0}
+
+
+def test_cleanup_keys_not_in_raises_on_empty_valid_values():
+    _create_cleanup_table()
+    db.batch_write_items(
+        CLEANUP_TABLE,
+        [{"segment_id": "VALID", "time": "0000", "value": 1}],
+        key_columns=("segment_id", "time"),
+    )
+
+    with pytest.raises(ValueError):
+        db.cleanup_keys_not_in(CLEANUP_TABLE, [], key_column="segment_id")
+
+    assert db.batch_get_items(CLEANUP_TABLE, [{"segment_id": "VALID", "time": "0000"}])

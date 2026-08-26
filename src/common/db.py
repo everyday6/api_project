@@ -19,6 +19,17 @@ type2/3/4는 segment_id) — 이 모듈은 그 차이를 몰라도 되게 설계
 - batch_get_items()는 SELECT *로 읽고 실제 컬럼명을 그대로 dict 키로
   돌려준다 — 테이블이 어떤 컬럼을 가졌든 따라간다.
 
+batch_write_items()는 upsert만 하고 삭제는 하지 않는다 — 호출부가 더 이상
+안 보내는 기존 행은 그대로 남는다. "이번 호출 = 그 시점의 완전한 정답
+집합"인 전체 스냅샷 쓰기(길이/통행료처럼 매번 대상 전체를 다시 계산하는
+경우)는 replace_table_snapshot()을 쓴다 — staging 테이블에 적재 후
+원자적으로 테이블을 통째로 바꿔치기해서, 이번에 없는 행은 스왑과 함께
+자연히 사라진다(src/tlc/gold2.py의 Type3 스왑과 같은 원리를 축소한
+버전). 반대로 매번 일부만 증분 upsert하는 경우(시간처럼)는 전체를
+다시 쓸 수 없으니, cleanup_keys_not_in()으로 "지금 유효한 키 집합"과
+실제 테이블을 직접 비교해 유효하지 않은 행만 지운다 — 과거 실행 이력에
+의존하지 않는 멱등 연산이라 반복 호출해도 항상 같은 결과로 수렴한다.
+
 배치 조회/쓰기 시 예외를 삼키지 않고 그대로 던진다 — 호출부(서빙 API)가
 그 예외를 잡아서 fallback으로 넘어간다. 유일한 예외는 get_value()의
 "테이블 자체가 아직 없음" 케이스뿐이다.
@@ -30,6 +41,7 @@ import re
 import time
 from datetime import date, datetime
 from decimal import Decimal
+from uuid import uuid4
 
 import psycopg2
 from psycopg2 import sql
@@ -370,3 +382,219 @@ def batch_write_items(
 
     with conn.cursor() as cur:
         execute_values(cur, query.as_string(conn), rows)
+
+
+def replace_table_snapshot(
+    table_name: str,
+    items: list[dict],
+    key_columns: tuple[str, ...] = ("segment_id",),
+    conn=None,
+) -> int:
+    """테이블 전체를 items로 완전히 교체한다(staging 테이블에 적재 후 원자적
+    rename 스왑) — src/tlc/gold2.py의 Type3 스왑(write_type3_rolling_to_rds)과
+    같은 원리를, 그보다 훨씬 작은 규모(수십만 행)의 전체 스냅샷 쓰기에 맞게
+    축소한 버전이다(파티션 병렬 COPY 없이 단일 커넥션 execute_values로 충분).
+
+    batch_write_items(upsert)와 달리 이번 items에 없는 기존 행은 스왑과
+    함께 사라진다 — 그래서 "이번 호출 = 그 시점의 완전한 정답 집합"인
+    호출부만 써야 한다(세그먼트가 대상에서 빠지면 이전 값이 자동으로
+    삭제되길 원하는 길이/통행료 같은 전체 재계산 파이프라인). 대상
+    테이블은 미리 존재해야 한다(직접 만들었거나 ensure_table로) —
+    CREATE TABLE ... LIKE로 스키마/제약/인덱스를 그대로 복제하기 때문이다.
+
+    items가 비어 있으면 스왑하지 않고 0을 반환한다 — 상류 버그(예: LION
+    읽기가 빈 결과를 반환)로 빈 리스트가 들어온 경우까지 그대로 진행하면
+    테이블 전체를 실수로 비워버리게 되므로, 이런 "명백히 잘못된 입력"은
+    조용히 넘기지 않고 기존 테이블을 그대로 둔 채 호출부가 알아채게 한다.
+
+    conn을 넘기면 그 커넥션을 쓴다 - 안 넘기면 공유 커넥션을 쓴다. 스왑
+    자체는 이 함수 안에서 autocommit을 잠깐 끄고 하나의 트랜잭션으로
+    묶는다(두 RENAME 사이에 테이블 이름이 존재하지 않는 순간이 없게).
+    """
+    _validate_identifier(table_name)
+    if not key_columns:
+        raise ValueError("기본키 컬럼이 하나 이상 필요합니다")
+    for name in key_columns:
+        _validate_identifier(name)
+
+    if not items:
+        logger.warning(
+            f"[rds_snapshot_swap] table={table_name} items가 비어 있어 스왑을 건너뜁니다"
+            " - 상류 버그로 빈 스냅샷이 들어온 게 아닌지 확인하세요"
+        )
+        return 0
+
+    conn = conn or _get_connection()
+    staging_table = f"{table_name}_staging_{uuid4().hex[:8]}"
+    old_table = f"{table_name}_old_{uuid4().hex[:8]}"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE TABLE {staging} (LIKE {table} INCLUDING ALL)").format(
+                    staging=sql.Identifier(staging_table),
+                    table=sql.Identifier(table_name),
+                )
+            )
+
+        extra_columns = sorted({key for item in items for key in item if key not in key_columns})
+        for name in extra_columns:
+            _validate_identifier(name)
+        columns = list(key_columns) + extra_columns
+        rows = [
+            tuple(item[name] for name in key_columns)
+            + tuple(
+                Json(item[col]) if isinstance(item.get(col), (dict, list)) else item.get(col)
+                for col in extra_columns
+            )
+            for item in items
+        ]
+        insert_query = sql.SQL("INSERT INTO {staging} ({cols}) VALUES %s").format(
+            staging=sql.Identifier(staging_table),
+            cols=sql.SQL(", ").join(sql.Identifier(c) for c in columns),
+        )
+        with conn.cursor() as cur:
+            execute_values(cur, insert_query.as_string(conn), rows)
+
+        conn.autocommit = False
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    sql.SQL("ALTER TABLE {table} RENAME TO {old}").format(
+                        table=sql.Identifier(table_name),
+                        old=sql.Identifier(old_table),
+                    )
+                )
+                cur.execute(
+                    sql.SQL("ALTER TABLE {staging} RENAME TO {table}").format(
+                        staging=sql.Identifier(staging_table),
+                        table=sql.Identifier(table_name),
+                    )
+                )
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+        finally:
+            conn.autocommit = True
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(staging_table))
+            )
+            cur.execute(sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(old_table)))
+
+    logger.info(f"[rds_snapshot_swap] table={table_name} count={len(items)}")
+    return len(items)
+
+
+def cleanup_keys_not_in(
+    table_name: str,
+    valid_values: list[str],
+    key_column: str = "segment_id",
+    conn=None,
+) -> dict:
+    """table_name에서 key_column 값이 valid_values 집합에 없는 행을 전부
+    삭제한다. LION처럼 "유효 대상 집합"이 가끔(분기 단위 등) 바뀌는
+    source of truth가 있지만, 그 테이블 자체는 매번 전체를 다시 쓰지 않는
+    경우(Type1의 30분 증분 upsert 등 — replace_table_snapshot을 못 쓰는
+    경우)에 이 함수로 폐기된 행만 정리한다.
+
+    NOT IN (...)에 파라미터 수십만 개를 직접 박으면 쿼리 플래너가
+    죽으므로, valid_values를 임시 스테이징 테이블에 적재하고
+    안티조인(NOT EXISTS)으로 삭제한다. 탐색(어떤 행이 stale인지)과
+    삭제를 별도 SELECT/DELETE 두 문장으로 나누지 않는다 - 유효 행은
+    안티조인 DELETE 한 문장으로도 어차피 읽히기만 하고 쓰기 락이 안
+    걸리므로(NOT EXISTS 서브쿼리는 일반 읽기), 문장을 나눠도 스캔
+    비용이 줄지 않으면서 테이블을 두 번 접근하게 되고 그 사이 경쟁
+    구간(두 문장 사이 다른 트랜잭션이 끼어들 여지)만 새로 생긴다.
+    RETURNING으로 탐색 결과(어떤 키가 지워졌는지)까지 같은 문장에서
+    같이 얻는다.
+
+    매 호출이 "지금 유효한 집합 vs RDS 실제 상태"를 직접 비교해서
+    스스로 수렴하는 멱등(level-triggered) 연산이다 - 이전 실행이
+    성공했는지 실패했는지에 의존하는 상태(마지막 성공 버전 추적 등)가
+    전혀 없다. 그래서 실패해도 다음 실행이 처음부터 다시 정확한
+    결과로 수렴하고, 별도 재시도/버전관리 로직이 필요 없다.
+
+    (참고: 이 함수와 별개로, "정리 직후 구버전 LION을 참조하는 다른
+    실행이 방금 지운 키를 다시 upsert하는" 경쟁은 여기서 안 막는다 -
+    그걸 엄격히 막으려면 호출부(Airflow DAG)가 해당 쓰기 파이프라인과
+    이 정리 태스크를 같은 1-slot pool로 직렬화해야 한다.)
+
+    valid_values가 비어 있으면 삭제하지 않고 예외를 던진다 - 상류 버그로
+    빈 유효집합이 들어온 경우까지 그대로 진행하면 테이블 전체가
+    삭제되므로, 이런 입력은 "그 시점에 정말로 유효한 행이 하나도 없다"는
+    뜻일 가능성보다 버그일 가능성이 훨씬 높다고 보고 조용히 넘기지 않는다.
+    valid_values에 중복이 있어도 안전하다 - 스테이징 테이블 PK 위반을
+    피하려고 미리 중복을 제거한다.
+
+    반환값: {"valid_count", "stale_keys"(중복 제거된 key_column 값
+    목록), "deleted_rows"(실제 삭제된 행 수 - key_column이 복합키
+    일부라 stale_keys 하나당 여러 행일 수 있음)}. 로그/Slack 알림에
+    필요한 지표를 이 호출 하나로 다 얻을 수 있다."""
+    _validate_identifier(table_name)
+    _validate_identifier(key_column)
+    if not valid_values:
+        raise ValueError(
+            f"valid_values가 비어 있습니다(table={table_name}) - 상류 버그로 빈 "
+            "유효집합이 들어온 게 아닌지 확인하세요. 정말로 테이블을 전부 "
+            "비우려면 이 함수 대신 명시적으로 DELETE를 실행하세요."
+        )
+    valid_values = sorted(set(valid_values))
+
+    conn = conn or _get_connection()
+    staging_table = f"_valid_keys_{uuid4().hex[:8]}"
+
+    try:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("CREATE TEMP TABLE {staging} ({col} TEXT PRIMARY KEY)").format(
+                    staging=sql.Identifier(staging_table),
+                    col=sql.Identifier(key_column),
+                )
+            )
+            insert_query = sql.SQL("INSERT INTO {staging} VALUES %s").format(
+                staging=sql.Identifier(staging_table)
+            )
+            execute_values(cur, insert_query.as_string(conn), [(v,) for v in valid_values])
+            # 방금 채운 스테이징 테이블은 통계가 없어 플래너가 안티조인
+            # 실행계획(해시/머지 안티조인 등)을 잘못 고를 수 있다 -
+            # Type3 스왑(gold2.py)의 ANALYZE와 같은 이유.
+            cur.execute(sql.SQL("ANALYZE {staging}").format(staging=sql.Identifier(staging_table)))
+
+            cur.execute(
+                sql.SQL(
+                    "DELETE FROM {table} AS t WHERE NOT EXISTS "
+                    "(SELECT 1 FROM {staging} AS v WHERE v.{col} = t.{col}) "
+                    "RETURNING t.{col}"
+                ).format(
+                    table=sql.Identifier(table_name),
+                    staging=sql.Identifier(staging_table),
+                    col=sql.Identifier(key_column),
+                )
+            )
+            deleted_rows = cur.fetchall()
+    finally:
+        with conn.cursor() as cur:
+            cur.execute(
+                sql.SQL("DROP TABLE IF EXISTS {}").format(sql.Identifier(staging_table))
+            )
+
+    # RETURNING은 삭제된 행마다 하나씩 나온다 - key_column이 기본키
+    # 전체가 아니라 복합키 일부(예: Type1의 (segment_id, time))일 수
+    # 있어서, 같은 key_column 값이 여러 행에 걸쳐 중복될 수 있다(세그먼트
+    # 하나가 지워지면 그 세그먼트의 모든 time 슬롯이 한꺼번에 지워지는
+    # 식). "어떤 키가 지워졌는지"와 "몇 행이 지워졌는지"를 둘 다
+    # 돌려준다 - 전자는 알림 샘플용, 후자는 삭제 규모 지표용.
+    stale_keys = sorted({row[0] for row in deleted_rows})
+    result = {
+        "valid_count": len(valid_values),
+        "stale_keys": stale_keys,
+        "deleted_rows": len(deleted_rows),
+    }
+    logger.info(
+        f"[rds_stale_key_cleanup] table={table_name} valid_count={result['valid_count']} "
+        f"stale_count={len(stale_keys)} deleted_rows={result['deleted_rows']}"
+    )
+    return result

@@ -58,10 +58,10 @@ def test_to_serving_items_empty_input_produces_no_global_row():
     assert items == []
 
 
-def test_write_to_rds_calls_batch_write_and_returns_count():
+def test_write_to_rds_calls_replace_table_snapshot_and_returns_count():
     items = [{"segment_id": "1", "value": 100}]
 
-    with patch.object(gold2, "batch_write_items") as mock_write, \
+    with patch.object(gold2, "replace_table_snapshot") as mock_write, \
          patch.object(gold2, "gold_snapshot"):
         count = gold2.write_to_rds(items, "SegmentMetricsType2")
 
@@ -80,7 +80,7 @@ def test_write_to_rds_exports_snapshot_including_global_row():
         {"segment_id": "GLOBAL", "value": 150},
     ]
 
-    with patch.object(gold2, "batch_write_items"), \
+    with patch.object(gold2, "replace_table_snapshot"), \
          patch.object(gold2.gold_snapshot, "write_snapshot") as mock_snapshot:
         gold2.write_to_rds(items, "SegmentMetricsType2")
 
@@ -90,7 +90,7 @@ def test_write_to_rds_exports_snapshot_including_global_row():
 def test_write_to_rds_survives_snapshot_export_failure():
     items = [{"segment_id": "1", "value": 100}]
 
-    with patch.object(gold2, "batch_write_items"), \
+    with patch.object(gold2, "replace_table_snapshot"), \
          patch.object(gold2.gold_snapshot, "write_snapshot", side_effect=RuntimeError("S3 down")):
         count = gold2.write_to_rds(items, "SegmentMetricsType2")
 

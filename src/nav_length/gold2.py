@@ -14,7 +14,7 @@ import pandas as pd
 
 from src.common import gold_snapshot
 from src.common.config import GLOBAL_PARTITION_KEY, SERVING_TABLE_TYPE2_KEY_COLUMNS
-from src.common.db import batch_write_items
+from src.common.db import replace_table_snapshot
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_length_gold2")
@@ -64,14 +64,21 @@ def to_serving_items(df: pd.DataFrame, *, today: date | None = None) -> list[dic
 
 
 def write_to_rds(items: list[dict], table_name: str) -> int:
-    """RDS(PostgreSQL)에 upsert하고, 성공하면 S3 Gold 스냅샷도 최신
-    상태로 다시 내보낸다(src/serving/nav_lookup.py의 RDS 장애 폴백이
-    읽는 것). 대상 segment 수가 작아서(세그먼트당 값 1개) 통째로 담아도
-    작다 - GLOBAL_PARTITION_KEY 기본값도 items 안에 이미 포함돼 있어
-    스냅샷에 자연히 같이 실린다. 스냅샷 갱신 자체가 실패해도 RDS 쓰기는
+    """RDS(PostgreSQL)의 테이블 전체를 items로 교체하고, 성공하면 S3 Gold
+    스냅샷도 최신 상태로 다시 내보낸다(src/serving/nav_lookup.py의 RDS
+    장애 폴백이 읽는 것). 대상 segment 수가 작아서(세그먼트당 값 1개)
+    통째로 담아도 작다 - GLOBAL_PARTITION_KEY 기본값도 items 안에 이미
+    포함돼 있어 스냅샷에 자연히 같이 실린다.
+
+    upsert(batch_write_items)가 아니라 replace_table_snapshot을 쓴다 -
+    items는 매번 LION 전체를 다시 훑어 만든 완전한 정답 집합이라, LION
+    갱신으로 세그먼트가 사라지거나 routable하지 않게 되면 이번 items에서
+    빠진다. upsert만 하면 그런 폐기 세그먼트의 옛 길이값이 RDS에 영구히
+    남으므로, 전체를 통째로 교체해서 이번 items에 없는 행이 스왑과 함께
+    자연히 사라지게 한다. 스냅샷 갱신 자체가 실패해도 RDS 쓰기는
     이미 끝난 뒤라 파이프라인을 실패시키지 않는다."""
-    batch_write_items(table_name, items, key_columns=SERVING_TABLE_TYPE2_KEY_COLUMNS)
-    logger.info(f"[nav_length_gold2] RDS upsert 완료: table={table_name} count={len(items)}")
+    replace_table_snapshot(table_name, items, key_columns=SERVING_TABLE_TYPE2_KEY_COLUMNS)
+    logger.info(f"[nav_length_gold2] RDS 스냅샷 교체 완료: table={table_name} count={len(items)}")
 
     try:
         snapshot = {item["segment_id"]: item["value"] for item in items}
