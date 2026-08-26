@@ -7,14 +7,15 @@
 
 Type1(시간)은 segment_metrics_type1(segment_id+time 복합키, src/common/
 config.py 참고)로 서빙한다. 한 행 안에 오늘 실측값(value)과 그 시간대의
-과거 평균(avg)을 같이 들고 있어서, "오늘 값이 있으면 그걸, 없으면 평균을"
+과거 평균(avg)을 같이 들고 있어서, "뉴욕 기준 오늘 값이 있으면 그걸,
+없으면 평균을"
 판단이 조회 한 번으로 끝난다. DynamoDB에서 RDS로 옮기며 잃은 멀티 AZ
 자동 failover(가용성)를 보완하려고, RDS 자체가 응답 불가능한 경우를 위한
 별도 폴백 계층(메모리 캐시 -> S3 Gold 스냅샷)을 추가로 둔다:
 
   [RDS 정상 응답]
   1. Fresh Exact — (segment_id, time) 행의 value. last_sample_at의 날짜가
-     오늘인 경우만 채택한다.
+     뉴욕 기준 오늘인 경우만 채택한다.
   2. Historical AVG — 같은 행의 avg(이 시간대의 과거 평균 - src/nav_time/
      gold2.py가 실측이 들어올 때마다 증분 갱신한다).
   3. 코드 상수
@@ -55,6 +56,7 @@ from __future__ import annotations
 
 import time
 from datetime import date, datetime
+from zoneinfo import ZoneInfo
 
 import psycopg2
 from psycopg2 import sql
@@ -65,6 +67,8 @@ from src.common.db import batch_get_items, new_connection
 from src.common.logger import get_logger
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
+
+_NY_TZ = ZoneInfo("America/New_York")
 
 # RDS 자체 장애(연결 불가/응답 없음)를 얼마나 기다렸다가 fallback으로
 # 넘어갈지에 대한 값 - 같은 리전 안에서 정상 조회는 수십 ms 안에 끝나므로
@@ -197,17 +201,28 @@ def _batch_fetch_type1_rows(segment_ids: list[str], table_name: str) -> dict[str
     return result
 
 
+def _new_york_today() -> date:
+    """서버/Lambda 시스템 타임존과 무관하게 뉴욕의 오늘 날짜를 반환한다."""
+    return datetime.now(_NY_TZ).date()
+
+
 def _is_fresh(last_sample_at) -> bool:
-    """last_sample_at의 날짜가 오늘인지 확인한다. 시:분 단위가 아니라 "오늘
-    수집된 값인지"만 본다(TODO 팀 검토 필요 - 하루 단위 신선도로 충분하다는
-    판단). 값이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로
+    """last_sample_at의 날짜가 뉴욕 기준 오늘인지 확인한다.
+
+    시:분 단위가 아니라 "오늘 수집된 값인지"만 본다(TODO 팀 검토 필요 -
+    하루 단위 신선도로 충분하다는 판단). 값이 없거나 형식이 이상하면
+    (레거시 데이터 등) 안전한 쪽으로
     "신선하지 않음"으로 처리해 다음 단계로 내려가게 한다.
 
     RDS에서 직접 읽은 행은 psycopg2가 datetime 객체를 주지만, S3 Gold
     스냅샷(gold_snapshot.py)을 거쳐 온 값은 JSON 직렬화 때문에 문자열
     (last_sample_at.isoformat() 결과)이다 - 그대로 두면 RDS 장애 폴백 중엔
     방금 저장된 값도 항상 "형식이 이상함"으로 오판돼 fresh 판정을 절대
-    못 받는다. 그래서 문자열이면 먼저 datetime으로 되돌려 본다."""
+    못 받는다. 그래서 문자열이면 먼저 datetime으로 되돌려 본다.
+
+    Socrata data_as_of에서 만든 timezone-naive datetime은 뉴욕 현지
+    시각으로 해석한다. timezone-aware 값은 뉴욕 시간으로 변환한 뒤
+    날짜를 비교해 UTC 자정 경계에서 오판하지 않게 한다."""
     if isinstance(last_sample_at, str):
         try:
             last_sample_at = datetime.fromisoformat(last_sample_at)
@@ -215,7 +230,14 @@ def _is_fresh(last_sample_at) -> bool:
             return False
     if not isinstance(last_sample_at, datetime):
         return False
-    return last_sample_at.date() == date.today()
+
+    if last_sample_at.utcoffset() is not None:
+        sample_date = last_sample_at.astimezone(_NY_TZ).date()
+    else:
+        # RDS TIMESTAMP(without time zone)에 저장된 data_as_of는 뉴욕
+        # 현지 시각이므로 timezone-naive 값의 날짜를 그대로 쓴다.
+        sample_date = last_sample_at.date()
+    return sample_date == _new_york_today()
 
 
 def _resolve_from_row(row: dict | None) -> tuple[int | None, str | None]:
