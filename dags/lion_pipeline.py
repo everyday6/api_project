@@ -30,10 +30,10 @@ downstream 갱신 이벤트로 오인하는 것을 막기 위해서다.
 
 publish_dim_segment는 별도로 Asset("lion_dim_segment_ready")를 outlet으로
 내보낸다 — segment_length_pipeline(nav type2)이 이 Asset을 구독해서,
-자체적으로 LION을 다시 받지 않고 여기서 발행한 Silver1 dim_segment를 그대로
-읽어 Gold2(is_routable)만 계산한다. lion_bronze_updated가 아니라 이 Asset을
-쓰는 이유: Bronze 다운로드 직후가 아니라 Silver1 검증·발행까지 끝난
-뒤여야 dim_segment.parquet가 실제로 최신 상태이기 때문.
+자체적으로 LION을 다시 받지 않고 여기서 발행한 dim_segment를 그대로
+읽어 RDS 반영만 한다. lion_bronze_updated가 아니라 이 Asset을 쓰는 이유:
+Bronze 다운로드 직후가 아니라 Silver1 검증·발행까지 끝난 뒤여야
+dim_segment.parquet가 실제로 최신 상태이기 때문.
 
 예전엔 publish_dim_segment 뒤에 TriggerDagRunOperator로 zone_segment_pipeline을
 직접 호출했는데, taxi_zone_pipeline도 같은 걸 호출하다 보니 둘이 같은 날

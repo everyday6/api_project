@@ -25,7 +25,7 @@ from src.common.logger import get_logger
 from src.common.socrata import fetch_all, make_session
 from src.common.utils import save_parquet
 from src.lion.bronze import BRONZE_ROOT as LION_BRONZE_ROOT
-from src.lion.gold2 import DIM_SEGMENT_PATH
+from src.lion.silver1 import DIM_SEGMENT_BASE_PATH as DIM_SEGMENT_PATH
 from src.silver2.segment_speed_match import match_links_to_segments
 from src.speed import synthetic
 from src.speed.bronze_validation import _validate_and_decide_df
@@ -113,28 +113,31 @@ def _find_latest_lion_gdb(lion_bronze_root=LION_BRONZE_ROOT):
 
 
 def _synthesize_uncovered_segments(links_df: pd.DataFrame, data_as_of: str) -> pd.DataFrame:
-    """실제 속도 피드(고정 125개 link)가 커버 안 하는 LION routable
-    세그먼트에 대해 synthetic speed row를 만든다(src/speed/synthetic.py
-    참고) - routable 세그먼트의 92% 이상이 실제 피드와 매칭되는 link가
-    근처에 없다."""
+    """실제 속도 피드(고정 125개 link)가 커버 안 하는 LION 세그먼트에 대해
+    synthetic speed row를 만든다(src/speed/synthetic.py 참고) - 전체
+    세그먼트의 92% 이상이 실제 피드와 매칭되는 link가 근처에 없다.
+
+    length_ft<=0인 세그먼트는 제외한다 - nav_time Gold2(compute_time_seconds)가
+    길이로 나눠 통행시간을 계산하므로, 그런 세그먼트가 섞이면
+    validate_bucket_time_seconds가 0 나누기 방지용으로 매번 하드 실패한다."""
 
     if not DIM_SEGMENT_PATH.exists():
         logger.warning("[speed_bronze] dim_segment 없음 - synthetic 보강 스킵")
         return pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
 
     dim_segment = pd.read_parquet(str(DIM_SEGMENT_PATH))
-    routable = dim_segment[dim_segment["is_routable"]]
+    usable = dim_segment[dim_segment["length_ft"] > 0]
 
-    matched = match_links_to_segments(links_df, routable)
+    matched = match_links_to_segments(links_df, usable)
     covered_ids = set(matched["segment_id"])
-    uncovered_ids = set(routable["segment_id"]) - covered_ids
+    uncovered_ids = set(usable["segment_id"]) - covered_ids
 
     # 참고표(geometry->link_points 변환 + POSTED_SPEED 조회, 세그먼트당
     # 무거운 계산)는 캐시가 있으면 그대로 읽는다 - LION은 분기에 한 번만
     # 바뀌는데 이 함수는 30분마다 불려서, 캐시 없이는 매번 gdb 원본을
     # 다시 읽게 된다(로드만 9초+).
     reference_table = synthetic.load_or_build_reference_table(
-        dim_segment_loader=lambda: routable,
+        dim_segment_loader=lambda: usable,
         posted_speed_loader=lambda: synthetic.load_posted_speed(_find_latest_lion_gdb()),
     )
 

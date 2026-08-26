@@ -26,7 +26,7 @@ from pathlib import Path
 import pandas as pd
 from shapely import wkt
 
-DIM_SEGMENT_PATH = Path(__file__).resolve().parent.parent / "data" / "gold2" / "dim_segment.parquet"
+DIM_SEGMENT_PATH = Path(__file__).resolve().parent.parent / "data" / "silver1" / "dim_segment.parquet"
 DEMO_HTML_PATH = Path(__file__).resolve().parent / "index.html"
 
 
@@ -48,7 +48,7 @@ def _flatten_coords(geometry_wkt: str) -> list[float]:
 
 def build_data() -> dict:
     df = pd.read_parquet(DIM_SEGMENT_PATH)
-    manhattan = df[(df["borough_code"] == "1") & (df["is_routable"])].copy()
+    manhattan = df[(df["borough_code"] == "1") & (df["length_ft"] > 0)].copy()
 
     background_coords: dict[str, list[float]] = {}
     node_coords: dict[str, list[float]] = {}

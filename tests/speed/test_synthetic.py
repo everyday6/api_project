@@ -19,7 +19,7 @@ def test_clean_posted_speed_parses_numeric_values():
 
 def test_clean_posted_speed_blank_values_become_nan():
     # LION의 POSTED_SPEED는 결측이 NaN이 아니라 공백 문자열("  ")로
-    # 들어있다(routable 세그먼트의 18.8%가 이 상태) - pandas isna()로
+    # 들어있다(세그먼트의 18.8%가 이 상태) - pandas isna()로
     # 안 잡혀서 여기서 명시적으로 NaN 처리한다.
     raw = pd.DataFrame([{"SegmentID": "1", "POSTED_SPEED": "  "}])
 
@@ -65,7 +65,6 @@ def _dim_segment_row(**overrides):
         "borough_code": "1",
         "geometry": "MULTILINESTRING ((1010964.447 241812.261, 1011265.495 241554.947))",
         "length_ft": 396.0,
-        "is_routable": True,
     }
     row.update(overrides)
     return row
@@ -107,7 +106,7 @@ def test_build_reference_table_precomputes_link_points():
     )
 
 
-def test_build_reference_table_covers_every_routable_segment():
+def test_build_reference_table_covers_every_segment():
     dim_segment = pd.DataFrame([
         _dim_segment_row(segment_id="1001"),
         _dim_segment_row(segment_id="1002"),

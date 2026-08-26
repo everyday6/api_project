@@ -28,7 +28,7 @@ from src.common.config import (
     SERVING_TABLE_TYPE1,
 )
 from src.common.emr_serverless import read_json_result, run_spark_job
-from src.lion.gold2 import DIM_SEGMENT_PATH
+from src.lion.silver1 import DIM_SEGMENT_BASE_PATH as DIM_SEGMENT_PATH
 from src.speed.bronze import collect_speed_data, has_new_speed_data
 
 logger = logging.getLogger(__name__)
@@ -67,14 +67,14 @@ def segment_time_pipeline():
 
     @task.short_circuit
     def check_dim_segment_exists() -> bool:
-        """segment_length_pipeline이 1월/7월에만 도는 dim_segment.parquet에
-        이 파이프라인(30분마다)이 매번 의존한다. 그 파일이 아직 없으면(최초
+        """lion_pipeline이 1월/7월에만 도는 dim_segment.parquet에 이
+        파이프라인(30분마다)이 매번 의존한다. 그 파일이 아직 없으면(최초
         부트스트랩 전, 또는 두 스케줄 사이 기간) EMR job이 매번 크래시하는
         대신 여기서 건너뛴다 - 부트스트랩 절차는 설계 문서 8절 참고."""
         exists = DIM_SEGMENT_PATH.exists()
         if not exists:
             logger.warning(
-                "%s 없음 - segment_length_pipeline이 아직 dim_segment를 만들지 "
+                "%s 없음 - lion_pipeline이 아직 dim_segment를 만들지 "
                 "않았거나 수동 부트스트랩이 필요함. 이번 실행은 EMR job 제출을 "
                 "건너뛴다.",
                 DIM_SEGMENT_PATH,

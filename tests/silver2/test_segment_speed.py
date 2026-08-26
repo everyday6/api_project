@@ -30,7 +30,7 @@ def test_build_segment_speed_silver2_expands_link_to_segments(spark, monkeypatch
     speed_silver1_df = spark.createDataFrame([
         {"link_id": "link-1", "link_points": "40.7,-74.0 40.71,-74.01", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
     ])
-    dim_segment_df = pd.DataFrame([{"segment_id": "seg-1", "geometry": "x", "is_routable": True}])
+    dim_segment_df = pd.DataFrame([{"segment_id": "seg-1", "geometry": "x"}])
 
     result = build_segment_speed_silver2(speed_silver1_df, dim_segment_df).collect()
 
@@ -50,7 +50,7 @@ def test_build_segment_speed_silver2_unmatched_link_produces_no_rows(spark, monk
     speed_silver1_df = spark.createDataFrame([
         {"link_id": "link-unmatched", "link_points": "40.7,-74.0 40.71,-74.01", "speed": 30.0, "observed_at": datetime(2026, 8, 21, 12, 5)},
     ])
-    dim_segment_df = pd.DataFrame([{"segment_id": "seg-1", "geometry": "x", "is_routable": True}])
+    dim_segment_df = pd.DataFrame([{"segment_id": "seg-1", "geometry": "x"}])
 
     result = build_segment_speed_silver2(speed_silver1_df, dim_segment_df).collect()
 
