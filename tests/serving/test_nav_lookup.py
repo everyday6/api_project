@@ -1,4 +1,4 @@
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
@@ -10,28 +10,28 @@ from src.serving import nav_lookup
 # @requires_postgres를 붙인다.
 requires_postgres = pytest.mark.usefixtures("require_postgres")
 
-# _is_fresh()가 date.today()를 직접 부르므로, date 자체를 mock하는 대신
-# 실제 "오늘"을 기준으로 어제를 계산한다 - date를 MagicMock으로 바꿔치기하면
-# isinstance(last_sample_at, datetime) 검사가 깨진다(datetime이 더 이상
-# 타입이 아니게 됨).
-TODAY = datetime.combine(date.today(), datetime.min.time())
+# 뉴욕 날짜 경계 테스트가 실행 시각에 의존하지 않도록
+# _new_york_today()를 아래 autouse fixture에서 고정한다.
+TODAY_DATE = date(2026, 8, 26)
+TODAY = datetime.combine(TODAY_DATE, datetime.min.time())
 YESTERDAY = TODAY - timedelta(days=1)
 
 
 @pytest.fixture(autouse=True)
 def _clear_caches():
     """메모리 캐시/S3 스냅샷 로드 상태가 테스트 간에 새지 않도록 초기화한다."""
-    nav_lookup._memory_cache.clear()
-    nav_lookup._s3_snapshot_loaded = False
-    nav_lookup._s3_snapshot = {}
-    nav_lookup._length_snapshot_loaded = False
-    nav_lookup._length_snapshot = {}
-    yield
-    nav_lookup._memory_cache.clear()
-    nav_lookup._s3_snapshot_loaded = False
-    nav_lookup._s3_snapshot = {}
-    nav_lookup._length_snapshot_loaded = False
-    nav_lookup._length_snapshot = {}
+    with patch.object(nav_lookup, "_new_york_today", return_value=TODAY_DATE):
+        nav_lookup._memory_cache.clear()
+        nav_lookup._s3_snapshot_loaded = False
+        nav_lookup._s3_snapshot = {}
+        nav_lookup._length_snapshot_loaded = False
+        nav_lookup._length_snapshot = {}
+        yield
+        nav_lookup._memory_cache.clear()
+        nav_lookup._s3_snapshot_loaded = False
+        nav_lookup._s3_snapshot = {}
+        nav_lookup._length_snapshot_loaded = False
+        nav_lookup._length_snapshot = {}
 
 
 def test_time_to_bucket_rounds_down_to_30_minutes():
@@ -77,6 +77,16 @@ def test_is_fresh_parses_isoformat_string_from_s3_snapshot_round_trip():
     처리되던 버그)."""
     assert nav_lookup._is_fresh(TODAY.isoformat()) is True
     assert nav_lookup._is_fresh(YESTERDAY.isoformat()) is False
+
+
+def test_is_fresh_converts_timezone_aware_value_to_new_york_date():
+    # 2026-08-27 03:30 UTC는 뉴욕에서는 아직 8월 26일 23:30이다.
+    still_today_in_new_york = datetime(2026, 8, 27, 3, 30, tzinfo=timezone.utc)
+    # 04:00 UTC는 뉴욕 8월 27일 00:00이므로 더 이상 "오늘"이 아니다.
+    tomorrow_in_new_york = datetime(2026, 8, 27, 4, 0, tzinfo=timezone.utc)
+
+    assert nav_lookup._is_fresh(still_today_in_new_york.isoformat()) is True
+    assert nav_lookup._is_fresh(tomorrow_in_new_york.isoformat()) is False
 
 
 def test_resolve_from_row_prefers_fresh_exact():
