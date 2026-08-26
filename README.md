@@ -20,7 +20,7 @@
 ## 목차
 
 1. [프로덕트 개요](#1-프로덕트-개요)
-2. [주요 기능](#2-주요-기능)
+2. [API 예시](#2-api-예시)
 3. [데이터 파이프라인과 아키텍처](#3-데이터-파이프라인과-아키텍처)
 4. [타입별 설계: 데이터가 다르면 답도 다르다](#4-타입별-설계-데이터가-다르면-답도-다르다)
 5. [무조건 응답하는 서비스 만들기](#5-무조건-응답하는-서비스-만들기)
@@ -31,36 +31,15 @@
 
 ## 1. 프로덕트 개요
 
-**문제 정의**
+### **문제 정의**
 - **누구의**: 택시 내비게이션 개발 회사의 라우팅 엔지니어링팀
+
 - **어떤 문제**: 라우팅 알고리즘을 갖고 있지만, 도로별 최신 데이터(통행 소요시간, 길이, 통행료 등) 및 승차 승객 수 데이터가 경로 계산에 바로 활용 가능한 형태로 제공되지 않습니다.
 
-**프로젝트 소개**
+- **해결책**: 내비게이션 경로 탐색 옵션 계산에 필요한 도로 세그먼트(10-20m 수준의 도로 조각)별 정보를 데이터 파이프라인으로 구축해 API로 제공합니다.
 
-내비게이션 경로 탐색 옵션 계산에 필요한 도로 세그먼트(10-20m 수준의 도로 조각)별 정보를 데이터 파이프라인으로 구축해 API로 제공합니다.
-
-**API 예시**
-
-| type | 예시 인풋 | 예시 아웃풋 | 소스 |
-| :---: | --- | --- | --- |
-| 1 (통행 소요시간) | `{"segment_ids": ["1000", "1001", "1002"], "type": 1, "date": "2026-08-27", "time": "09:00"}` | `{"value": [38, 23, 24]}` — 초 | [도로 속도 관측 데이터(5분 주기)](https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds-NBE/i4gi-tjb9) |
-| 2 (길이) | `{"segment_ids": ["1000", "1001", "1002"], "type": 2, "date": "2026-08-27", "time": "09:00"}` | `{"value": [25, 32, 20]}` — m | [NYC 도로망(LION) 원본](https://data.cityofnewyork.us/City-Government/LION/2v4z-66xt) |
-| 3 (택시 승차 승객 수) | `{"segment_ids": ["1000", "1001", "1002"], "type": 3, "date": "2026-08-27", "time": "09:00"}` | `{"value": [12, 20, 12]}` — 승객 수 | [NYC TLC 택시 운행 기록](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) |
-| 4 (통행료) | `{"segment_ids": ["1000", "1001", "1002"], "type": 4, "date": "2026-08-27", "time": "09:00"}` | `{"value": [0.75, 0, 0]}` — 달러 | [MTA·Port Authority 통행료 데이터](https://www.mta.info/fares-tolls/tolls/vehicle-types) |
-
-라우팅 엔지니어링팀은 API로 받은 세그먼트별 데이터를 자체 라우팅 알고리즘에 결합해, 최종 고객에게 아래 4가지 종류의 경로를 제공할 수 있습니다.
-
-**1. 빠른 경로**
-
-**2. 최단 거리 경로**
-
-**3. 무료 경로**
-
-**4. 승객 많은 경로**
-
-
-
-## 2. 주요 기능
+---
+### **주요 기능**
 
 | type | 지표 | 경로 추천 용도 | 방향 |
 | :---: | --- | --- | :---: |
@@ -70,6 +49,25 @@
 | 4 | 도로 세그먼트별 통행료 | 무료 경로 | 최소화 |
 
 > type=3은 `pickup` 기준(택시기사가 승객을 만날 가능성 지표), type=4는 혼잡+도로 통행료 합산값 — 경로 합산 시 `sum`이 아닌 `max`로 집계.
+
+## 2. API 예시
+
+| type | 예시 요청 | 예시 응답 | 소스 |
+| :---: | --- | --- | --- |
+| 1 (통행 소요시간) | `{"segment_ids": ["1000", "1001", "1002"], "type": 1, "date": "2026-08-27", "time": "09:00"}` | `{"value": [38, 23, 24]}` — 초 | [도로 속도 관측 데이터(5분 주기)](https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds-NBE/i4gi-tjb9) |
+| 2 (길이) | `{"segment_ids": ["1000", "1001", "1002"], "type": 2, "date": "2026-08-27", "time": "09:00"}` | `{"value": [25, 32, 20]}` — m | [NYC 도로망(LION) 원본](https://data.cityofnewyork.us/City-Government/LION/2v4z-66xt) |
+| 3 (택시 승차 승객 수) | `{"segment_ids": ["1000", "1001", "1002"], "type": 3, "date": "2026-08-27", "time": "09:00"}` | `{"value": [12, 20, 12]}` — 승객 수 | [NYC TLC 택시 운행 기록](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) |
+| 4 (통행료) | `{"segment_ids": ["1000", "1001", "1002"], "type": 4, "date": "2026-08-27", "time": "09:00"}` | `{"value": [0.75, 0, 0]}` — 달러 | [MTA·Port Authority 통행료 데이터](https://www.mta.info/fares-tolls/tolls/vehicle-types) |
+
+라우팅 엔지니어링팀은 API로 받은 세그먼트별 데이터를 자체 라우팅 알고리즘에 결합해, 최종 고객에게 아래 4가지 종류의 경로를 제공할 수 있습니다.
+
+**1. <mark style="background-color:#fef08a; color:#1a1a1a;">빠른 경로</mark>**
+
+**2. <mark style="background-color:#fef08a; color:#1a1a1a;">최단 거리 경로</mark>**
+
+**3. <mark style="background-color:#fef08a; color:#1a1a1a;">무료 경로</mark>**
+
+**4. <mark style="background-color:#fef08a; color:#1a1a1a;">승객 많은 경로</mark>**
 
 ## 3. 데이터 파이프라인과 아키텍처
 
