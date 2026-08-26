@@ -186,7 +186,9 @@ services:
       --email ${AIRFLOW_ADMIN_EMAIL}
       || true &&
       airflow pools set downloads 16 'TLC 파일 다운로드 동시 실행 제한 (네트워크 대역폭 보호용)' &&
-      airflow pools set silver_pool 3 'TLC Silver 변환(Spark) 동시 실행 제한 (spark-master 1대 자원 보호용)' &&
+      airflow pools set tlc_ingest_pool 17 'EMR Serverless 계정 vCPU 쿼터(64) 중 tlc_ingest_daily 전용 예산 - 대그 전용 풀이라 이 대그 안 taxi_type별 병렬 태스크(validate_bronze_quality/build_silver)가 몰려도 합계가 17을 못 넘는다 (2026-08 EMR 동시성 사고 대응)' &&
+      airflow pools set tlc_type3_serving_pool 30 'EMR Serverless 계정 vCPU 쿼터(64) 중 tlc_type3_serving_daily 전용 예산' &&
+      airflow pools set segment_time_pool 17 'EMR Serverless 계정 vCPU 쿼터(64) 중 segment_time_pipeline 전용 예산' &&
       python /opt/airflow/scripts/create_rds_tables.py &&
       python /opt/airflow/scripts/seed_rds_defaults.py
       "

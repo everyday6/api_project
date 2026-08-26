@@ -21,7 +21,12 @@ from datetime import datetime, timedelta
 from airflow.decorators import dag, task
 
 from src.common.alerts import notify_slack_failure
-from src.common.config import EMR_JOBS_DIR, PROJECT_ROOT, SERVING_TABLE_TYPE1
+from src.common.config import (
+    EMR_JOBS_DIR,
+    EMR_MAX_EXECUTORS_SEGMENT_TIME,
+    PROJECT_ROOT,
+    SERVING_TABLE_TYPE1,
+)
 from src.common.emr_serverless import read_json_result, run_spark_job
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.speed.bronze import collect_speed_data, has_new_speed_data
@@ -76,7 +81,7 @@ def segment_time_pipeline():
             )
         return exists
 
-    @task(pool="silver_pool")
+    @task(pool="segment_time_pool", pool_slots=17)
     def submit_silver_job(speed_bronze_path: str) -> dict:
         run_id = uuid.uuid4().hex
         silver2_path = EMR_JOBS_DIR / "outputs" / f"nav_time_silver2_{run_id}.parquet"
@@ -91,12 +96,13 @@ def segment_time_pipeline():
                 "--silver2-output", str(silver2_path),
                 "--output-s3", str(output_s3),
             ],
+            max_executors=EMR_MAX_EXECUTORS_SEGMENT_TIME,
         )
 
         result = read_json_result(str(output_s3))
         return {"silver2_path": str(silver2_path), **result}
 
-    @task(pool="silver_pool")
+    @task(pool="segment_time_pool", pool_slots=17)
     def submit_gold_job(silver_result: dict) -> dict:
         run_id = uuid.uuid4().hex
         output_s3 = EMR_JOBS_DIR / "outputs" / f"nav_time_gold_{run_id}.json"
@@ -110,6 +116,7 @@ def segment_time_pipeline():
                 "--serving-table", SERVING_TABLE_TYPE1,
                 "--output-s3", str(output_s3),
             ],
+            max_executors=EMR_MAX_EXECUTORS_SEGMENT_TIME,
         )
 
         return read_json_result(str(output_s3))

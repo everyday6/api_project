@@ -8,6 +8,7 @@
 from airflow.decorators import task
 
 from src.common.alerts import notify_slack_message
+from src.common.config import EMR_MAX_EXECUTORS_TLC_INGEST
 from src.common.logger import get_logger
 
 from src.tlc.emr import run_tlc_emr_operation
@@ -77,7 +78,7 @@ def _build_excluded_files_message(excluded: list[dict]) -> str:
     return "\n".join(lines)
 
 
-@task(pool="silver_pool")
+@task(pool="tlc_ingest_pool", pool_slots=17)
 def validate_bronze_quality(bronze_chunk: list[dict]) -> list[dict]:
     """EMR에서 Bronze 청크를 검증하고 통과한 파일만 반환한다."""
 
@@ -87,6 +88,7 @@ def validate_bronze_quality(bronze_chunk: list[dict]) -> list[dict]:
     result = run_tlc_emr_operation(
         "validate_bronze",
         {"bronze_chunk": bronze_chunk},
+        max_executors=EMR_MAX_EXECUTORS_TLC_INGEST,
     )
     excluded = result.get("excluded", [])
     if excluded:

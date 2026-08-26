@@ -9,7 +9,7 @@ from pathlib import Path
 
 from airflow.decorators import task
 
-from src.common.config import SILVER1_DIR
+from src.common.config import EMR_MAX_EXECUTORS_TLC_INGEST, SILVER1_DIR
 from src.common.logger import get_logger
 from src.tlc.emr import run_tlc_emr_operation
 
@@ -18,7 +18,7 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_silver1")
 SILVER1_ROOT = SILVER1_DIR / "tlc"
 
 
-@task(pool="silver_pool")
+@task(pool="tlc_ingest_pool", pool_slots=17)
 def build_silver(bronze_chunk: list[dict]) -> list[dict]:
     """EMR에서 Bronze 파일을 공통 스키마로 변환해 S3 Silver1에 저장한다."""
 
@@ -36,5 +36,6 @@ def build_silver(bronze_chunk: list[dict]) -> list[dict]:
     result = run_tlc_emr_operation(
         "build_silver",
         {"bronze_chunk": work_items},
+        max_executors=EMR_MAX_EXECUTORS_TLC_INGEST,
     )
     return result["results"]

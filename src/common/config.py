@@ -94,6 +94,20 @@ EMR_JOB_ROLE_ARN = os.getenv("EMR_JOB_ROLE_ARN")
 
 EMR_JOBS_DIR = S3Path(f"s3://{S3_BUCKET_DATA}/emr-jobs")
 
+# segment_time/tlc_ingest_daily/tlc_type3_serving_daily 세 DAG가 EMR
+# Serverless 계정 전체 vCPU 쿼터(64, Service Quotas 콘솔 값)를 동시에 나눠
+# 쓰다가 서로 충돌하는 사고(2026-08)가 있었다. DAG별로 고정 예산을 나눠
+# (합계 64: tlc_ingest 17 + tlc_type3_serving 30 + segment_time 17,
+# Airflow pool_slots도 각 DAG 파일에서 같은 숫자를 씀) 그 안에서만
+# executor를 쓰게 강제한다 - 실측 피크가 예산을 넘는 job(예:
+# tlc-build-type3-stage 실측 최대 64 vCPU)도 있어 캡을 걸면 그만큼
+# 느려지지만, 세 DAG가 항상 동시에 돌 수 있는 걸 우선한 트레이드오프다.
+# driver가 고정 4 vCPU를 쓰므로(CloudWatch WorkerCpuAllocated 실측),
+# maxExecutors = (예산 - 4) // 4.
+EMR_MAX_EXECUTORS_TLC_INGEST = 3  # 예산 17
+EMR_MAX_EXECUTORS_TLC_TYPE3_SERVING = 6  # 예산 30
+EMR_MAX_EXECUTORS_SEGMENT_TIME = 3  # 예산 17
+
 # ==========================
 # HTTP 설정
 # ==========================
