@@ -47,6 +47,20 @@ def test_log_only_expectations_speed_range_is_zero_to_150():
     assert speed_range.max_value == 150
 
 
+def test_log_only_expectations_requires_at_least_100k_unique_segments():
+    # collect_speed_data()가 검증하는 df는 synthetic 보강분까지 합친
+    # 것이라 LION 세그먼트 총 개수(약 10만 개)에 근접해야 한다.
+    expectations = log_only_expectations()
+
+    segment_count_check = next(
+        e for e in expectations
+        if type(e).__name__ == "ExpectColumnUniqueValueCountToBeBetween"
+    )
+    assert segment_count_check.column == "link_id"
+    assert segment_count_check.min_value == 100_000
+    assert segment_count_check.max_value is None
+
+
 def test_log_only_expectations_data_as_of_range_starts_2017_and_ends_near_now():
     expectations = log_only_expectations()
 

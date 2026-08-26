@@ -20,6 +20,14 @@ _NULL_TOLERANCE = 0.90
 # 이 데이터셋 생성일자(Socrata 메타데이터 createdAt=2017-04-17) 기준.
 _DATA_AS_OF_MIN = datetime(2017, 1, 1)
 
+# 실제 속도 피드는 고정 125개 link뿐이라 collect_speed_data()가 검증하는
+# df는 여기에 synthetic 보강분(src/speed/synthetic.py)까지 합친 것이다 -
+# 정상이면 LION 세그먼트 총 개수(약 10만 개, src/lion/gold2.py의
+# MIN_EXPECTED_ROWS와 동일 근거)에 근접한다. 이보다 크게 적으면 synthetic
+# 보강이 실패/누락된 것(dim_segment 오래됨, 매칭 깨짐 등)일 가능성이
+# 높다 - critical은 아니라서(저장은 계속하되) Slack으로 알린다.
+_MIN_UNIQUE_SEGMENT_COUNT = 100_000
+
 
 def critical_expectations() -> list:
     """실패 시 이번 파이프라인 사이클을 스킵해야 하는 검증.
@@ -51,5 +59,8 @@ def log_only_expectations() -> list:
             column="data_as_of",
             min_value=_DATA_AS_OF_MIN,
             max_value=datetime.now() + timedelta(days=1),
+        ),
+        gx.expectations.ExpectColumnUniqueValueCountToBeBetween(
+            column="link_id", min_value=_MIN_UNIQUE_SEGMENT_COUNT, max_value=None
         ),
     ]
