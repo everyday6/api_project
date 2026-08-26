@@ -283,7 +283,7 @@ def publish_map_zone_segment(
     if not output_path.exists():
         raise RuntimeError(f"zone-segment 운영 경로 승격 실패: {output_path}")
 
-    # Type 3(tlc_type3_serving_daily)가 매핑이 바뀐 걸 알아챌 수 있도록 버전 마커를
+    # Type 3(tlc_type3_serving_pipeline)가 매핑이 바뀐 걸 알아챌 수 있도록 버전 마커를
     # 승격 성공 시점에만 기록한다 - 검증 실패로 승격 자체가 안 되면 이
     # 줄까지 못 와서 예전 버전이 그대로 남는다(안전한 방향).
     mapping_version = validated_stage.get("mapping_version")

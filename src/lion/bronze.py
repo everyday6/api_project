@@ -104,7 +104,17 @@ def ingest_lion(version_date: str | None = None, bronze_root=BRONZE_ROOT) -> dic
     (Airflow에서는 '{{ ds }}'를 그대로 넘기면 됨)
 
     반환값의 "changed"는 build_dim_segment_staged가 원본이 그대로일 때
-    재계산 자체를 건너뛰도록(AirflowSkipException) 판단하는 데 쓰인다."""
+    재계산 자체를 건너뛰도록(AirflowSkipException) 판단하는 데 쓰인다.
+
+    이 함수는 ETag 마커(_latest_etag.txt)를 직접 쓰지 않는다 - 그건
+    mark_lion_etag()가 Silver1 publish까지 전부 성공한 뒤에만 한다(DAG
+    맨 끝). 여기서 다운로드 직후에 바로 써버리면, 그 뒤 Silver1
+    (validate/publish)이 실패해도 마커는 이미 새 버전을 가리키게 되어
+    다음 스케줄 실행이 "원본 그대로"로 보고 재시도 자체를 영원히
+    건너뛰는 사고가 난다 - 실패한 run을 사람이 수동으로 clear하지 않더라도
+    다음 일일 실행이 다시 복구를 시도해야 한다.
+    대신 반환값에 etag를 실어서, 호출부(DAG)가 파이프라인 끝에서
+    넘겨준다."""
 
     if version_date is None:
         version_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
@@ -120,7 +130,7 @@ def ingest_lion(version_date: str | None = None, bronze_root=BRONZE_ROOT) -> dic
             current_etag,
             version_date,
         )
-        return {"path": None, "changed": False}
+        return {"path": None, "changed": False, "etag": current_etag}
 
     if previous_etag:
         logger.info(
@@ -170,11 +180,23 @@ def ingest_lion(version_date: str | None = None, bronze_root=BRONZE_ROOT) -> dic
         if not marker_path.exists():
             raise RuntimeError(f"LION 메타데이터 업로드 검증 실패: {marker_path}")
 
-        if current_etag:
-            _write_latest_etag(bronze_root, current_etag)
-
     logger.info(f"[lion] version_date={version_date} 압축 해제 완료 -> {dest_dir}")
-    return {"path": str(dest_dir), "changed": True}
+    return {"path": str(dest_dir), "changed": True, "etag": current_etag}
+
+
+def mark_lion_etag(bronze_version_result: dict, bronze_root=BRONZE_ROOT) -> None:
+    """ETag 마커(_latest_etag.txt)를 이제야 갱신한다 - Airflow DAG에서
+    Silver1 publish_dim_segment까지 성공했을 때만(그 태스크 뒤에 이어서)
+    호출돼야 한다. ingest_lion() 자체가 이 마커를 쓰지 않는 이유는 그
+    함수 docstring 참고.
+
+    changed=False(원본 그대로라 이번 실행이 처음부터 스킵된 경우)면
+    build_dim_segment_staged가 AirflowSkipException을 던져서 이 태스크까지
+    기본 trigger_rule(all_success)로 자동 스킵된다 - 마커가 이미 맞는
+    값을 가리키고 있으니 다시 쓸 필요가 없어 별문제 없다."""
+    etag = bronze_version_result.get("etag")
+    if etag:
+        _write_latest_etag(bronze_root, etag)
 
 
 if __name__ == "__main__":

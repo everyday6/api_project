@@ -39,21 +39,33 @@ def _upload_tree(local_root: Path, destination) -> None:
             (destination / relative_path.as_posix()).upload_from(local_path)
 
 
-def _read_previous_etag(destination) -> str | None:
-    """이전 Bronze 적재 때 남겨둔 ETag를 _metadata.txt에서 읽는다.
+def _read_previous_etag(bronze_root: Path) -> str | None:
+    """직전에 Silver1까지 성공적으로 반영된 ETag를 읽는다.
 
-    파일이 없거나(첫 실행) _etag 줄이 없으면(과거 버전 메타데이터) None을
-    반환한다 — 호출부는 None을 "무조건 새로 받아야 함"으로 취급한다.
-    """
+    _metadata.txt(Bronze 저장 직후 정보성으로 남기는 파일)가 아니라
+    bronze_root 바로 아래의 별도 마커 파일(_latest_etag.txt)에서 읽는다 -
+    이 마커는 mark_taxi_zone_etag()가 Silver1 build까지 성공한 뒤에만
+    쓴다(src/lion/bronze.py와 동일한 패턴, 2026-08-26 수정). Bronze 저장
+    직후에 바로 마커를 갱신하면, 그 뒤 Silver1이 실패해도 마커는 이미 새
+    버전을 가리켜 다음 스케줄 실행이 "원본 그대로"로 보고 재시도를
+    영원히 건너뛰는 사고가 난다. 마커가 없거나(첫 실행) _etag 줄이
+    없으면 None을 반환하고, 호출부는 이를 "무조건 새로 받아야 함"으로
+    취급한다."""
 
-    metadata_path = destination / "_metadata.txt"
-    if not metadata_path.exists():
+    marker_path = bronze_root / "_latest_etag.txt"
+    if not marker_path.exists():
         return None
 
-    for line in metadata_path.read_text().splitlines():
+    for line in marker_path.read_text().splitlines():
         if line.startswith("_etag="):
             return line.split("=", 1)[1].strip()
     return None
+
+
+def _write_latest_etag(bronze_root: Path, etag: str) -> None:
+    (bronze_root / "_latest_etag.txt").write_text(
+        f"_etag={etag}\n_updated_at={datetime.now(timezone.utc).isoformat()}\n"
+    )
 
 
 def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
@@ -73,7 +85,7 @@ def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
     current_etag = head_response.headers.get("ETag", "").strip('"')
 
     destination = bronze_root / "shapefile"
-    previous_etag = _read_previous_etag(destination)
+    previous_etag = _read_previous_etag(bronze_root)
 
     if current_etag and current_etag == previous_etag:
         logger.info(
@@ -81,7 +93,7 @@ def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
             current_etag,
             destination,
         )
-        return {"path": str(destination), "changed": False}
+        return {"path": str(destination), "changed": False, "etag": current_etag}
 
     if previous_etag:
         logger.info(
@@ -113,6 +125,10 @@ def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
         if not remote_shapefile.exists():
             raise RuntimeError(f"Taxi Zone Shapefile 저장 검증 실패: {remote_shapefile}")
 
+        # _metadata.txt는 이번 Bronze 저장이 언제/무엇으로 이뤄졌는지
+        # 남기는 정보성 기록일 뿐이다 - 재처리 여부를 가르는 ETag 마커는
+        # 더 이상 이 파일이 아니라 mark_taxi_zone_etag()가 Silver1 build
+        # 성공 후에 별도로 쓴다(아래 함수 docstring 참고).
         (destination / "_metadata.txt").write_text(
             f"_ingested_at={datetime.now(timezone.utc).isoformat()}\n"
             "_source=nyc_tlc_taxi_zone_shapefile\n"
@@ -120,4 +136,20 @@ def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
         )
 
     logger.info("Taxi Zone Shapefile 저장 완료: %s", destination)
-    return {"path": str(destination), "changed": True}
+    return {"path": str(destination), "changed": True, "etag": current_etag}
+
+
+def mark_taxi_zone_etag(shapefile_result: dict, bronze_root=BRONZE_ROOT) -> None:
+    """ETag 마커(_latest_etag.txt)를 이제야 갱신한다 - Airflow DAG에서
+    Silver1 build_taxi_zone_silver1까지 성공했을 때만(그 태스크 뒤에 이어서)
+    호출돼야 한다. ingest_taxi_zone_shapefile() 자체가 이 마커를 쓰지 않는
+    이유는 그 함수 docstring 참고(src/lion/bronze.py의 mark_lion_etag와
+    동일한 패턴).
+
+    changed=False(원본 그대로라 이번 실행이 처음부터 스킵된 경우)면
+    build_taxi_zone_silver1이 AirflowSkipException을 던져서 이 태스크까지
+    기본 trigger_rule(all_success)로 자동 스킵된다 - 마커가 이미 맞는
+    값을 가리키고 있으니 다시 쓸 필요가 없어 별문제 없다."""
+    etag = shapefile_result.get("etag")
+    if etag:
+        _write_latest_etag(bronze_root, etag)

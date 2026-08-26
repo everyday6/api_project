@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from airflow.decorators import task
 from airflow.exceptions import AirflowSkipException
+from airflow.sdk import Asset
 
 from src.common.config import (
     EMR_MAX_EXECUTORS_TLC_INGEST,
@@ -37,6 +38,7 @@ MAP_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_zone_segment.parquet"
 TYPE3_STAGING_ROOT = TYPE3_DAILY_ROOT / "_staging"
 TYPE3_MONTH_MARKER_ROOT = TYPE3_DAILY_ROOT / "_month_success"
 TYPE3_PUBLISH_STATE_PATH = TYPE3_DAILY_ROOT / "_rds_publish_state.json"
+TLC_TYPE3_GOLD2_READY = Asset("tlc_type3_gold2_ready")
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -74,7 +76,12 @@ def _months_from_silver_results(silver_results: list[dict]) -> list[str]:
     달까지 자동으로 다시 찾아 재시도했지만, 그 복구는 사람이 Slack 실패
     알림을 보고 수동으로 재실행하는 쪽으로 단순화했다 - 이 함수는 오직
     "오늘 새로 받은 파일이 속한 달"만 후보로 낸다. 실제로 그 달의 4개
-    taxi_type이 다 갖춰졌는지는 build_type3_staged_records가 다시 확인한다."""
+    taxi_type이 다 갖춰졌는지는 build_type3_staged_records가 다시 확인한다.
+
+    silver_results는 flat list[dict]여야 한다 - build_silver.expand()로
+    taxi_type 청크별 매핑 실행된 결과를 모으면 청크 하나당 리스트 하나,
+    즉 list[list[dict]]가 되므로 호출하는 쪽(build_type3_staged_records)에서
+    먼저 한 겹 풀어서(flatten) 넘겨야 한다."""
 
     months = set()
     for item in silver_results:
@@ -143,9 +150,17 @@ def build_type3_staged_records(silver_results: list[dict]) -> dict:
     신규 파일만 처리한다 - 이전 실행에서 실패해 밀린 달이 있어도 여기서
     자동으로 다시 찾아 재시도하지 않는다. 그 경우엔 실패한 태스크의
     retries가 소진되며 Slack 알림이 오고, 사람이 원인을 고친 뒤 그
-    실행을 수동으로 재시도한다."""
+    실행을 수동으로 재시도한다.
 
-    months = _months_from_silver_results(silver_results)
+    silver_results는 build_silver.expand()가 taxi_type 청크별로 매핑
+    실행된 결과라서 청크 하나당 리스트 하나, 즉 list[list[dict]]로 들어온다
+    - _months_from_silver_results에 넘기기 전에 한 겹 풀어(flatten) 평평한
+    파일 dict 목록으로 만든다."""
+
+    flat_silver_results = [
+        item for chunk in silver_results for item in chunk
+    ]
+    months = _months_from_silver_results(flat_silver_results)
     if not months:
         raise AirflowSkipException("처리할 Type 3 월이 없어 갱신을 건너뜁니다")
 
@@ -193,7 +208,8 @@ def validate_type3_staged_records(stage_result: dict) -> dict:
 
 @task(pool="tlc_ingest_pool", pool_slots=17)
 def publish_type3_daily_records(validated_stage: dict) -> dict:
-    """EMR에서 검증된 날짜 파티션을 운영 경로에 반영한다."""
+    """EMR에서 검증된 날짜 파티션을 운영 경로에 반영하고, 성공한 경우에만
+    serving DAG가 구독하는 tlc_type3_gold2_ready Asset을 발행한다."""
 
     _staging_run_path(validated_stage["run_id"])
     return run_tlc_emr_operation(
@@ -254,7 +270,7 @@ def check_type3_publish_needed(_published_result=None) -> dict:
     }
 
 
-@task.short_circuit
+@task.short_circuit(ignore_downstream_trigger_rules=False)
 def check_type3_reference_ready(_publish_plan=None) -> bool:
     """운영 Type 3에 필요한 Zone-Segment 매핑이 있는지 확인한다.
 
@@ -263,7 +279,18 @@ def check_type3_reference_ready(_publish_plan=None) -> bool:
     DAG run 전체가 실패로 확정됐는데(재시도 3회 소진 후), segment_time_
     pipeline의 check_dim_segment_exists와 같은 이유로 - 의존 파일이 아직
     없다고 DAG 전체를 실패시키는 대신, 이번 실행의 RDS 갱신만 조용히
-    건너뛴다."""
+    건너뛴다.
+
+    ignore_downstream_trigger_rules=False로 명시한다(주의: 복수형 rules -
+    ignore_downstream_trigger_rule로 쓰면 _ShortCircuitDecoratedOperator가
+    이 kwarg를 못 받아 DAG 파싱 자체가 TypeError로 깨진다, Airflow 3.3.0
+    실측). 기본값(True)이면 이 태스크가 short-circuit될 때 도달 가능한
+    모든 하위 태스크를 trigger_rule과 무관하게 강제로 skip시켜서,
+    check_type3_rds_freshness에 일부러 걸어둔 trigger_rule="none_failed"
+    (발행이 skip되어도 이번 Asset 이벤트의 최신성 검사는 실행한다는 의도)까지
+    무시하고 같이 skip시켜 버린다. False로
+    두면 직접 하위인 publish_type3_rolling_values만 skip되고,
+    check_type3_rds_freshness는 자기 trigger_rule을 그대로 따른다."""
 
     exists = _type3_reference_exists()
     if not exists:
@@ -310,9 +337,10 @@ def check_type3_rds_freshness(_published_values=None) -> None:
     항상 0이다 - "아직 새 데이터가 없음"과 "파이프라인이 멈췄음"을 이 gap이
     자동으로 구분해준다.
 
-    하루 한 번 도는 배치 태스크라 실패 시 알림이 스팸으로 쌓일 걱정이
-    없다(API 요청마다 도는 서빙 경로 함수와 다름) - 실패하면 기존
-    on_failure_callback(Slack)이 그대로 재사용된다."""
+    Asset 발행 때만 도는 배치 태스크라 API 요청마다 도는 서빙 경로와 달리
+    실패 알림이 폭주하지 않는다. 실패하면 기존 on_failure_callback(Slack)이
+    그대로 재사용된다. 이벤트 자체가 장기간 발생하지 않는 정체는 이 태스크가
+    실행되지 않으므로 별도 외부 모니터링으로 감시해야 한다."""
 
     _, _, gold_window_end = select_latest_date_partitions(
         TYPE3_DAILY_ROOT.glob("date=*"),

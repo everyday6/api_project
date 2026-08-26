@@ -2,7 +2,7 @@
 
 TLC 데이터는 정확히 한 달 뒤가 아니라 몇 달씩 지연을 두고
 불규칙하게 올라오기 때문에, 특정 날짜를 기다리는 대신
-매일 다음 공개 후보 1개월과 최근 완료 3개월을 확인한다.
+매주 다음 공개 후보 1개월과 최근 완료 3개월을 확인한다.
 (이미 Bronze에 있는 파일은 건너뜀)
 
 첫 실행도 같은 상대 기간을 사용해 초기 데이터를 채우며, 이후 실행에서는
@@ -20,17 +20,18 @@ Silver1 (EMR Serverless)
     ↓
 Zone 날짜별 Type 3 (EMR Serverless → S3 Gold2)
 
-S3 Gold2를 RDS(서빙 DB)에 발행하는 건 별도 DAG(tlc_type3_serving_daily)가
+S3 Gold2를 RDS(서빙 DB)에 발행하는 건 별도 DAG(tlc_type3_serving_pipeline)가
 맡는다 - "데이터 생성"과 "서비스 DB 발행"의 역할을 분리해서, RDS 쪽에
 문제가 생겨도 이 DAG(다운로드~Silver~Gold2)를 다시 돌릴 필요가 없게
-한다. 두 DAG는 강하게 연결하지 않고 각자 독립적으로 매일 실행된다.
+한다. Gold2 발행이 성공하면 Asset을 내보내 serving DAG를 자동 실행한다.
 
 신규 파일이 없는 날은 각 단계가 빈 목록에 대해 실행되어
 아무 일도 하지 않고 정상 종료된다.
 """
 
-from datetime import datetime, timedelta
+from datetime import timedelta
 
+import pendulum
 from airflow.decorators import dag
 
 from src.common.alerts import notify_slack_failure
@@ -75,9 +76,10 @@ default_args = {
 # =========================================================
 
 @dag(
-    dag_id="tlc_ingest_daily",
-    start_date=datetime(2025, 8, 1),
-    schedule="@daily",
+    dag_id="tlc_ingest_pipeline",
+    description="TLC 신규 월 파일 주간 확인 및 Bronze/Silver/Type3 생성",
+    start_date=pendulum.datetime(2025, 8, 1, tz="Asia/Seoul"),
+    schedule="0 4 * * 1",  # 매주 월요일 새벽 4시(KST)
     catchup=False,
     # 이전 실행이 아직 안 끝났는데 다음 실행이 겹쳐서 시작되면
     # 같은 파일(tmp 경로가 run별로 안 나뉘어 있음)을 두고 충돌할 수 있어서
@@ -85,9 +87,9 @@ default_args = {
     max_active_runs=1,
     default_args=default_args,
     on_failure_callback=notify_slack_failure,
-    tags=["TLC", "ingest", "daily"],
+    tags=["TLC", "ingest", "weekly"],
 )
-def tlc_ingest_daily():
+def tlc_ingest_pipeline():
 
     # -----------------------------------------
     # 1. 신규 데이터 확인
@@ -155,4 +157,4 @@ def tlc_ingest_daily():
 
 
 # DAG 생성
-tlc_ingest_daily()
+tlc_ingest_pipeline()
