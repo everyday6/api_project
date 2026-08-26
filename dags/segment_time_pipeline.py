@@ -25,7 +25,6 @@ from src.common.config import EMR_JOBS_DIR, PROJECT_ROOT, SERVING_TABLE_TYPE1
 from src.common.emr_serverless import read_json_result, run_spark_job
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.speed.bronze import collect_speed_data, has_new_speed_data
-from src.speed.bronze_validation import validate_bronze
 
 logger = logging.getLogger(__name__)
 
@@ -52,8 +51,13 @@ def segment_time_pipeline():
     def check_new_data() -> bool:
         return has_new_speed_data()
 
-    @task
+    @task.short_circuit
     def collect_bronze() -> str:
+        """API 응답을 저장 전에 검증하고(collect_speed_data 내부), 검증
+        실패나 신규 데이터 없음으로 빈 문자열이 반환되면 뒤(Silver/Gold)를
+        전부 스킵한다 - 예전엔 이 검증이 별도 validate_bronze 태스크로
+        저장 후에 따로 돌았다."""
+
         return collect_speed_data()
 
     @task.short_circuit
@@ -114,13 +118,10 @@ def segment_time_pipeline():
     bronze_path = collect_bronze()
     bronze_path.set_upstream(new_data)
 
-    bronze_valid = validate_bronze(bronze_path)
-
     dim_segment_ready = check_dim_segment_exists()
 
     silver_result = submit_silver_job(bronze_path)
     silver_result.set_upstream(dim_segment_ready)
-    silver_result.set_upstream(bronze_valid)
 
     submit_gold_job(silver_result)
 

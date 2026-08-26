@@ -105,51 +105,42 @@ def test_validate_bronze_file_null_over_tolerance_fails(tmp_path):
     )
 
 
-def test_validate_and_decide_returns_true_when_bronze_path_empty():
-    # collect_bronze()가 빈 문자열을 반환하는 경우(신규 데이터 없음) -
-    # check_new_data가 이미 이전 단계에서 걸렀어야 하지만 방어적으로도
-    # 통과시킨다.
-    with patch.object(bronze_validation, "validate_bronze_file") as mock_validate:
-        result = bronze_validation._validate_and_decide("")
-
-    assert result is True
-    mock_validate.assert_not_called()
-
-
-def test_validate_and_decide_returns_false_and_alerts_on_critical_failure():
+def test_validate_and_decide_df_returns_false_and_alerts_on_critical_failure():
+    df = pd.DataFrame([_good_row()])
     with patch.object(
-        bronze_validation, "validate_bronze_file",
+        bronze_validation, "validate_bronze_df",
         side_effect=CriticalValidationError("필수 컬럼 없음: ['speed']"),
     ), patch.object(bronze_validation, "notify_slack_message") as mock_notify:
-        result = bronze_validation._validate_and_decide("s3://bucket/bronze.parquet")
+        result = bronze_validation._validate_and_decide_df(df, "batch_end=2026-08-26T00:00:00")
 
     assert result is False
     mock_notify.assert_called_once()
     message = mock_notify.call_args.args[0]
     assert "speed" in message
-    # 어느 파일/사이클인지 Airflow 로그를 따로 뒤지지 않도록 경로가 포함돼야 한다.
-    assert "s3://bucket/bronze.parquet" in message
+    # 어느 배치인지 Airflow 로그를 따로 뒤지지 않도록 컨텍스트가 포함돼야 한다.
+    assert "batch_end=2026-08-26T00:00:00" in message
 
 
-def test_validate_and_decide_returns_true_and_alerts_on_log_only_failure(caplog):
+def test_validate_and_decide_df_returns_true_and_alerts_on_log_only_failure(caplog):
+    df = pd.DataFrame([_good_row()])
     failed = [{
         "expectation_type": "expect_column_values_to_be_between",
         "kwargs": {"column": "speed"},
         "result": {"unexpected_count": 3},
         "exception_info": {"exception_message": "dtype mismatch: expected numeric"},
     }]
-    with patch.object(bronze_validation, "validate_bronze_file", return_value=failed), \
+    with patch.object(bronze_validation, "validate_bronze_df", return_value=failed), \
          patch.object(bronze_validation, "notify_slack_message") as mock_notify:
         with caplog.at_level("WARNING"):
-            result = bronze_validation._validate_and_decide("s3://bucket/bronze.parquet")
+            result = bronze_validation._validate_and_decide_df(df, "batch_end=2026-08-26T00:00:00")
 
     assert result is True
     mock_notify.assert_called_once()
     message = mock_notify.call_args.args[0]
     assert "1건" in message
-    # 알림 받은 사람이 Airflow 로그를 따로 뒤지지 않도록 파일 경로와 실패
+    # 알림 받은 사람이 Airflow 로그를 따로 뒤지지 않도록 배치 정보와 실패
     # 컬럼 이름이 Slack 메시지에 바로 담겨 있어야 한다.
-    assert "s3://bucket/bronze.parquet" in message
+    assert "batch_end=2026-08-26T00:00:00" in message
     assert "speed" in message
     # GX가 메트릭 계산 중 내부적으로 예외를 삼킨 경우(success=False,
     # result={}) 실제 원인은 exception_info에만 담기므로 로그에도 남겨야 한다.
@@ -159,10 +150,11 @@ def test_validate_and_decide_returns_true_and_alerts_on_log_only_failure(caplog)
     )
 
 
-def test_validate_and_decide_returns_true_without_alert_when_all_pass():
-    with patch.object(bronze_validation, "validate_bronze_file", return_value=[]), \
+def test_validate_and_decide_df_returns_true_without_alert_when_all_pass():
+    df = pd.DataFrame([_good_row()])
+    with patch.object(bronze_validation, "validate_bronze_df", return_value=[]), \
          patch.object(bronze_validation, "notify_slack_message") as mock_notify:
-        result = bronze_validation._validate_and_decide("s3://bucket/bronze.parquet")
+        result = bronze_validation._validate_and_decide_df(df, "batch_end=2026-08-26T00:00:00")
 
     assert result is True
     mock_notify.assert_not_called()
