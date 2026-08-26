@@ -201,7 +201,18 @@ def _is_fresh(last_sample_at) -> bool:
     """last_sample_at의 날짜가 오늘인지 확인한다. 시:분 단위가 아니라 "오늘
     수집된 값인지"만 본다(TODO 팀 검토 필요 - 하루 단위 신선도로 충분하다는
     판단). 값이 없거나 형식이 이상하면(레거시 데이터 등) 안전한 쪽으로
-    "신선하지 않음"으로 처리해 다음 단계로 내려가게 한다."""
+    "신선하지 않음"으로 처리해 다음 단계로 내려가게 한다.
+
+    RDS에서 직접 읽은 행은 psycopg2가 datetime 객체를 주지만, S3 Gold
+    스냅샷(gold_snapshot.py)을 거쳐 온 값은 JSON 직렬화 때문에 문자열
+    (last_sample_at.isoformat() 결과)이다 - 그대로 두면 RDS 장애 폴백 중엔
+    방금 저장된 값도 항상 "형식이 이상함"으로 오판돼 fresh 판정을 절대
+    못 받는다. 그래서 문자열이면 먼저 datetime으로 되돌려 본다."""
+    if isinstance(last_sample_at, str):
+        try:
+            last_sample_at = datetime.fromisoformat(last_sample_at)
+        except ValueError:
+            return False
     if not isinstance(last_sample_at, datetime):
         return False
     return last_sample_at.date() == date.today()

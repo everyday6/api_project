@@ -4,9 +4,7 @@ from __future__ import annotations
 
 import re
 import time
-from collections import OrderedDict
 from datetime import datetime
-from threading import Lock
 from typing import Annotated, Literal
 
 import psycopg2
@@ -41,28 +39,26 @@ WEEKDAY_NAMES = TLC_TYPE3_DOW_NAMES
 # 여러 개를 한 번에 조회할 때도 dow/time 조건은 쿼리에 딱 한 번만 걸면 된다.
 TYPE3_BATCH_SIZE = 100
 MAX_SEGMENTS_PER_REQUEST = 1_000
-VALUE_CACHE_SIZE = 50_000
 MISSING_VALUE = 0.0
 
 # RDS 커넥션 타임아웃/쿼리 타임아웃: 이 API는 Lambda 콜드/웜스타트 전체
 # 시간 예산이 빠듯해서(nav_lookup.py의 _TIME_BUDGET_SECONDS 참고) RDS
-# 커넥션/쿼리가 오래 걸리면 기다리는 대신 빨리 실패하고 fallback(캐시/
-# 기본값)으로 넘어가야
+# 커넥션/쿼리가 오래 걸리면 기다리는 대신 빨리 실패하고 fallback(S3
+# 스냅샷/기본값)으로 넘어가야
 # 한다. statement_timeout은 커넥션 세션 옵션으로 서버 쪽에 강제한다 —
 # psycopg2 자체엔 botocore Config의 read_timeout과 동등한 클라이언트
 # 옵션이 없어서, 쿼리 실행 시간 상한은 Postgres 서버가 직접 끊게 한다.
 RDS_CONNECT_TIMEOUT_SECONDS = 1
 RDS_STATEMENT_TIMEOUT_MS = 1_000
 
-_value_cache: OrderedDict[tuple[str, str], float] = OrderedDict()
-_cache_lock = Lock()
-
-# RDS 자체가 응답 불가능할 때 메모리 캐시 다음으로 쓰는 S3 스냅샷 2개
-# (src/tlc/gold2.py/spark_jobs/tlc_pipeline_job.py의 _export_type3_snapshot이
-# RDS 쓰기 성공 시마다 갱신). zone→segment로 확장된 7,300만 행을 그대로
-# 담으면 너무 커서, 확장 전 재료(zone 단위 rolling 평균 + segment→zone
-# 매핑)만 담아뒀다가 조회 시 조합해서 재구성한다(무손실 - 확장이 단순
-# 값 복사라서 가능함).
+# RDS 자체가 응답 불가능할 때 쓰는 S3 스냅샷 2개(src/tlc/gold2.py/
+# spark_jobs/tlc_pipeline_job.py의 _export_type3_snapshot이 RDS 쓰기
+# 성공 시마다 갱신). zone→segment로 확장된 7,300만 행을 그대로 담으면
+# 너무 커서, 확장 전 재료(zone 단위 rolling 평균 + segment→zone 매핑)만
+# 담아뒀다가 조회 시 조합해서 재구성한다(무손실 - 확장이 단순 값 복사라서
+# 가능함). 이 스냅샷은 프로세스당 최초 1회만 S3에서 읽어 메모리에 보관한다
+# (재다운로드 방지용 로딩 캐시 - "최근 RDS 성공값"을 기억하는 캐시와는
+# 성격이 다르다).
 _type3_snapshot_loaded = False
 _type3_zone_snapshot: dict[str, float] = {}
 _type3_mapping_snapshot: dict[str, int] = {}
@@ -111,20 +107,6 @@ def _weekday_and_bucket(requested_at: datetime) -> tuple[str, str]:
     return dow, f"{requested_at.hour:02d}{slot_minute:02d}"
 
 
-def build_sort_key(type_id: int, requested_at: datetime) -> str:
-    """요청 날짜의 요일과 시각을 Type 3 반복 버킷 문자열로 변환한다.
-
-    지금은 RDS의 실제 기본키가 아니라 _value_cache의 식별자로만 쓰인다 —
-    세그먼트 하나의 아이템에 336개
-    값이 다 들어있어도, 캐시는 여전히 "이 세그먼트의 이 요일·시간 값"
-    단위로 구분해야 하기 때문이다."""
-
-    if type_id != TYPE3_ID:
-        raise ValueError(f"지원하지 않는 type입니다: {type_id}")
-    dow, bucket = _weekday_and_bucket(requested_at)
-    return f"{type_id}#{dow}#{bucket}"
-
-
 _db_connection = None
 
 
@@ -160,15 +142,6 @@ def get_db_connection():
     return _db_connection
 
 
-def _remember_value(segment_id: str, cache_slot: str, value: float) -> None:
-    key = (segment_id, cache_slot)
-    with _cache_lock:
-        _value_cache[key] = value
-        _value_cache.move_to_end(key)
-        while len(_value_cache) > VALUE_CACHE_SIZE:
-            _value_cache.popitem(last=False)
-
-
 def _load_type3_snapshot_once() -> None:
     global _type3_snapshot_loaded, _type3_zone_snapshot, _type3_mapping_snapshot
     if _type3_snapshot_loaded:
@@ -189,17 +162,10 @@ def _resolve_from_zone_snapshot(segment_id: str, dow: str, bucket: str) -> float
     return _type3_zone_snapshot.get(f"{zone_id}#{dow}#{bucket}")
 
 
-def _fallback_value(segment_id: str, cache_slot: str, dow: str, bucket: str) -> tuple[float, str]:
-    """두 번째 반환값(tier)은 어떤 단계에서 값을 뽑았는지("cache"/"snapshot"/
+def _fallback_value(segment_id: str, dow: str, bucket: str) -> tuple[float, str]:
+    """두 번째 반환값(tier)은 어떤 단계에서 값을 뽑았는지("snapshot"/
     "hardcoded") - Grafana 대시보드용 fallback 히트율 집계에 쓴다
     (get_type3_values 참고)."""
-    key = (segment_id, cache_slot)
-    with _cache_lock:
-        if key in _value_cache:
-            value = _value_cache[key]
-            _value_cache.move_to_end(key)
-            return value, "cache"
-
     value = _resolve_from_zone_snapshot(segment_id, dow, bucket)
     if value is not None:
         return value, "snapshot"
@@ -223,8 +189,8 @@ def _fetch_batch(
     UnprocessedKeys로 돌려주는 부분 실패가 있어 재시도 루프가 필요했는데,
     SQL 쿼리 하나는 원자적으로 전체 성공/전체 실패이므로 그런 부분 실패
     자체가 없다 — 재시도 로직이 필요 없어졌다. 커넥션 문제(끊김 등)는 이
-    함수를 호출하는 get_type3_values()의 try/except가 잡아서 캐시/기본값
-    fallback으로 넘어간다."""
+    함수를 호출하는 get_type3_values()의 try/except가 잡아서 S3 스냅샷/
+    기본값 fallback으로 넘어간다."""
 
     if not _TABLE_NAME_PATTERN.match(table_name):
         raise ValueError(f"잘못된 테이블 이름입니다: {table_name}")
@@ -252,7 +218,6 @@ def get_type3_values(
     요청 시각 하나로 정해지는 dow/time 조건과 segment_id 목록으로 바로
     필요한 값만 조회한다."""
 
-    cache_slot = build_sort_key(TYPE3_ID, requested_at)
     dow, bucket = _weekday_and_bucket(requested_at)
     resolved_table = table_name or SERVING_TABLE_TYPE3
     found: dict[str, float] = {}
@@ -278,27 +243,26 @@ def get_type3_values(
                     )
                     continue
                 found[segment_id] = value
-                _remember_value(segment_id, cache_slot, value)
         elapsed_ms = (time.perf_counter() - start) * 1000
         # db.py의 batch_get_items()와 같은 형식 - Grafana의 "타입별 RDS 쿼리
         # 응답시간" 패널이 table 필드로 두 경로를 같이 묶어서 집계한다
         # (Type3는 db.py를 안 거치는 별도 쿼리 경로라 여기서 따로 남겨야 함).
         logger.info(f"[rds_query_duration] table={resolved_table} ms={elapsed_ms:.1f}")
     except Exception:
-        logger.exception("RDS Type 3 조회 실패; 캐시 또는 기본값으로 응답합니다")
+        logger.exception("RDS Type 3 조회 실패; S3 스냅샷 또는 기본값으로 응답합니다")
 
     missing = sum(segment_id not in found for segment_id in segment_ids)
     if missing:
         logger.warning("Type 3 조회 누락: %s/%s", missing, len(segment_ids))
 
-    tier_counts = {"rds": 0, "cache": 0, "snapshot": 0, "hardcoded": 0}
+    tier_counts = {"rds": 0, "snapshot": 0, "hardcoded": 0}
     values = []
     for segment_id in segment_ids:
         if segment_id in found:
             tier_counts["rds"] += 1
             values.append(found[segment_id])
         else:
-            value, tier = _fallback_value(segment_id, cache_slot, dow, bucket)
+            value, tier = _fallback_value(segment_id, dow, bucket)
             tier_counts[tier] += 1
             values.append(value)
 
@@ -307,7 +271,7 @@ def get_type3_values(
     # "Type3 fallback 계층 비율" 패널을 그린다.
     logger.info(
         f"[type3_fallback_tier_summary] rds={tier_counts['rds']} "
-        f"cache={tier_counts['cache']} snapshot={tier_counts['snapshot']} "
+        f"snapshot={tier_counts['snapshot']} "
         f"hardcoded={tier_counts['hardcoded']} total={len(segment_ids)}"
     )
 
