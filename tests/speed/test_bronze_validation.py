@@ -26,11 +26,15 @@ def _good_row(**overrides):
 
 
 def test_validate_bronze_file_passes_clean_file(tmp_path):
+    # 실제 배치는 synthetic 보강 후 10만+ 세그먼트를 갖지만, 이 fixture는
+    # 스키마/값 검증만 보려고 한 행뿐이라 segment 개수 체크만 걸린다.
     path = _write_bronze_fixture(tmp_path, "good.parquet", [_good_row()])
 
     failed_checks = validate_bronze_file(path)
 
-    assert failed_checks == []
+    assert [c["expectation_type"] for c in failed_checks] == [
+        "expect_column_unique_value_count_to_be_between"
+    ]
 
 
 def test_validate_bronze_file_raises_when_speed_column_missing(tmp_path):
@@ -49,8 +53,11 @@ def test_validate_bronze_file_logs_but_passes_when_speed_out_of_range(tmp_path):
 
     failed_checks = validate_bronze_file(path)
 
-    assert len(failed_checks) == 1
-    assert failed_checks[0]["kwargs"]["column"] == "speed"
+    assert any(
+        c["expectation_type"] == "expect_column_values_to_be_between"
+        and c["kwargs"]["column"] == "speed"
+        for c in failed_checks
+    )
 
 
 def test_validate_bronze_file_flags_ancient_data_as_of(tmp_path):
