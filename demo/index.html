@@ -85,7 +85,7 @@
 <div class="wrap">
   <header>
     <h1>nav-gold 경로 데모</h1>
-    <div id="status">지도를 클릭해 출발지를 선택하세요</div>
+    <div id="status">지도를 클릭해 출발지와 도착지를 선택하세요</div>
   </header>
 
   <div class="typebar" id="typebar"></div>
@@ -120,10 +120,10 @@ const ROUTE_COLOR_HEX = { A: "#4f8cff", B: "#b06cff", C: "#ff9d4f" };
 //   "가장 비싼 통행 지점 하나"가 곧 총액이다 - 합산하면 zone 안 segment
 //   개수만큼 $0.75가 중복 청구되는 버그가 된다. 그래서 max를 쓴다.
 const TYPE_CONFIG = {
-  1: { label: "시간", agg: "sum", fmt: v => fmtTime(v), recommend: "'최단 시간 경로'로 제공" },
-  2: { label: "길이", agg: "sum", fmt: v => (v/5280).toFixed(2) + " mi", recommend: "'최단 거리 경로'로 제공" },
-  3: { label: "수요", agg: "avg", fmt: v => Math.round(v) + "", recommend: "'최저 수요 경로'로 제공" },
-  4: { label: "통행료", agg: "max", fmt: v => "$" + v.toFixed(2), recommend: "'최소 통행료 경로'로 제공" },
+  1: { label: "시간", agg: "sum", goal: "min", fmt: v => fmtTime(v), recommend: "'최단 시간 경로'로 제공" },
+  2: { label: "길이", agg: "sum", goal: "min", fmt: v => (v/5280).toFixed(2) + " mi", recommend: "'최단 거리 경로'로 제공" },
+  3: { label: "수요", agg: "avg", goal: "max", fmt: v => Math.round(v) + "", recommend: "'최대 수요 경로'로 제공" },
+  4: { label: "통행료", agg: "max", goal: "min", fmt: v => "$" + v.toFixed(2), recommend: "'최소 통행료 경로'로 제공" },
 };
 
 // ---------- 지도 렌더링 (dev 브랜치 dashboard/index.html의 canvas 방식 재사용) ----------
@@ -335,6 +335,7 @@ function handleMapClick(clientX, clientY) {
     endNode = null; endXY = null;
     currentRoutes = []; activeLabel = null;
     resetExchangeState();
+    document.getElementById("sendBtn").textContent = "🚕 API 요청 보내기";
     pickStage = "end";
     status.textContent = "도착지를 클릭하세요";
   } else {
@@ -366,7 +367,9 @@ function draw() {
   ctx.stroke();
 
   // 겹쳐 보이지 않게 한 번에 하나의 경로만 그린다.
-  if (activeLabel) {
+  // API 요청 전에는 후보 경로 계산이 끝났어도 선을 그리지 않는다 -
+  // 출발/도착 지점만 보이다가 이 타입으로 요청을 보내야 경로가 드러난다.
+  if (activeLabel && resultsByType[selectedType]) {
     const route = currentRoutes.find(r => r.label === activeLabel);
     if (route) {
       const isWin = activeLabel === winnerLabel;
@@ -472,6 +475,8 @@ function renderTypebar() {
       selectedType = Number(el.dataset.type);
       winnerLabel = winnerByType[selectedType] || null;
       activeLabel = winnerLabel || (currentRoutes[0] && currentRoutes[0].label) || null;
+      const btn = document.getElementById("sendBtn");
+      btn.textContent = resultsByType[selectedType] ? "🔄 다시 요청" : "🚕 API 요청 보내기";
       renderTypebar();
       renderTabs();
       renderJsonBox();
@@ -484,7 +489,7 @@ function renderTabs() {
   const results = resultsByType[selectedType];
   const tabs = document.getElementById("tabs");
   if (!currentRoutes.length) {
-    tabs.innerHTML = '<span class="placeholder">지도를 클릭해 출발지를 선택하세요</span>';
+    tabs.innerHTML = '<span class="placeholder">지도를 클릭해 출발지와 도착지를 선택하세요</span>';
     return;
   }
   tabs.innerHTML = currentRoutes.map(r => {
@@ -539,7 +544,8 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
   exchangeByType[selectedType] = exchanges;
   resultsByType[selectedType] = results;
 
-  const winner = results.reduce((a,b) => b.value < a.value ? b : a);
+  const goal = TYPE_CONFIG[selectedType].goal;
+  const winner = results.reduce((a,b) => (goal === "max" ? b.value > a.value : b.value < a.value) ? b : a);
   winnerByType[selectedType] = winner.label;
   winnerLabel = winner.label;
   activeLabel = winner.label;
