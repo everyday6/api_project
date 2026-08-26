@@ -28,6 +28,7 @@ from src.lion.bronze import BRONZE_ROOT as LION_BRONZE_ROOT
 from src.lion.gold2 import DIM_SEGMENT_PATH
 from src.silver2.segment_speed_match import match_links_to_segments
 from src.speed import synthetic
+from src.speed.bronze_validation import _validate_and_decide_df
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_bronze")
 
@@ -141,13 +142,22 @@ def _synthesize_uncovered_segments(links_df: pd.DataFrame, data_as_of: str) -> p
 
 
 def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
-    """마커보다 새로운 속도 판독값을 전부 받아 Bronze에 parquet으로 저장하고,
-    저장에 성공한 경우에만 마커를 이번 배치의 최댓값(data_as_of)으로
-    갱신한다.
+    """마커보다 새로운 속도 판독값을 전부 받아, 저장하기 전에 검증하고
+    통과한 경우에만 Bronze에 parquet으로 저장한 뒤 마커를 이번 배치의
+    최댓값(data_as_of)으로 갱신한다.
+
+    API 응답은 이 시점에 이미 메모리에 다 있으므로, 저장 후 다시 읽어서
+    검증하는 대신 저장 직전에 바로 검증한다(critical 검증 실패시 저장
+    자체를 하지 않는다 - 2026-08-26 순서 변경. TLC처럼 파일을 먼저
+    "다운로드"해야만 하는 경우와 달리, speed는 API 응답이라 검증에 파일이
+    필요 없다).
 
     결과가 0건이면 마커를 건드리지 않고 빈 문자열을 반환한다(정상 케이스 —
     상위 DAG가 short-circuit으로 이미 걸러내지만, 이 함수 자체도 방어적으로
-    처리한다).
+    처리한다). critical 검증 실패도 마커를 안 건드리고 빈 문자열을
+    반환한다 - 둘 다 "이번 사이클엔 유효한 새 데이터가 없다"는 같은
+    결과라, collect_bronze 태스크 자체가 @task.short_circuit으로 뒤(Silver)
+    실행 여부를 판단한다.
     """
 
     marker = _read_marker(bronze_root)
@@ -164,6 +174,9 @@ def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
     synthetic_df = _synthesize_uncovered_segments(links_df, max_data_as_of)
     if not synthetic_df.empty:
         df = pd.concat([df, synthetic_df], ignore_index=True)
+
+    if not _validate_and_decide_df(df, f"batch_end={max_data_as_of}, rows={len(df)}"):
+        return ""
 
     out_path = save_parquet(
         df, bronze_root, f"batch_end={max_data_as_of.replace(':', '')}.parquet"

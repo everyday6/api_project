@@ -159,6 +159,26 @@ def test_collect_speed_data_handles_no_synthetic_rows(tmp_path):
     assert len(saved) == 1
 
 
+def test_collect_speed_data_skips_save_when_validation_fails(tmp_path):
+    # critical 검증 실패(또는 그 외 사유로 _validate_and_decide_df가
+    # False)면 저장도 마커 갱신도 하지 않고 빈 문자열을 반환해야 한다 -
+    # 2026-08-26: 저장 후 검증에서 검증 후 저장으로 순서를 바꾼 핵심 동작.
+    rows = [{"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"}]
+    empty_synthetic = pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+
+    with patch.object(bronze, "fetch_all", return_value=rows), \
+         patch.object(bronze, "_synthesize_uncovered_segments", return_value=empty_synthetic), \
+         patch.object(bronze, "_validate_and_decide_df", return_value=False) as mock_decide:
+        path = bronze.collect_speed_data(bronze_root=tmp_path)
+
+    assert path == ""
+    assert bronze._read_marker(tmp_path) is None
+    assert list(tmp_path.glob("*.parquet")) == []
+    mock_decide.assert_called_once()
+    validated_df = mock_decide.call_args.args[0]
+    assert list(validated_df["link_id"]) == ["1"]
+
+
 def test_collect_speed_data_passes_distinct_links_to_synthesizer(tmp_path):
     rows = [
         {"link_id": "1", "link_points": "40.0,-73.0", "speed": "35.5", "data_as_of": "2026-08-21T12:05:00.000"},

@@ -1,16 +1,19 @@
 """speed Bronze 데이터 품질 검증 (Great Expectations 기반).
 
-30분마다 수집되는 Bronze 파일 하나를 pandas로 검증한다 - 파일이 작아서
+30분마다 수집되는 배치 하나를 pandas로 검증한다 - 데이터가 작아서
 (수백~수천 행) Spark 세션 없이 pandas로 충분하다. TLC(taxi_type × 월,
-여러 파일)와 달리 speed는 사이클당 파일이 하나뿐이라 "파일 제외" 대신
-"이번 사이클 스킵"으로 critical 실패에 대응한다(DAG 쪽 처리는
-Task 3 참고).
+여러 파일)와 달리 speed는 사이클당 배치가 하나뿐이라 "파일 제외" 대신
+"이번 사이클 스킵"으로 critical 실패에 대응한다.
+
+collect_speed_data()가 Bronze에 저장하기 직전, 메모리에 있는 DataFrame을
+바로 검증한다(validate_bronze_df/_validate_and_decide_df) - 저장 후 다시
+읽어서 검증하지 않는다. validate_bronze_file은 이미 저장된 파일을 나중에
+따로 검증하고 싶을 때 쓰는 경로 기반 유틸리티다.
 """
 
 from __future__ import annotations
 
 import pandas as pd
-from airflow.decorators import task
 
 from src.common.alerts import notify_slack_message
 from src.common.gx import validate_pandas_dataframe
@@ -41,15 +44,13 @@ def _cast_for_validation(df: pd.DataFrame) -> pd.DataFrame:
     return validation_df
 
 
-def validate_bronze_file(bronze_path: str) -> list[dict]:
-    """speed Bronze 파일 하나를 검증한다.
+def validate_bronze_df(df: pd.DataFrame) -> list[dict]:
+    """speed Bronze DataFrame 하나를 검증한다.
 
     critical 검증(다운스트림이 의존하는 컬럼 존재 여부)이 실패하면
     CriticalValidationError를 던진다. 통과하면 log-only 검증 중 실패한
     항목들의 결과 dict 리스트를 반환한다(전부 통과면 빈 리스트).
     """
-
-    df = pd.read_parquet(bronze_path)
 
     critical_results = validate_pandas_dataframe(
         df,
@@ -72,25 +73,31 @@ def validate_bronze_file(bronze_path: str) -> list[dict]:
     return [r for r in log_results if not r["success"]]
 
 
-def _validate_and_decide(bronze_path: str) -> bool:
+def validate_bronze_file(bronze_path: str) -> list[dict]:
+    """speed Bronze 파일 하나를 검증한다 - 저장된 parquet을 읽어서
+    validate_bronze_df에 위임한다."""
+
+    return validate_bronze_df(pd.read_parquet(bronze_path))
+
+
+def _validate_and_decide_df(df: pd.DataFrame, context: str) -> bool:
     """실제 결정 로직 - critical 실패시 False+Slack, log_only 실패시
-    True+Slack+로그, 전부 통과(또는 검증할 파일 자체가 없음)시 True.
+    True+Slack+로그, 전부 통과시 True.
 
-    @task.short_circuit는 Airflow TaskFlow 데코레이터라 직접 단위 테스트가
-    번거로우므로, 분기 로직은 이 plain 함수에 두고 validate_bronze는 얇은
-    wrapper로만 둔다.
-    """
-
-    if not bronze_path:
-        return True
+    collect_speed_data()가 Bronze에 저장하기 직전, 메모리에 있는 df를
+    그대로 검증한다(저장 후 다시 읽는 대신 - 2026-08-26 순서 변경: API
+    응답이 이미 메모리에 다 있는데 굳이 저장했다 다시 읽을 이유가 없고,
+    이래야 critical 실패시 애초에 Bronze에 저장 자체를 안 할 수 있다).
+    context는 아직 저장된 파일이 없으므로 Slack 메시지에 어느 배치인지
+    표시할 식별자(예: "batch_end=..., rows=N")."""
 
     try:
-        failed_log_only = validate_bronze_file(bronze_path)
+        failed_log_only = validate_bronze_df(df)
     except CriticalValidationError as error:
         logger.error(f"speed Bronze critical 검증 실패: {error}")
         notify_slack_message(
-            f":red_circle: speed Bronze critical 검증 실패 - 이번 사이클 스킵\n"
-            f"*파일*: `{bronze_path}`\n{error}"
+            f":red_circle: speed Bronze critical 검증 실패 - 저장하지 않고 이번 사이클 스킵\n"
+            f"*배치*: `{context}`\n{error}"
         )
         return False
 
@@ -104,22 +111,9 @@ def _validate_and_decide(bronze_path: str) -> bool:
         failed_columns = [check["kwargs"].get("column") for check in failed_log_only]
         notify_slack_message(
             f":warning: speed Bronze log_only 검증 실패 {len(failed_log_only)}건 "
-            f"(처리는 계속됨)\n"
-            f"*파일*: `{bronze_path}`\n"
+            f"(저장은 계속됨)\n"
+            f"*배치*: `{context}`\n"
             f"*실패 컬럼*: {failed_columns}"
         )
 
     return True
-
-
-@task.short_circuit
-def validate_bronze(bronze_path: str) -> bool:
-    """collect_bronze() 직후, EMR 제출 전에 도는 게이트.
-
-    False를 반환하면 Airflow가 이 task를 upstream으로 잡은 downstream
-    task를 전부 스킵한다(on_failure_callback은 안 걸림 - 실패가 아니라
-    정상 스킵이라서 - 그래서 위 _validate_and_decide 안에서 critical
-    실패 시 Slack을 직접 호출한다).
-    """
-
-    return _validate_and_decide(bronze_path)
