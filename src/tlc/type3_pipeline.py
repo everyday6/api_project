@@ -249,7 +249,7 @@ def check_type3_publish_needed(_published_result=None) -> dict:
     }
 
 
-@task.short_circuit
+@task.short_circuit(ignore_downstream_trigger_rules=False)
 def check_type3_reference_ready(_publish_plan=None) -> bool:
     """운영 Type 3에 필요한 Zone-Segment 매핑이 있는지 확인한다.
 
@@ -258,7 +258,20 @@ def check_type3_reference_ready(_publish_plan=None) -> bool:
     DAG run 전체가 실패로 확정됐는데(재시도 3회 소진 후), segment_time_
     pipeline의 check_dim_segment_exists와 같은 이유로 - 의존 파일이 아직
     없다고 DAG 전체를 실패시키는 대신, 이번 실행의 RDS 갱신만 조용히
-    건너뛴다."""
+    건너뛴다.
+
+    ignore_downstream_trigger_rules=False로 명시한다(주의: 복수형 rules -
+    ignore_downstream_trigger_rule로 쓰면 _ShortCircuitDecoratedOperator가
+    이 kwarg를 못 받아 DAG 파싱 자체가 TypeError로 깨진다, Airflow 3.3.0
+    실측). 기본값(True)이면 이 태스크가 short-circuit될 때 도달 가능한
+    모든 하위 태스크를 trigger_rule과 무관하게 강제로 skip시켜서,
+    check_type3_rds_freshness에 일부러 걸어둔 trigger_rule="none_failed"
+    (발행이 skip되어도 매일 반드시 실행되어야 한다는 의도)까지 무시하고
+    같이 skip시켜 버린다 - 정작 이 short-circuit이 며칠째 조용히 skip
+    중인 상황이야말로 check_type3_rds_freshness가 잡아내야 하는 케이스인데,
+    기본값이면 그 알람 자체가 절대 울리지 않는다(2026-08-26 발견). False로
+    두면 직접 하위인 publish_type3_rolling_values만 skip되고,
+    check_type3_rds_freshness는 자기 trigger_rule을 그대로 따른다."""
 
     exists = _type3_reference_exists()
     if not exists:
