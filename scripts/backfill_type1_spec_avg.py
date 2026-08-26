@@ -12,6 +12,13 @@ Type1(소요시간) 긴급 스펙 추정 백필 스크립트
 슬롯 단위 컬럼이라, 슬롯 행 자체가 없으면 그 시간에 조회했을 때 여전히
 하드코딩 상수로 떨어지기 때문이다.
 
+value 컬럼도 NOT NULL이라 avg와 같은 추정치를 넣어야 새 행이 들어간다.
+다만 last_sample_at은 일부러 비워둔다 - _is_fresh(last_sample_at)가
+None이면 무조건 False를 반환해서(src/serving/nav_lookup.py 참고),
+value가 채워져 있어도 "Fresh Exact"로는 절대 채택되지 않고 그대로
+avg 단계로 내려간다. 즉 value를 채우는 건 순전히 제약조건을 만족시키기
+위함이고, 실제 폴백 순서(avg로 응답)에는 영향이 없다.
+
 count는 일부러 안 채운다 - src/nav_time/gold2.py의 증분 평균 갱신 로직이
 count 없는 행을 "레거시/추정치"로 보고, 실제 관측이 처음 들어오면 이
 값을 버리고 새로 시작한다(new_avg = new_value, new_count = 1). 즉 원천
@@ -102,10 +109,15 @@ def compute_spec_estimates() -> pd.DataFrame:
 
 
 def build_rows(segment_avg: pd.DataFrame) -> pd.DataFrame:
-    """세그먼트별 추정치를 48개 시간 슬롯 전부로 복제한다(cross join)."""
+    """세그먼트별 추정치를 48개 시간 슬롯 전부로 복제한다(cross join).
+
+    value는 avg와 같은 값을 넣는다 - NOT NULL 제약 때문일 뿐, last_sample_at을
+    비워두므로 Fresh Exact로 채택되지는 않는다(위 모듈 docstring 참고)."""
 
     buckets = pd.DataFrame({"time": _time_buckets()})
-    return segment_avg.merge(buckets, how="cross")[["segment_id", "time", "avg"]]
+    rows = segment_avg.merge(buckets, how="cross")
+    rows["value"] = rows["avg"]
+    return rows[["segment_id", "time", "value", "avg"]]
 
 
 def _copy_into_staging(conn, staging_table: str, rows: pd.DataFrame) -> None:
@@ -115,12 +127,12 @@ def _copy_into_staging(conn, staging_table: str, rows: pd.DataFrame) -> None:
     with conn.cursor() as cur:
         cur.execute(
             sql.SQL(
-                "CREATE UNLOGGED TABLE {t} (segment_id TEXT, time TEXT, avg NUMERIC)"
+                "CREATE UNLOGGED TABLE {t} (segment_id TEXT, time TEXT, value NUMERIC, avg NUMERIC)"
             ).format(t=sql.Identifier(staging_table))
         )
         cur.copy_expert(
             sql.SQL(
-                "COPY {t} (segment_id, time, avg) FROM STDIN WITH (FORMAT csv)"
+                "COPY {t} (segment_id, time, value, avg) FROM STDIN WITH (FORMAT csv)"
             ).format(t=sql.Identifier(staging_table)).as_string(conn),
             buf,
         )
@@ -143,8 +155,8 @@ def write_to_rds(rows: pd.DataFrame) -> int:
         with conn.cursor() as cur:
             cur.execute(
                 sql.SQL(
-                    "INSERT INTO {live} (segment_id, time, avg) "
-                    "SELECT segment_id, time, avg FROM {staging} "
+                    "INSERT INTO {live} (segment_id, time, value, avg) "
+                    "SELECT segment_id, time, value, avg FROM {staging} "
                     "ON CONFLICT (segment_id, time) DO NOTHING"
                 ).format(
                     live=sql.Identifier(SERVING_TABLE_TYPE1),
