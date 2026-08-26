@@ -53,35 +53,35 @@
 
 4개 지표는 갱신 주기와 grain이 달라 테이블을 4개로 분리했습니다. 조회 시 추가 쿼리 없이 한 번에 필요한 값을 다 가져올 수 있도록, 관련된 값은 같은 행의 컬럼으로 둡니다(PK: **segment_id, time**).
 
-**segment_metrics_type1**
+### **segment_metrics_type1: 통행 소요시간**
 
 | 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
 | segment_id | 세그먼트 식별자 | "0151677" |
 | time | 30분 단위 시간 버킷 | "0830" |
-| value | 이 시간대 최신 실측 통과시간(초) | 38 |
+| value | 최신 실측 통과시간(초) | 38 |
 | observed_at | value가 관측된 시각 — 신선도 판정용 | 2026-08-27T08:31:02Z |
-| avg | 이 세그먼트·시간대의 과거 평균 통과시간(초) | 44 |
-| count | avg 증분(EMA) 갱신 계산용 누적 횟수 | 312 |
+| avg | 과거 평균 통과시간(초) | 44 |
+| count | avg 증분 갱신 계산용 누적 횟수 | 312 |
 | spec | 도로 스펙(길이÷제한속도) 기반 추정 통과시간(초) | 36 |
 
-**segment_metrics_type2**
+### **segment_metrics_type2: 길이**
 
 | 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
 | segment_id | 세그먼트 식별자 | "0151677" |
 | value | 길이(m) | 255 |
 
-**segment_metrics_type3**
+### **segment_metrics_type3: 승차 승객수**
 
 | 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
 | segment_id | 세그먼트 식별자 | "0151677" |
 | dow | 요일 | "MON" |
 | time | 30분 단위 시간 버킷 | "0900" |
-| value | 해당 요일·시간대의 N주 롤링 평균 승차 수 | 12 |
+| value | 평균 승차 수 | 12 |
 
-**segment_metrics_type4**
+### **segment_metrics_type4: 통행료**
 
 | 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
