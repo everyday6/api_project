@@ -44,12 +44,19 @@ CONFLICT DO NOTHING이라 이미 끝난 청크를 다시 밀어넣어도 안전�
 참고), 청크마다 작은 UNLOGGED 스테이징 테이블에 COPY로 적재한 뒤 ON
 CONFLICT DO NOTHING으로 병합한다.
 
-S3 스냅샷은 nav_time/gold2.py의 _export_snapshot과 동일한 쿼리로 RDS
-전체를 다시 읽어서 만든다(import로 재사용하지 않는 이유는 gold2.py가
-모듈 최상단에서 pyspark를 임포트해서, pyspark가 없는 환경에서는 이
-스크립트 자체가 아예 실행이 안 되기 때문). AWS 자격증명이 없어 실패해도
-export_best_effort가 예외를 삼키고 로그만 남기므로 전체 스크립트는
-정상 종료된다 - RDS 백필(진짜 문제 해결)과 무관한 부가 단계다.
+S3 스냅샷은 기본적으로 건너뛴다(--with-s3-snapshot으로 켜야 실행) - RDS가
+이미 1순위 조회 경로라 지금 당장 서빙 정상화에 필수가 아니고,
+_export_snapshot이 테이블 전체(이 백필 이후 수백만 행)를 다시 훑는
+부가 부하라 굳이 위험을 더할 필요가 없다. 켤 경우에도 fetchall() 대신
+서버 사이드 named 커서로 스트리밍 fetch하도록 만들어뒀다(피크 메모리를
+itersize로 고정) - 그래도 첫 시도(전체를 한 번에 fetchall)가 두 번째
+EC2 응답 불능의 원인으로 의심되니, 여유 있을 때 --s3-snapshot-only로
+따로 실행하는 걸 권장한다. nav_time/gold2.py의 _export_snapshot을
+import로 재사용하지 않는 이유는 그 모듈이 최상단에서 pyspark를
+임포트해서, pyspark가 없는 환경에서는 이 스크립트 자체가 아예 실행이
+안 되기 때문이다(로직은 동일하게 맞춰뒀다). AWS 자격증명이 없어
+실패해도 export_best_effort가 예외를 삼키고 로그만 남기므로 전체
+스크립트는 정상 종료된다.
 
 실행 전 필요한 환경변수 (RDS 접속 - src/common/config.py가 읽음):
     RDS_HOST, RDS_PORT, RDS_DB, RDS_USER, RDS_PASSWORD
@@ -58,7 +65,7 @@ export_best_effort가 예외를 삼키고 로그만 남기므로 전체 스크�
     # 계산 결과만 확인 (RDS/S3 안 건드림)
     python scripts/backfill_type1_spec_avg.py --dry-run
 
-    # 실제 반영 - 청크 크기/청크 사이 대기시간 조절 가능
+    # 실제 반영 - RDS만, S3 스냅샷은 기본으로 건너뜀
     python scripts/backfill_type1_spec_avg.py
     python scripts/backfill_type1_spec_avg.py --chunk-size 500 --sleep 1.0
 
@@ -67,6 +74,12 @@ export_best_effort가 예외를 삼키고 로그만 남기므로 전체 스크�
 
     # 체크포인트 무시하고 처음부터 다시
     python scripts/backfill_type1_spec_avg.py --restart
+
+    # RDS 백필은 이미 끝났고, S3 스냅샷만 나중에 따로(여유 있을 때)
+    python scripts/backfill_type1_spec_avg.py --s3-snapshot-only
+
+    # RDS 백필 + S3 스냅샷을 한 번에 (권장하지 않음, 위 설명 참고)
+    python scripts/backfill_type1_spec_avg.py --with-s3-snapshot
 """
 
 from __future__ import annotations
@@ -220,27 +233,32 @@ def _save_checkpoint(chunk_index: int) -> None:
 def _export_snapshot(table_name: str) -> dict[str, dict[str, dict]]:
     """src/nav_time/gold2.py::_export_snapshot과 동일한 쿼리/형식(모듈
     docstring의 pyspark 의존성 회피 사유 참고). 반환값은
-    segment_id -> {time: {"value","avg","last_sample_at"}}."""
+    segment_id -> {time: {"value","avg","last_sample_at"}}.
+
+    원본과 다른 점: fetchall()로 테이블 전체(이 백필 이후 수백만 행)를
+    한 번에 클라이언트 메모리로 끌어오면 두 번째 OOM을 또 일으킬 수
+    있어서, 서버 사이드(named) 커서로 배치 단위 스트리밍 fetch를 쓴다 -
+    피크 메모리가 itersize만큼으로 고정된다."""
 
     conn = new_connection(connect_timeout=10, statement_timeout_ms=None)
-    with conn.cursor() as cur:
+    snapshot: dict[str, dict[str, dict]] = {}
+    with conn.cursor(name="type1_snapshot_export") as cur:
+        cur.itersize = 50_000
         cur.execute(
             sql.SQL("SELECT segment_id, time, value, avg, last_sample_at FROM {table}").format(
                 table=sql.Identifier(table_name)
             )
         )
-        rows = cur.fetchall()
-
-    snapshot: dict[str, dict[str, dict]] = {}
-    for segment_id, time_slot, value, avg, last_sample_at in rows:
-        entry = {}
-        if value is not None and last_sample_at is not None:
-            entry["value"] = float(value)
-            entry["last_sample_at"] = last_sample_at.isoformat()
-        if avg is not None:
-            entry["avg"] = float(avg)
-        if entry:
-            snapshot.setdefault(segment_id, {})[time_slot] = entry
+        for segment_id, time_slot, value, avg, last_sample_at in cur:
+            entry = {}
+            if value is not None and last_sample_at is not None:
+                entry["value"] = float(value)
+                entry["last_sample_at"] = last_sample_at.isoformat()
+            if avg is not None:
+                entry["avg"] = float(avg)
+            if entry:
+                snapshot.setdefault(segment_id, {})[time_slot] = entry
+    conn.close()
     return snapshot
 
 
@@ -250,7 +268,27 @@ def main() -> None:
     parser.add_argument("--chunk-size", type=int, default=1000, help="한 번에 처리할 세그먼트 수(기본 1000)")
     parser.add_argument("--sleep", type=float, default=0.3, help="청크 사이 대기 시간(초, 기본 0.3)")
     parser.add_argument("--restart", action="store_true", help="체크포인트 무시하고 처음부터 다시 시작")
+    parser.add_argument(
+        "--with-s3-snapshot",
+        action="store_true",
+        help="RDS 적재 후 S3 Gold 스냅샷도 재수출(기본은 건너뜀 - RDS가 이미 1순위 조회 경로라 지금 당장 필수는 아니고, 테이블 전체를 다시 훑는 부가 부하가 있음)",
+    )
+    parser.add_argument(
+        "--s3-snapshot-only",
+        action="store_true",
+        help="RDS 백필은 건너뛰고(이미 끝났다는 전제) S3 스냅샷 재수출만 실행",
+    )
     args = parser.parse_args()
+
+    if args.s3_snapshot_only:
+        gold_snapshot.export_best_effort(
+            "type1",
+            lambda: _export_snapshot(SERVING_TABLE_TYPE1),
+            logger,
+            "backfill_type1_spec_avg",
+        )
+        _log("[backfill_type1] S3 스냅샷 재수출만 단독 실행 완료(또는 best-effort 실패 - 위 로그 참고)")
+        return
 
     started = time.monotonic()
     segment_avg = compute_spec_estimates()
@@ -315,13 +353,21 @@ def main() -> None:
         CHECKPOINT_PATH.unlink()
     _log(f"[backfill_type1] RDS 적재 전체 완료: 총 {total_written}행 신규 삽입")
 
-    gold_snapshot.export_best_effort(
-        "type1",
-        lambda: _export_snapshot(SERVING_TABLE_TYPE1),
-        logger,
-        "backfill_type1_spec_avg",
-    )
-    _log("[backfill_type1] S3 스냅샷 재수출 완료(또는 best-effort 실패 - 위 로그 참고)")
+    if args.with_s3_snapshot:
+        gold_snapshot.export_best_effort(
+            "type1",
+            lambda: _export_snapshot(SERVING_TABLE_TYPE1),
+            logger,
+            "backfill_type1_spec_avg",
+        )
+        _log("[backfill_type1] S3 스냅샷 재수출 완료(또는 best-effort 실패 - 위 로그 참고)")
+    else:
+        _log(
+            "[backfill_type1] S3 스냅샷 재수출은 건너뜀(--with-s3-snapshot 안 줌) - "
+            "RDS가 1순위 조회 경로라 지금 당장 서빙엔 영향 없음. 필요하면 나중에 "
+            "RDS 백필 다시 안 돌리고 이것만 따로 실행: "
+            "python scripts/backfill_type1_spec_avg.py --s3-snapshot-only"
+        )
 
     elapsed = time.monotonic() - started
     _log(f"[backfill_type1] 전체 완료: {elapsed / 60:.1f}분")
