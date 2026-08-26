@@ -5,7 +5,7 @@ TLC 다운로드 검증 Task
 1. 다운로드 파일이 존재하고 비어있지 않은지 확인(src/common/file_validation.py)
 2. 검증된 다운로드 정보를 dict 형태로 다음 Task에 전달
 
-"공통 검증 모듈"이라는 이전 이름과 달리 실제로는 tlc_ingest_daily만 쓰는
+"공통 검증 모듈"이라는 이전 이름과 달리 실제로는 tlc_ingest_pipeline만 쓰는
 TLC 전용 Airflow task다(logger stem도 원래부터 "tlc_bronze") - 형식 검증
 로직 자체는 src/common/file_validation.py로 옮겨서 다른 도메인(LION,
 Toll)도 재사용하고, 여긴 TLC DAG용 task 래퍼 역할만 한다.
