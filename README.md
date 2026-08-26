@@ -2,49 +2,65 @@
 
 <p align="center">
 내비게이션 경로 계산에 필요한 도로 세그먼트별 정보(소요시간·길이·통행료 등)를 데이터 파이프라인으로 구축해 API로 제공합니다.<br>
-택시 전용 기능으로, 도로 세그먼트별 택시 승차 승객 수 정보도 함께 제공합니다.
+택시 전용 기능으로, 세그먼트별 택시 승차 승객 수 정보도 함께 제공합니다.
 </p>
 
 <p align="center">
-  <a href="https://nav-api-dashboard-lsy341.s3-website.ap-northeast-2.amazonaws.com"><img src="https://img.shields.io/badge/대시보드_바로가기-000000?style=for-the-badge&logoColor=white" alt="대시보드"/></a>
+  <a href="https://nav-api-dashboard-lsy341.s3-website.ap-northeast-2.amazonaws.com"><img src="https://img.shields.io/badge/대시보드_바로가기-569A31?style=for-the-badge&logo=amazons3&logoColor=white" alt="대시보드"/></a>
   <a href="http://52.79.216.11:8080"><img src="https://img.shields.io/badge/Airflow_바로가기-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white" alt="Airflow"/></a>
-  <a href="🚧 Grafana URL"><img src="https://img.shields.io/badge/Grafana_바로가기-F46800?style=for-the-badge&logo=grafana&logoColor=white" alt="Grafana"/></a>
+  <a href="http://52.79.216.11:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-12h&to=now&timezone=browser&refresh=5m"><img src="https://img.shields.io/badge/Grafana_바로가기-F46800?style=for-the-badge&logo=grafana&logoColor=white" alt="Grafana"/></a>
 </p>
 
 <p align="center">
-<sub>소프티어 부트캠프 8기 · Data Engineering 5조 (three-idiots)</sub>
+<sub>소프티어 부트캠프 8기 · Data Engineering 5조 · 김지원 · 이동찬 · 이승연</sub>
 </p>
 
 ---
 
 ## 목차
 
-1. [개요](#1-개요)
-2. [왜 만들었는가](#2-왜-만들었는가)
-3. [주요 기능](#3-주요-기능)
-4. [데이터 파이프라인과 아키텍처](#4-데이터-파이프라인과-아키텍처)
-5. [타입별 설계: 데이터가 다르면 답도 다르다](#5-타입별-설계-데이터가-다르면-답도-다르다)
-6. [무조건 응답하는 서비스 만들기](#6-무조건-응답하는-서비스-만들기)
-7. [운영과 성능](#7-운영과-성능)
-8. [기술 스택](#8-기술-스택)
-9. [한계와 다음 단계](#9-한계와-다음-단계)
-10. [팀원 소개](#10-팀원-소개)
+1. [프로덕트 개요](#1-프로덕트-개요)
+2. [주요 기능](#2-주요-기능)
+3. [데이터 파이프라인과 아키텍처](#3-데이터-파이프라인과-아키텍처)
+4. [타입별 설계: 데이터가 다르면 답도 다르다](#4-타입별-설계-데이터가-다르면-답도-다르다)
+5. [무조건 응답하는 서비스 만들기](#5-무조건-응답하는-서비스-만들기)
+6. [운영과 성능](#6-운영과-성능)
+7. [기술 스택](#7-기술-스택)
+8. [한계와 다음 단계](#8-한계와-다음-단계)
+9. [팀원 소개](#9-팀원-소개)
 
-## 1. 개요
+## 1. 프로덕트 개요
 
-경로 탐색은 내비게이션의 역할이고, 저희는 그 알고리즘이 신뢰할 수 있는 세그먼트별 값을 미리 계산·저장·서빙합니다.
+**문제 정의**
+- **누구의**: 택시 내비게이션 개발 회사의 라우팅 엔지니어링팀
+- **어떤 문제**: 라우팅 알고리즘을 갖고 있지만, 도로별 최신 데이터(통행 소요시간, 길이, 통행료 등) 및 승차 승객 수 데이터가 경로 계산에 바로 활용 가능한 형태로 제공되지 않습니다.
 
-> 🎯 최우선 원칙: 정확성보다 가용성. 데이터에 장애가 있어도 API는 무조건 값을 응답합니다 ([6. 무조건 응답하는 서비스 만들기](#6-무조건-응답하는-서비스-만들기)).
+**프로젝트 소개**
 
-요청이 항상 `segments + type 1개 + date/time`이라, 조인·집계는 파이프라인이 미리 끝내고 서빙은 키 조회만 담당합니다. 타입마다 소스·주기가 달라 파이프라인·테이블도 타입별로 분리했습니다.
+내비게이션 경로 탐색 옵션 계산에 필요한 도로 세그먼트(10-20m 수준의 도로 조각)별 정보를 데이터 파이프라인으로 구축해 API로 제공합니다.
 
-## 2. 왜 만들었는가
+**API 예시**
 
-택시 전용 내비게이션·배차 서비스를 만들려는 회사는 "가장 빠른 길"을 넘어 통행료와 승차 수요까지 반영한 경로를 추천하고 싶어합니다. 하지만 이런 세그먼트 단위 상세 데이터는 원본이 공개돼 있어도, 이를 세그먼트 단위로 매핑하고 항상 최신 상태로 유지하는 가공 파이프라인을 직접 구축하려면 상당한 데이터 엔지니어링 역량과 시간이 필요합니다.
+| type | 예시 인풋 | 예시 아웃풋 | 소스 |
+| :---: | --- | --- | --- |
+| 1 (통행 소요시간) | `{"segment_ids": ["1000", "1001", "1002"], "type": 1, "date": "2026-08-27", "time": "09:00"}` | `{"value": [38, 23, 24]}` — 초 | [도로 속도 관측 데이터(5분 주기)](https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds-NBE/i4gi-tjb9) |
+| 2 (길이) | `{"segment_ids": ["1000", "1001", "1002"], "type": 2, "date": "2026-08-27", "time": "09:00"}` | `{"value": [25, 32, 20]}` — m | [NYC 도로망(LION) 원본](https://data.cityofnewyork.us/City-Government/LION/2v4z-66xt) |
+| 3 (택시 승차 승객 수) | `{"segment_ids": ["1000", "1001", "1002"], "type": 3, "date": "2026-08-27", "time": "09:00"}` | `{"value": [12, 20, 12]}` — 승객 수 | [NYC TLC 택시 운행 기록](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) |
+| 4 (통행료) | `{"segment_ids": ["1000", "1001", "1002"], "type": 4, "date": "2026-08-27", "time": "09:00"}` | `{"value": [0.75, 0, 0]}` — 달러 | [MTA·Port Authority 통행료 데이터](https://www.mta.info/fares-tolls/tolls/vehicle-types) |
 
-**타겟**: 내비게이션·배차 서비스를 개발·운영하는 회사의 라우팅/데이터 엔지니어링 조직. 이미 경로 탐색 알고리즘은 갖고 있지만, 그 알고리즘에 넣을 세그먼트 단위 데이터(소요시간·길이·통행료, 택시라면 수요까지)가 없어서 직접 만들거나 부정확한 값으로 대체하고 있는 상태입니다. 저희 API 하나로 이 빈틈을 채웁니다.
+라우팅 엔지니어링팀은 API로 받은 세그먼트별 데이터를 자체 라우팅 알고리즘에 결합해, 최종 고객에게 아래 4가지 종류의 경로를 제공할 수 있습니다.
 
-## 3. 주요 기능
+**1. 빠른 경로**
+
+**2. 최단 거리 경로**
+
+**3. 무료 경로**
+
+**4. 승객 많은 경로**
+
+
+
+## 2. 주요 기능
 
 | type | 지표 | 경로 추천 용도 | 방향 |
 | :---: | --- | --- | :---: |
@@ -55,7 +71,7 @@
 
 > type=3은 `pickup` 기준(택시기사가 승객을 만날 가능성 지표), type=4는 혼잡+도로 통행료 합산값 — 경로 합산 시 `sum`이 아닌 `max`로 집계.
 
-## 4. 데이터 파이프라인과 아키텍처
+## 3. 데이터 파이프라인과 아키텍처
 
 **INPUT**
 
@@ -91,7 +107,7 @@
 
 > ⚠️ `nav` 코드는 아직 Lambda + DynamoDB 기준입니다. 위 구성은 이번에 확정한 목표 아키텍처(EC2+FastAPI+RDS)입니다.
 
-## 5. 타입별 설계: 데이터가 다르면 답도 다르다
+## 4. 타입별 설계: 데이터가 다르면 답도 다르다
 
 4개 타입은 같은 파이프라인을 거치지만, 원본 데이터의 갱신 주기·정밀도·노이즈 특성이 서로 달라 타입마다 다른 설계 결정을 내렸습니다.
 
@@ -167,7 +183,7 @@ CREATE TABLE segment_metrics_type4 (
 
 </details>
 
-## 6. 무조건 응답하는 서비스 만들기
+## 5. 무조건 응답하는 서비스 만들기
 
 내비게이션 경로 계산은 여러 세그먼트 값을 실시간으로 조합해야 해서, 값 하나가 지연되면 경로 계산 전체가 막힙니다. 그래서 "정확한 값을 오래 기다리기"보다 "짧은 시간 안에 항상 유효한 값을 반환"하는 걸 최우선 목표로 삼았습니다 — 장애 상황에서도 API가 에러·무응답을 내지 않고, 응답 지연 없이, 다소 오래된 값이라도 즉시 돌려줍니다.
 
@@ -179,7 +195,7 @@ CREATE TABLE segment_metrics_type4 (
 
 해결책은 행 단위 upsert 대신, 새 데이터를 별도 테이블에 완전히 채운 뒤 테이블 이름만 원자적으로 스왑(RENAME)하는 방식입니다. 인덱스도 데이터를 다 채운 뒤 한 번에 생성합니다 — 처음엔 인덱스가 있는 빈 테이블에 채워 넣다가 행마다 B-tree를 갱신하느라 20분 넘게 끝나지 않는 사고가 있었고, 정렬 후 한 번에 인덱스를 쌓는 방식(`ADD PRIMARY KEY`)으로 바꿔 해결했습니다. RENAME은 메타데이터만 바꾸는 작업이라 밀리초 안에 끝나, 갱신 중에도 조회가 막히지 않습니다.
 
-## 7. 운영과 성능
+## 6. 운영과 성능
 
 - **데이터 품질 검증(Great Expectations)** — Bronze 적재 시 taxi_type별 필수 컬럼이 다 있는지 검증합니다. Silver1 변환 로직과 완전히 같은 컬럼 매핑을 공유해, 검증 기준과 실제 변환 로직이 서로 어긋나는 걸 방지합니다. 검증 실패 시 해당 파일은 처리에서 제외됩니다.
 - **삭제된 세그먼트 정리** — LION 도로망이 갱신돼 사라진 세그먼트는, 최신 유효 세그먼트 집합에 없는 기존 행을 안티조인으로 찾아 자동 삭제합니다. 유효 집합이 비어 있으면 상류 버그로 보고 삭제 대신 예외를 던져, 테이블 전체가 실수로 비워지는 걸 막습니다.
@@ -188,7 +204,7 @@ CREATE TABLE segment_metrics_type4 (
 - **S3 Staging Lifecycle** — 실패로 남은 임시 결과만 7일 뒤 자동 삭제(`config/s3-staging-lifecycle.json`).
 - **실제 이슈 대응** — EC2 CPU 경합으로 Airflow DagBag import timeout 발생 → 120초로 조정. 프로토타입 단계 DynamoDB 32-way 쓰기 병렬이 처리량 한도 초과 → 10-way + adaptive 재시도로 해결.
 
-## 8. 기술 스택
+## 7. 기술 스택
 
 | 영역 | 스택 |
 | --- | --- |
@@ -201,9 +217,9 @@ CREATE TABLE segment_metrics_type4 (
 | **CI/CD** | ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white) |
 | **모니터링** | ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white) |
 
-> DynamoDB도 검토했지만 비용 이슈로 RDS(PostgreSQL)를 최종 채택 ([6. 무조건 응답하는 서비스 만들기](#6-무조건-응답하는-서비스-만들기)).
+> DynamoDB도 검토했지만 비용 이슈로 RDS(PostgreSQL)를 최종 채택 ([5. 무조건 응답하는 서비스 만들기](#5-무조건-응답하는-서비스-만들기)).
 
-## 9. 한계와 다음 단계
+## 8. 한계와 다음 단계
 
 - Type3는 zone 평균값을 그 zone에 속한 모든 세그먼트에 동일하게 적용합니다 — 세그먼트별 가중치(도로 유형, 위치 등)를 반영해 차등화하는 방안을 검토 중입니다.
 - RDS 전환 후 실제 장애 상황의 응답 지연·성공률은 별도 측정이 필요합니다.
@@ -213,7 +229,7 @@ CREATE TABLE segment_metrics_type4 (
 - EMR 작업을 여러 개로 나눠 돌리는 대신 한 번에 묶어 돌리는 방안과, 데이터 유입 자체를 확인하는 전용 대시보드를 검토 중입니다.
 - RDS 커넥션 수를 점진적으로 줄여가며 병목이 어디서 생기는지 실험적으로 확인하는 작업이 남아 있습니다.
 
-## 10. 팀원 소개
+## 9. 팀원 소개
 
 <div align="center">
 
