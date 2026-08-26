@@ -23,6 +23,12 @@ TaskFlow(@task)를 쓴다 - 예전에는 PythonOperator + op_kwargs에 Jinja
 shapefile_result.get("changed", True) 호출이 AttributeError로 죽었다
 (실제로 겪음). TaskFlow는 XCom을 파이썬 객체 그대로 넘겨줘서 이 문제
 자체가 없다.
+
+ETag 마커는 ingest_taxi_zone_shapefile이 아니라 맨 끝의 mark_etag가
+build_taxi_zone_silver1 성공 뒤에만 쓴다(2026-08-26 수정, src/lion/bronze.py
+lion_pipeline과 동일한 이유) - Bronze 저장 직후 바로 마커를 갱신하면 그
+뒤 Silver1이 실패해도 마커가 이미 새 버전을 가리켜 다음 스케줄 실행이
+"원본 그대로"로 보고 재시도를 영원히 건너뛰게 된다.
 """
 
 from datetime import datetime
@@ -31,7 +37,7 @@ from airflow.decorators import dag, task
 from airflow.sdk import Asset
 
 from src.common.alerts import notify_slack_failure
-from src.taxi_zone.bronze import ingest_taxi_zone_shapefile
+from src.taxi_zone.bronze import ingest_taxi_zone_shapefile, mark_taxi_zone_etag
 from src.taxi_zone.silver1 import build as build_taxi_zone_silver1
 
 default_args = {
@@ -62,7 +68,16 @@ def taxi_zone_pipeline():
     def build_silver1(shapefile_result: dict) -> str:
         return build_taxi_zone_silver1(shapefile_result)
 
-    build_silver1(ingest_shapefile())
+    # build_silver1이 성공했을 때만(기본 trigger_rule=all_success) 돈다 -
+    # silver_path 자체는 안 쓰지만 인자로 받아서 XCom 의존 엣지를 만든다
+    # (그래야 Airflow가 이 태스크를 build_silver1 뒤로 순서를 강제한다).
+    @task(task_id="mark_taxi_zone_etag")
+    def mark_etag(shapefile_result: dict, _silver_path: str) -> None:
+        mark_taxi_zone_etag(shapefile_result)
+
+    shapefile_result = ingest_shapefile()
+    silver_path = build_silver1(shapefile_result)
+    mark_etag(shapefile_result, silver_path)
 
 
 taxi_zone_pipeline()
