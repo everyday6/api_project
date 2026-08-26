@@ -117,12 +117,19 @@ def write_gold_items(items: list[dict]) -> None:
         SERVING_TABLE_TYPE4_COLUMNS,
         SERVING_TABLE_TYPE4_KEY_COLUMNS,
     )
-    db.batch_write_items(
+    # upsert(batch_write_items)가 아니라 replace_table_snapshot을 쓴다 - 이
+    # items는 매번 "지금 통행료 대상인 segment 전체"를 처음부터 다시 계산한
+    # 결과라, geometry/street/CBD 경계/시설 규칙/요금표가 바뀌어 더 이상
+    # 유료가 아니게 된 segment는 여기 안 담긴다. upsert만 하면 그런 옛
+    # segment의 옛 요금이 RDS에 영구히 남아 잘못된 통행료를 반환하게 되므로
+    # (P0), 전체를 통째로 교체해서 이번 items에 없는 행이 스왑과 함께
+    # 자연히 사라지게 한다.
+    db.replace_table_snapshot(
         SERVING_TABLE_TYPE4,
         items,
         key_columns=SERVING_TABLE_TYPE4_KEY_COLUMNS,
     )
-    logger.info(f"[toll_gold] RDS에 {len(items)}개 아이템 적재 완료")
+    logger.info(f"[toll_gold] RDS 스냅샷 교체 완료: {len(items)}개 아이템")
 
     # RDS가 죽었을 때 서빙 쪽(src/toll/serving.py)이 대신 쓸 스냅샷을
     # 갱신한다. 통행료 대상 segment만이라 전체를 통째로 담아도 작다 -
