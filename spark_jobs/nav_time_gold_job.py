@@ -7,8 +7,8 @@ nav_time_silver_job.py가 만들어둔 Silver2 parquet을 읽어서 Gold1(필터
 
 인자:
   --silver2-path  : nav_time_silver_job.py가 저장한 Silver2 parquet 경로
-  --dim-segment-path : LION Gold2 dim_segment.parquet 경로
-                       (segment_id, geometry, is_routable, length_ft)
+  --dim-segment-path : LION dim_segment.parquet 경로
+                       (segment_id, geometry, length_ft)
   --serving-table  : upsert할 RDS 테이블명
   --output-s3      : 처리 결과({"count": N})를 JSON으로 쓸 S3 경로
 """

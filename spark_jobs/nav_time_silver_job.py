@@ -10,8 +10,8 @@ Airflow 화면에서 바로 어느 단계인지 알 수 있게 하기 위함
 
 인자:
   --speed-bronze-path : 속도 Bronze parquet 경로(Airflow가 수집한 원본, 정제 전)
-  --dim-segment-path   : LION Gold2 dim_segment.parquet 경로
-                         (segment_id, geometry, is_routable, length_ft)
+  --dim-segment-path   : LION dim_segment.parquet 경로
+                         (segment_id, geometry, length_ft)
   --silver2-output      : Silver2 결과를 저장할 parquet 경로(다음 EMR job이 읽음)
   --output-s3           : 처리 결과({"row_count": N})를 JSON으로 쓸 S3 경로
 """

@@ -121,9 +121,8 @@ def validate_bucket_time_seconds(bucket_df: DataFrame) -> DataFrame:
 
     Gold1(filter_valid_speed)은 속도 판독값만 보고 걸러서, length_ft<=0인
     세그먼트(LION dim_segment에 그런 행이 섞여 있을 수 있음 - nav_length의
-    Gold1은 is_routable/length_ft>0으로 거르지만 이 도메인은 그 필터를
-    타지 않는다)는 여기까지 그대로 들어와 time_seconds<=0으로 계산될 수
-    있다. 이런 값이 서빙 테이블에 그대로 upsert되면 nav_lookup.py가 잘못된
+    Gold1은 length_ft>0으로 거르지만 이 도메인은 그 필터를 타지 않는다)는
+    여기까지 그대로 들어와 time_seconds<=0으로 계산될 수 있다. 이런 값이 서빙 테이블에 그대로 upsert되면 nav_lookup.py가 잘못된
     통행시간을 응답하게 되므로, 쓰기 직전에 걸러서 즉시 실패시킨다 -
     다음 정상 실행(30분 뒤)까지 기다리는 대신 원인을 바로 알 수 있게
     하기 위함이다."""

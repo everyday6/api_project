@@ -2,11 +2,10 @@
 Silver1 변환: LION bronze -> dim_segment(기본 컬럼)
 
 구조적 정제(컬럼명 통일, 타입 캐스팅, 도로명 정규화, SegmentID dedupe)만
-한다. is_routable 계산은 src/lion/gold2.py가 이 산출물을 읽어서 한다 —
-그 계산에 필요한 원본 코드 컬럼(RW_TYPE, FeatureTyp)은 이름 그대로
-통과시켜 둔다. POSTED_SPEED(제한속도)도 같은 이유로 통과시키되, type1
-SPEC Estimate 폴백(src/nav_time/gold2.py)이 바로 쓸 수 있게 speed_limit_mph로
-이름만 바꾼다.
+한다. 이 산출물이 곧 dim_segment 완성본이다 — 모든 소비자가 이 파일을
+그대로 쓴다. POSTED_SPEED(제한속도)는 type1 SPEC Estimate 폴백
+(src/nav_time/gold2.py)이 바로 쓸 수 있게 speed_limit_mph로 이름만 바꿔서
+통과시킨다.
 
 pandas를 쓰는 이유: LION은 분기 1회 갱신되는 24만 행짜리 참조 테이블이라
 이 컴퓨터 한 대의 메모리로 몇 초면 끝난다. Spark로 짜면 밑줄로 시작하는
