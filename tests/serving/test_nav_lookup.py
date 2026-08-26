@@ -65,7 +65,18 @@ def test_is_fresh_true_only_for_todays_date():
 
 def test_is_fresh_false_for_missing_or_malformed_value():
     assert nav_lookup._is_fresh(None) is False
-    assert nav_lookup._is_fresh("2026-08-21") is False  # 문자열은 datetime 인스턴스가 아님
+    assert nav_lookup._is_fresh("not-a-date") is False  # 파싱 자체가 안 되는 문자열
+
+
+def test_is_fresh_parses_isoformat_string_from_s3_snapshot_round_trip():
+    """gold_snapshot.write_snapshot()이 datetime을 JSON에 실을 때
+    last_sample_at.isoformat()으로 문자열화하고, read_snapshot()은 이를
+    다시 datetime으로 복원하지 않는다 - S3 폴백 경로에서 _is_fresh가 받는
+    값은 실제로는 항상 이 문자열이다. 문자열이어도 날짜가 오늘이면 fresh로
+    판정해야 한다(회귀 테스트: 문자열이라는 이유만으로 무조건 stale
+    처리되던 버그)."""
+    assert nav_lookup._is_fresh(TODAY.isoformat()) is True
+    assert nav_lookup._is_fresh(YESTERDAY.isoformat()) is False
 
 
 def test_resolve_from_row_prefers_fresh_exact():
@@ -130,15 +141,25 @@ def test_resolve_type2_has_no_avg_tier_goes_straight_to_default():
 # ---------------------------------------------------------------------------
 
 def test_resolve_falls_back_to_s3_snapshot_when_rds_unreachable():
+    # 스냅샷의 last_sample_at은 문자열(JSON 왕복)이지만 날짜가 오늘이면
+    # fresh로 채택돼야 한다(회귀 테스트 - 문자열이라는 이유만으로 무조건
+    # avg/코드 상수로 떨어지던 버그).
     snapshot = {"1": {"1200": {"value": 77, "last_sample_at": TODAY.isoformat()}}}
     with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
          patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
-    # 스냅샷의 last_sample_at은 문자열(JSON 왕복)이라 datetime 인스턴스가 아니므로
-    # _is_fresh가 False를 주고, 대신 "value"가 없으면 None -> 코드 상수로
-    # 떨어진다는 점까지 같이 확인한다(스냅샷 값은 신선도 판단 없이 그대로
-    # 못 씀 - 이 케이스는 avg가 없어 코드 상수로 떨어지는 게 맞다).
+    assert result == [77]
+
+
+def test_resolve_falls_back_to_hardcoded_when_s3_snapshot_value_is_stale():
+    # last_sample_at이 어제 날짜인 문자열이면 fresh가 아니므로, avg가
+    # 없는 이 케이스는 코드 상수로 떨어지는 게 맞다.
+    snapshot = {"1": {"1200": {"value": 77, "last_sample_at": YESTERDAY.isoformat()}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
+        result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
+
     assert result == [nav_lookup._HARDCODED_DEFAULTS[1]]
 
 
