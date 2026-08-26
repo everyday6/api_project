@@ -54,11 +54,11 @@
 
 | 제공처 | 수집 대상 | 수집 방식 · 주기 |
 | --- | --- | --- |
-| NYC Open Data | 도로별 속도 데이터 | Socrata API · 5분 |
-| NYC Open Data | 도로망(LION), 세그먼트 약 10만 개 | Socrata API · 분기 1회 |
+| NYC DOT / NYC Open Data | 도로별 속도 데이터 | Socrata API · 5분 |
+| NYC DCP / NYC Open Data | 도로망(LION), 세그먼트 약 10만 개 | Socrata API · 분기 1회 |
 | NYC TLC Data | 택시 운행 기록 | 정적 파일 다운로드 · 월 1회 |
 | NYC TLC Data | 택시존, 263개 zone | 정적 파일 다운로드 · 최초 1회 |
-| MTA Data | 도로·혼잡 통행료 | 크롤러 · 정책 변경 시 |
+| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 크롤러 · 정책 변경 시 |
 
 ### **OUTPUT**
 
