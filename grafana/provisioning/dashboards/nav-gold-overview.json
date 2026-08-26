@@ -1364,8 +1364,8 @@
     {
       "id": 83,
       "type": "timeseries",
-      "title": "Type3 fallback 계층 비율 (rds / cache / snapshot / hardcoded)",
-      "description": "src/serving/api.py의 get_type3_values()가 요청당 한 번 남기는 [type3_fallback_tier_summary] 로그를 집계한다. rds=RDS 직접 조회 성공, cache=최근 RDS 성공값 재사용, snapshot=RDS 실패 시 S3 zone 스냅샷으로 재구성, hardcoded=아무것도 없어 기본값(0) 응답. hardcoded 비율이 올라가면 RDS 장애 + 스냅샷도 못 커버하는 세그먼트가 늘고 있다는 뜻.",
+      "title": "Type3 fallback 계층 비율 (rds / snapshot / hardcoded)",
+      "description": "src/serving/api.py의 get_type3_values()가 요청당 한 번 남기는 [type3_fallback_tier_summary] 로그를 집계한다. rds=RDS 직접 조회 성공, snapshot=RDS 실패 시 S3 zone 스냅샷으로 재구성, hardcoded=아무것도 없어 기본값(0) 응답. hardcoded 비율이 올라가면 RDS 장애 + 스냅샷도 못 커버하는 세그먼트가 늘고 있다는 뜻.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -1391,7 +1391,7 @@
               "name": "/aws/lambda/nav-api"
             }
           ],
-          "expression": "fields @timestamp, @message | filter @message like /type3_fallback_tier_summary/ | parse @message \"rds=* cache=* snapshot=* hardcoded=* total=*\" as rds_n, cache_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(cache_n) as cache_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, cache_sum * 100.0 / total_sum as cache_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+          "expression": "fields @timestamp, @message | filter @message like /type3_fallback_tier_summary/ | parse @message \"rds=* snapshot=* hardcoded=* total=*\" as rds_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
         }
       ],
       "fieldConfig": {

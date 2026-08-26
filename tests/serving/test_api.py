@@ -57,9 +57,7 @@ class FakeConnection:
 
 
 @pytest.fixture(autouse=True)
-def clear_value_cache():
-    with api._cache_lock:
-        api._value_cache.clear()
+def reset_type3_state():
     api._db_connection = None
     api._type3_snapshot_loaded = False
     api._type3_zone_snapshot = {}
@@ -69,11 +67,6 @@ def clear_value_cache():
     api._type3_snapshot_loaded = False
     api._type3_zone_snapshot = {}
     api._type3_mapping_snapshot = {}
-
-
-def test_build_sort_key_floors_to_30_minute_slot():
-    assert api.build_sort_key(3, datetime(2026, 8, 21, 12, 29, 59)) == "3#FRI#1200"
-    assert api.build_sort_key(3, datetime(2026, 8, 24, 12, 30, 0)) == "3#MON#1230"
 
 
 def test_db_connection_uses_short_operational_timeouts(monkeypatch):
@@ -147,15 +140,11 @@ def test_get_type3_values_logs_rds_query_duration(caplog):
     assert "table=navigation-values" in duration_logs[0]
 
 
-def test_get_type3_values_uses_cache_then_zero_on_rds_failure():
+def test_get_type3_values_falls_back_to_hardcoded_when_rds_fails_and_no_snapshot():
+    # RDS 장애 + 스냅샷에도 없는 세그먼트는 기본값(0.0)으로 응답해야 한다.
+    # Type3는 "최근 RDS 성공값" 메모리 캐시를 두지 않으므로, 직전 요청에서
+    # RDS로 조회됐던 세그먼트라도 이 시점엔 그 값을 재사용하지 않는다.
     requested_at = datetime(2026, 8, 21, 12, 0)
-    api.get_type3_values(
-        ["0077356"],
-        requested_at,
-        conn=FakeConnection({"0077356": 18.5}),
-        table_name="navigation-values",
-    )
-
     with patch("src.common.gold_snapshot.read_snapshot", return_value={}):
         result = api.get_type3_values(
             ["0077356", "0088421"],
@@ -164,11 +153,11 @@ def test_get_type3_values_uses_cache_then_zero_on_rds_failure():
             table_name="navigation-values",
         )
 
-    assert result == [18.5, 0.0]
+    assert result == [0.0, 0.0]
 
 
 def test_get_type3_values_falls_back_to_zone_snapshot_when_rds_unreachable():
-    # 캐시에 없는 segment는 zone 스냅샷 + segment→zone 매핑으로 재구성한다.
+    # RDS로 조회 못 한 segment는 zone 스냅샷 + segment→zone 매핑으로 재구성한다.
     requested_at = datetime(2026, 8, 21, 12, 0)  # FRI, 1200
     zone_snapshot = {"42#FRI#1200": 33.0}
     mapping_snapshot = {"0088421": 42}
@@ -188,7 +177,7 @@ def test_get_type3_values_falls_back_to_zone_snapshot_when_rds_unreachable():
 
 
 def test_get_type3_values_logs_fallback_tier_summary(caplog):
-    # rds/cache/snapshot/hardcoded 네 계층을 한 요청 안에서 다 겪게 만들어서
+    # rds/snapshot/hardcoded 세 계층을 한 요청 안에서 다 겪게 만들어서
     # 요청당 한 번 남는 요약 로그의 계층별 개수가 맞는지 확인한다 - Grafana의
     # "Type3 fallback 계층 비율" 패널이 이 로그를 집계한다.
     requested_at = datetime(2026, 8, 21, 12, 0)  # FRI, 1200
@@ -200,15 +189,8 @@ def test_get_type3_values_logs_fallback_tier_summary(caplog):
 
     with patch("src.common.gold_snapshot.read_snapshot", side_effect=fake_read_snapshot), \
          caplog.at_level("INFO", logger="src.serving.api"):
-        # cached-seg를 먼저 RDS로 성공 조회해서 메모리 캐시에 데워둔다.
         api.get_type3_values(
-            ["cached-seg"],
-            requested_at,
-            conn=FakeConnection({"cached-seg": 10.0}),
-            table_name="navigation-values",
-        )
-        api.get_type3_values(
-            ["rds-seg", "cached-seg", "snapshot-seg", "hardcoded-seg"],
+            ["rds-seg", "snapshot-seg", "hardcoded-seg"],
             requested_at,
             conn=FakeConnection({"rds-seg": 20.0}),
             table_name="navigation-values",
@@ -216,11 +198,11 @@ def test_get_type3_values_logs_fallback_tier_summary(caplog):
 
     summary_logs = [
         r.message for r in caplog.records
-        if "[type3_fallback_tier_summary]" in r.message and "total=4" in r.message
+        if "[type3_fallback_tier_summary]" in r.message and "total=3" in r.message
     ]
     assert len(summary_logs) == 1
     assert "rds=1" in summary_logs[0]
-    assert "cache=1" in summary_logs[0]
+    assert "cache=" not in summary_logs[0]
     assert "snapshot=1" in summary_logs[0]
     assert "hardcoded=1" in summary_logs[0]
 
