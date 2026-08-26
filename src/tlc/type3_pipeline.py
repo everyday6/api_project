@@ -72,7 +72,12 @@ def _months_from_silver_results(silver_results: list[dict]) -> list[str]:
     달까지 자동으로 다시 찾아 재시도했지만, 그 복구는 사람이 Slack 실패
     알림을 보고 수동으로 재실행하는 쪽으로 단순화했다 - 이 함수는 오직
     "오늘 새로 받은 파일이 속한 달"만 후보로 낸다. 실제로 그 달의 4개
-    taxi_type이 다 갖춰졌는지는 build_type3_staged_records가 다시 확인한다."""
+    taxi_type이 다 갖춰졌는지는 build_type3_staged_records가 다시 확인한다.
+
+    silver_results는 flat list[dict]여야 한다 - build_silver.expand()로
+    taxi_type 청크별 매핑 실행된 결과를 모으면 청크 하나당 리스트 하나,
+    즉 list[list[dict]]가 되므로 호출하는 쪽(build_type3_staged_records)에서
+    먼저 한 겹 풀어서(flatten) 넘겨야 한다."""
 
     months = set()
     for item in silver_results:
@@ -134,16 +139,24 @@ def _type3_reference_exists(map_zone_segment_path=MAP_ZONE_SEGMENT_PATH) -> bool
 
 
 @task(pool="silver_pool")
-def build_type3_staged_records(silver_results: list[dict]) -> dict:
+def build_type3_staged_records(silver_results: list[list[dict]]) -> dict:
     """오늘 새로 Silver1까지 끝난 파일들의 서비스 월에 대해서만, EMR에서
     Zone Gold2 결과를 임시 경로에 저장한다.
 
     신규 파일만 처리한다 - 이전 실행에서 실패해 밀린 달이 있어도 여기서
     자동으로 다시 찾아 재시도하지 않는다. 그 경우엔 실패한 태스크의
     retries가 소진되며 Slack 알림이 오고, 사람이 원인을 고친 뒤 그
-    실행을 수동으로 재시도한다."""
+    실행을 수동으로 재시도한다.
 
-    months = _months_from_silver_results(silver_results)
+    silver_results는 build_silver.expand()가 taxi_type 청크별로 매핑
+    실행된 결과라서 청크 하나당 리스트 하나, 즉 list[list[dict]]로 들어온다
+    - _months_from_silver_results에 넘기기 전에 한 겹 풀어(flatten) 평평한
+    파일 dict 목록으로 만든다."""
+
+    flat_silver_results = [
+        item for chunk in silver_results for item in chunk
+    ]
+    months = _months_from_silver_results(flat_silver_results)
     if not months:
         raise AirflowSkipException("처리할 Type 3 월이 없어 갱신을 건너뜁니다")
 
