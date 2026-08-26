@@ -11,6 +11,7 @@ from uuid import uuid4
 
 from airflow.decorators import task
 from airflow.exceptions import AirflowSkipException
+from airflow.sdk import Asset
 
 from src.common.config import (
     GOLD2_DIR,
@@ -35,6 +36,7 @@ MAP_ZONE_SEGMENT_PATH = SILVER2_DIR / "map_zone_segment.parquet"
 TYPE3_STAGING_ROOT = TYPE3_DAILY_ROOT / "_staging"
 TYPE3_MONTH_MARKER_ROOT = TYPE3_DAILY_ROOT / "_month_success"
 TYPE3_PUBLISH_STATE_PATH = TYPE3_DAILY_ROOT / "_rds_publish_state.json"
+TLC_TYPE3_GOLD2_READY = Asset("tlc_type3_gold2_ready")
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
 
@@ -200,9 +202,10 @@ def validate_type3_staged_records(stage_result: dict) -> dict:
     )
 
 
-@task(pool="silver_pool")
+@task(pool="silver_pool", outlets=[TLC_TYPE3_GOLD2_READY])
 def publish_type3_daily_records(validated_stage: dict) -> dict:
-    """EMR에서 검증된 날짜 파티션을 운영 경로에 반영한다."""
+    """EMR에서 검증된 날짜 파티션을 운영 경로에 반영하고, 성공한 경우에만
+    serving DAG가 구독하는 tlc_type3_gold2_ready Asset을 발행한다."""
 
     _staging_run_path(validated_stage["run_id"])
     return run_tlc_emr_operation(
@@ -279,10 +282,8 @@ def check_type3_reference_ready(_publish_plan=None) -> bool:
     실측). 기본값(True)이면 이 태스크가 short-circuit될 때 도달 가능한
     모든 하위 태스크를 trigger_rule과 무관하게 강제로 skip시켜서,
     check_type3_rds_freshness에 일부러 걸어둔 trigger_rule="none_failed"
-    (발행이 skip되어도 매일 반드시 실행되어야 한다는 의도)까지 무시하고
-    같이 skip시켜 버린다 - 정작 이 short-circuit이 며칠째 조용히 skip
-    중인 상황이야말로 check_type3_rds_freshness가 잡아내야 하는 케이스인데,
-    기본값이면 그 알람 자체가 절대 울리지 않는다(2026-08-26 발견). False로
+    (발행이 skip되어도 이번 Asset 이벤트의 최신성 검사는 실행한다는 의도)까지
+    무시하고 같이 skip시켜 버린다. False로
     두면 직접 하위인 publish_type3_rolling_values만 skip되고,
     check_type3_rds_freshness는 자기 trigger_rule을 그대로 따른다."""
 
@@ -331,9 +332,10 @@ def check_type3_rds_freshness(_published_values=None) -> None:
     항상 0이다 - "아직 새 데이터가 없음"과 "파이프라인이 멈췄음"을 이 gap이
     자동으로 구분해준다.
 
-    하루 한 번 도는 배치 태스크라 실패 시 알림이 스팸으로 쌓일 걱정이
-    없다(API 요청마다 도는 서빙 경로 함수와 다름) - 실패하면 기존
-    on_failure_callback(Slack)이 그대로 재사용된다."""
+    Asset 발행 때만 도는 배치 태스크라 API 요청마다 도는 서빙 경로와 달리
+    실패 알림이 폭주하지 않는다. 실패하면 기존 on_failure_callback(Slack)이
+    그대로 재사용된다. 이벤트 자체가 장기간 발생하지 않는 정체는 이 태스크가
+    실행되지 않으므로 별도 외부 모니터링으로 감시해야 한다."""
 
     _, _, gold_window_end = select_latest_date_partitions(
         TYPE3_DAILY_ROOT.glob("date=*"),
