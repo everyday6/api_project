@@ -38,7 +38,6 @@
 
 - **해결책**: 택시 내비게이션 경로 탐색에 필요한 도로 세그먼트(10-20m 수준의 도로 조각)별 정보를 데이터 파이프라인으로 구축해 API로 제공합니다.
 
----
 ### **주요 기능**
 
 | type | 지표 | 용도 |
@@ -52,48 +51,42 @@
 
 ## 2. 최종 데이터 스키마
 
-4개 지표는 `(segment_id, sk) → value` 형태를 공유하지만 grain이 달라 테이블을 4개로 분리했습니다.
+4개 지표는 갱신 주기와 grain이 달라 테이블을 4개로 분리했습니다. 조회 시 추가 쿼리 없이 한 번에 필요한 값을 다 가져올 수 있도록, 관련된 값은 같은 행의 컬럼으로 둡니다(PK: **segment_id, time**).
 
-**segment_metrics_type1** — 버킷(실측)/AVG(과거평균)/SPEC(추정) 3종 행 공존
+**segment_metrics_type1**
 
-| 컬럼 | 타입 | 설명 |
+| 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
-| segment_id | TEXT | PK |
-| sk | TEXT | PK — `"0830"`(버킷) \| `"AVG"` \| `"SPEC"` |
-| value | NUMERIC | 통과시간(초) |
-| collected_date | DATE | 버킷 항목만 |
-| observed_at | TIMESTAMPTZ | 버킷 항목만 — freshness 판정용 |
-| count | INTEGER | AVG 항목만 — 증분 평균 갱신용 |
+| segment_id | 세그먼트 식별자 | "0151677" |
+| time | 30분 단위 시간 버킷 | "0830" |
+| value | 이 시간대 최신 실측 통과시간(초) | 38 |
+| observed_at | value가 관측된 시각 — 신선도 판정용 | 2026-08-27T08:31:02Z |
+| avg | 이 세그먼트·시간대의 과거 평균 통과시간(초) | 44 |
+| count | avg 증분(EMA) 갱신 계산용 누적 횟수 | 312 |
+| spec | 도로 스펙(길이÷제한속도) 기반 추정 통과시간(초) | 36 |
 
-**segment_metrics_type2** — 세그먼트당 1행
+**segment_metrics_type2**
 
-| 컬럼 | 타입 | 설명 |
+| 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
-| segment_id | TEXT | PK |
-| sk | TEXT | PK, 기본값 `'LENGTH'` |
-| value | NUMERIC | 길이(m) |
+| segment_id | 세그먼트 식별자 | "0151677" |
+| value | 길이(m) | 255 |
 
-**segment_metrics_type3** — 값 행 + 재계산 판단용 메타 행 1개 공존
+**segment_metrics_type3**
 
-| 컬럼 | 타입 | 설명 |
+| 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
-| segment_id | TEXT | PK — 값 행은 실제 segment_id |
-| sk | TEXT | PK — `"3#MON#0900"`(값) \| `"TYPE#3"`(메타) |
-| value | NUMERIC | 값 행만 — 요일×시간대별 평균 승차 수 |
-| status | TEXT | 메타 행만 — 재계산 완료 여부 |
-| window_start | DATE | 메타 행만 |
-| window_end | DATE | 메타 행만 |
-| rolling_weeks | INTEGER | 메타 행만 |
-| mapping_version | TEXT | 메타 행만 — zone-segment 매핑 버전 |
-| updated_at | TIMESTAMPTZ | 메타 행만 |
+| segment_id | 세그먼트 식별자 | "0151677" |
+| dow | 요일 | "MON" |
+| time | 30분 단위 시간 버킷 | "0900" |
+| value | 해당 요일·시간대의 N주 롤링 평균 승차 수 | 12 |
 
-**segment_metrics_type4** — 세그먼트당 1행, 통행료 합산값
+**segment_metrics_type4**
 
-| 컬럼 | 타입 | 설명 |
+| 컬럼 | 설명 | 예시 |
 | --- | --- | --- |
-| segment_id | TEXT | PK |
-| sk | TEXT | PK, 기본값 `'TYPE#4'` |
-| value | NUMERIC | 혼잡통행료 + 도로통행료 합산값 |
+| segment_id | 세그먼트 식별자 | "0247694" |
+| value | 혼잡통행료 + 도로통행료 합산 금액(달러) | 0.75 |
 
 ### **API 요청-응답 예시**
 
