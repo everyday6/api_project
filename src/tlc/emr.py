@@ -9,7 +9,9 @@ from src.common.config import EMR_JOBS_DIR, PROJECT_ROOT
 from src.common.emr_serverless import read_json_result, run_spark_job
 
 
-def run_tlc_emr_operation(operation: str, payload: dict) -> dict:
+def run_tlc_emr_operation(
+    operation: str, payload: dict, max_executors: int | None = None
+) -> dict:
     """하나의 TLC 연산을 EMR Serverless에서 실행하고 JSON 결과를 반환한다."""
 
     run_id = uuid4().hex
@@ -27,5 +29,6 @@ def run_tlc_emr_operation(operation: str, payload: dict) -> dict:
             "--output-s3",
             str(output_s3),
         ],
+        max_executors=max_executors,
     )
     return read_json_result(str(output_s3))

@@ -14,6 +14,8 @@ from airflow.exceptions import AirflowSkipException
 from airflow.sdk import Asset
 
 from src.common.config import (
+    EMR_MAX_EXECUTORS_TLC_INGEST,
+    EMR_MAX_EXECUTORS_TLC_TYPE3_SERVING,
     GOLD2_DIR,
     SERVING_TABLE_TYPE3,
     SILVER1_DIR,
@@ -140,8 +142,8 @@ def _type3_reference_exists(map_zone_segment_path=MAP_ZONE_SEGMENT_PATH) -> bool
     return map_zone_segment_path.exists()
 
 
-@task(pool="silver_pool")
-def build_type3_staged_records(silver_results: list[list[dict]]) -> dict:
+@task(pool="tlc_ingest_pool", pool_slots=17)
+def build_type3_staged_records(silver_results: list[dict]) -> dict:
     """오늘 새로 Silver1까지 끝난 파일들의 서비스 월에 대해서만, EMR에서
     Zone Gold2 결과를 임시 경로에 저장한다.
 
@@ -188,10 +190,11 @@ def build_type3_staged_records(silver_results: list[list[dict]]) -> dict:
             "run_path": str(run_path),
             "months": ready_months,
         },
+        max_executors=EMR_MAX_EXECUTORS_TLC_INGEST,
     )
 
 
-@task(pool="silver_pool")
+@task(pool="tlc_ingest_pool", pool_slots=17)
 def validate_type3_staged_records(stage_result: dict) -> dict:
     """EMR에서 월별 임시 결과를 검증하고 승격 계획을 반환한다."""
 
@@ -199,10 +202,11 @@ def validate_type3_staged_records(stage_result: dict) -> dict:
     return run_tlc_emr_operation(
         "validate_type3_stage",
         {"stage_result": stage_result},
+        max_executors=EMR_MAX_EXECUTORS_TLC_INGEST,
     )
 
 
-@task(pool="silver_pool", outlets=[TLC_TYPE3_GOLD2_READY])
+@task(pool="tlc_ingest_pool", pool_slots=17)
 def publish_type3_daily_records(validated_stage: dict) -> dict:
     """EMR에서 검증된 날짜 파티션을 운영 경로에 반영하고, 성공한 경우에만
     serving DAG가 구독하는 tlc_type3_gold2_ready Asset을 발행한다."""
@@ -215,6 +219,7 @@ def publish_type3_daily_records(validated_stage: dict) -> dict:
             "daily_root": str(TYPE3_DAILY_ROOT),
             "marker_root": str(TYPE3_MONTH_MARKER_ROOT),
         },
+        max_executors=EMR_MAX_EXECUTORS_TLC_INGEST,
     )
 
 
@@ -357,7 +362,7 @@ def check_type3_rds_freshness(_published_values=None) -> None:
     )
 
 
-@task(pool="silver_pool")
+@task(pool="tlc_type3_serving_pool", pool_slots=30)
 def publish_type3_rolling_values(publish_plan: dict) -> dict:
     """EMR에서 최근 N주 평균을 계산하고 RDS에 적재한다."""
 
@@ -384,6 +389,7 @@ def publish_type3_rolling_values(publish_plan: dict) -> dict:
             "rolling_weeks": TLC_TYPE3_ROLLING_WEEKS,
             "mapping_version": publish_plan.get("mapping_version"),
         },
+        max_executors=EMR_MAX_EXECUTORS_TLC_TYPE3_SERVING,
     )
     _write_type3_publish_state(
         {

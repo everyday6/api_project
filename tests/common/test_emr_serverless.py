@@ -130,6 +130,45 @@ def test_run_spark_job_raises_on_failure(tmp_script):
             emr_serverless.run_spark_job("test-job", tmp_script, [])
 
 
+def test_run_spark_job_omits_max_executors_conf_by_default(tmp_script):
+    mock_client = MagicMock()
+    mock_client.start_job_run.return_value = {"jobRunId": "run-1"}
+    mock_client.get_job_run.return_value = {"jobRun": {"state": "SUCCESS"}}
+
+    with patch.object(emr_serverless, "_upload_src_bundle", return_value="s3://bucket/src.zip"), \
+         patch.object(emr_serverless, "_upload_script", return_value="s3://bucket/job.py"), \
+         patch.object(emr_serverless.boto3, "client", return_value=mock_client), \
+         patch.object(emr_serverless.time, "sleep"):
+
+        emr_serverless.run_spark_job("test-job", tmp_script, [])
+
+    spark_submit_parameters = mock_client.start_job_run.call_args.kwargs[
+        "jobDriver"
+    ]["sparkSubmit"]["sparkSubmitParameters"]
+    assert "spark.dynamicAllocation.maxExecutors" not in spark_submit_parameters
+
+
+def test_run_spark_job_caps_executors_when_max_executors_given(tmp_script):
+    """2026-08 EMR 동시성 사고 이후, DAG별 vCPU 예산 안에 들어오게 executor
+    개수를 고정할 수 있어야 한다(src/common/config.py의
+    EMR_MAX_EXECUTORS_* 참고)."""
+    mock_client = MagicMock()
+    mock_client.start_job_run.return_value = {"jobRunId": "run-1"}
+    mock_client.get_job_run.return_value = {"jobRun": {"state": "SUCCESS"}}
+
+    with patch.object(emr_serverless, "_upload_src_bundle", return_value="s3://bucket/src.zip"), \
+         patch.object(emr_serverless, "_upload_script", return_value="s3://bucket/job.py"), \
+         patch.object(emr_serverless.boto3, "client", return_value=mock_client), \
+         patch.object(emr_serverless.time, "sleep"):
+
+        emr_serverless.run_spark_job("test-job", tmp_script, [], max_executors=3)
+
+    spark_submit_parameters = mock_client.start_job_run.call_args.kwargs[
+        "jobDriver"
+    ]["sparkSubmit"]["sparkSubmitParameters"]
+    assert "--conf spark.dynamicAllocation.maxExecutors=3" in spark_submit_parameters
+
+
 def test_run_spark_job_configures_s3_log_destination(tmp_script):
     """EMR Studio 콘솔 접근 권한이 없어도 실패 시 드라이버 로그를 직접
     읽어올 수 있도록, 잡 제출 시 s3MonitoringConfiguration을 지정해야 한다."""

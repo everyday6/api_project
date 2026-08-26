@@ -175,11 +175,17 @@ def run_spark_job(
     job_name: str,
     entry_point_script: Path,
     entry_point_args: list[str],
+    max_executors: int | None = None,
 ) -> None:
     """EMR Serverless에 Spark 잡을 제출하고 끝날 때까지 기다린다.
 
     실패(FAILED/CANCELLED)면 예외를 던져 Airflow가 기존 재시도/Slack
     실패 알림 경로를 그대로 타게 한다.
+
+    max_executors: 계정 전체 vCPU 쿼터(64)를 여러 DAG가 나눠 쓰다가 서로
+    충돌하는 사고(2026-08 EMR 동시성 인시던트)가 있어서, DAG별로 정해둔
+    vCPU 예산 안에 들어오게 executor 개수를 여기서 고정한다. None이면
+    EMR 기본 동적 할당 그대로 둔다(제한 없음).
     """
     _validate_rds_env()
 
@@ -189,6 +195,12 @@ def run_spark_job(
     entry_point_s3 = _upload_script(entry_point_script, job_name)
 
     logger.info(f"EMR Serverless 잡 제출: {job_name}")
+
+    max_executors_conf = (
+        f"--conf spark.dynamicAllocation.maxExecutors={max_executors} "
+        if max_executors is not None
+        else ""
+    )
 
     response = client.start_job_run(
         applicationId=EMR_APPLICATION_ID,
@@ -209,6 +221,7 @@ def run_spark_job(
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_DRIVER_PYTHON=./environment/bin/python "
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python "
                     f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python "
+                    f"{max_executors_conf}"
                     f"{_rds_env_conf()}"
                 ),
             }

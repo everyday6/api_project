@@ -61,7 +61,10 @@ def test_validate_bronze_quality_delegates_to_emr_and_returns_passed():
     ) as mock_run, patch.object(bronze_validation, "notify_slack_message") as mock_notify:
         result = bronze_validation.validate_bronze_quality.function(chunk)
 
-    mock_run.assert_called_once_with("validate_bronze", {"bronze_chunk": chunk})
+    mock_run.assert_called_once_with(
+        "validate_bronze", {"bronze_chunk": chunk},
+        max_executors=bronze_validation.EMR_MAX_EXECUTORS_TLC_INGEST,
+    )
     mock_notify.assert_not_called()
     assert result == chunk
 
