@@ -200,12 +200,12 @@ graph TD
 
 **Asset 트리거 (4개)** — `|`는 OR 조건, 연결된 Asset 중 하나만 갱신돼도 실행됩니다.
 
-| DAG | 의존 Asset | 발행 DAG |
-| --- | --- | --- |
-| segment_length_pipeline | `lion_dim_segment_ready` | lion_pipeline |
-| zone_segment_pipeline | `lion_dim_segment_ready` \| `taxi_zone_silver1_updated` | lion_pipeline, taxi_zone_pipeline |
-| toll_silver_gold_pipeline | `toll_bronze_updated` \| `lion_bronze_updated` | toll_bronze_pipeline, lion_pipeline |
-| tlc_type3_serving_pipeline | `tlc_type3_gold2_ready` \| `map_zone_segment_ready` | tlc_ingest_pipeline, zone_segment_pipeline |
+| DAG | 의존 Asset | 발행 DAG | 설명 |
+| --- | --- | --- | --- |
+| segment_length_pipeline | `lion_dim_segment_ready` | lion_pipeline | LION 도로망이 갱신되면 Type2(길이)를 다시 계산한다 |
+| zone_segment_pipeline | `lion_dim_segment_ready` \| `taxi_zone_silver1_updated` | lion_pipeline, taxi_zone_pipeline | LION 도로망 또는 택시존 정보가 바뀌면 Zone-Segment 매핑을 다시 만든다 |
+| toll_silver_gold_pipeline | `toll_bronze_updated` \| `lion_bronze_updated` | toll_bronze_pipeline, lion_pipeline | 통행료 원본 또는 LION 도로망이 바뀌면 Type4(통행료)를 다시 계산한다 |
+| tlc_type3_serving_pipeline | `tlc_type3_gold2_ready` \| `map_zone_segment_ready` | tlc_ingest_pipeline, zone_segment_pipeline | TLC 집계 결과 또는 Zone-Segment 매핑이 바뀌면 Type3(수요)를 다시 서빙한다 |
 
 **수동 트리거 (1개)**
 
