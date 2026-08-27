@@ -1,8 +1,14 @@
 # 03. EMR 자원 경합
 
 ## 문제
-- DAG 3개가 EMR 자원(계정 전체 vCPU)을 공유
+- DAG 3개가 EMR 자원(계정 전체 vCPU 64개)을 공유
 - 조율 없이 사용 → 하나가 독점, 나머지 굶음
+
+| DAG | 제한 없을 때 사용량 |
+| --- | --- |
+| tlc_ingest | 최대 32개 |
+| tlc_type3_serving | 최대 60개 |
+| segment_time | 자원 없어서 실험 자체 불가 |
 
 ## 원인
 - Airflow "동시 실행 수 제한" ≠ 실제 EMR 자원 제한
@@ -18,3 +24,11 @@
 
 ## 결정
 - DAG별로 쓸 수 있는 자원 몫을 고정 배분
+
+| DAG | 고정 배분 |
+| --- | --- |
+| tlc_ingest | 최대 17개 |
+| tlc_type3_serving | 최대 30개 |
+| segment_time | 최대 17개 |
+
+- 결과: EMR이 터지는 일이 없어짐
