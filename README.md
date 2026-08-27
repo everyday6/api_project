@@ -188,7 +188,8 @@ graph LR
 
 ### DAG별 태스크 목록
 
-**lion_pipeline**
+<details>
+<summary>lion_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -198,14 +199,20 @@ graph LR
 | publish_dim_segment | 검증 통과한 dim_segment 게시(운영 반영) |
 | cleanup_dim_segment_staging | 스테이징 임시 데이터 정리 |
 
-**taxi_zone_pipeline**
+</details>
+
+<details>
+<summary>taxi_zone_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
 | ingest_taxi_zone_shapefile | 택시존 shapefile 원본 수집 |
 | build_taxi_zone_silver1 | 택시존 Silver1 정제(변경 없으면 게시 스킵) |
 
-**toll_bronze_pipeline**
+</details>
+
+<details>
+<summary>toll_bronze_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -214,13 +221,19 @@ graph LR
 | upload_cbd_geofence_task | 혼잡통행료 구역(CBD) geofence 업로드 |
 | publish_toll_bronze | 통행료 Bronze 게시 |
 
-**toll_rate_monitor**
+</details>
+
+<details>
+<summary>toll_rate_monitor</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
 | send_reminder | 매달 요금표 변경 여부 확인 Slack 알림 |
 
-**segment_time_pipeline**
+</details>
+
+<details>
+<summary>segment_time_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -229,7 +242,10 @@ graph LR
 | check_dim_segment_exists | dim_segment 존재 여부 확인(short-circuit) |
 | submit_nav_time_job | Type1 Silver/Gold 계산 작업 제출(EMR) |
 
-**tlc_daily**
+</details>
+
+<details>
+<summary>tlc_daily</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -250,7 +266,10 @@ graph LR
 | check_type3_reference_ready | zone-segment 매핑 준비 여부 확인 |
 | publish_type3_rolling_values | Type3 롤링 평균 RDS 게시 |
 
-**segment_length_pipeline**
+</details>
+
+<details>
+<summary>segment_length_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -258,7 +277,10 @@ graph LR
 | submit_nav_length_job | Type2 계산 작업 제출(EMR) |
 | build_and_write_spec_estimates | 스펙 기반 추정치 계산·기록 |
 
-**zone_segment_pipeline**
+</details>
+
+<details>
+<summary>zone_segment_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -267,7 +289,10 @@ graph LR
 | validate_staged_map_zone_segment | 매핑 스테이징 검증 |
 | publish_map_zone_segment | 검증 통과한 매핑 게시 |
 
-**toll_silver_gold_pipeline**
+</details>
+
+<details>
+<summary>toll_silver_gold_pipeline</summary>
 
 | 태스크 | 역할 |
 | --- | --- |
@@ -275,6 +300,8 @@ graph LR
 | build_lion_facility_mapping_task | 시설-세그먼트 매핑 빌드 |
 | build_lion_cbd_mapping_task | CBD(혼잡구역)-세그먼트 매핑 빌드 |
 | build_and_write_gold | Type4 Gold 계산·RDS 기록 |
+
+</details>
 
 ### DAG 설계 시 중요하게 생각한 포인트
 
