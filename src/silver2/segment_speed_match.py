@@ -58,7 +58,7 @@ def _build_link_gdf(links_df: pd.DataFrame) -> gpd.GeoDataFrame:
 
 
 def _build_lion_gdf(dim_segment_df: pd.DataFrame) -> gpd.GeoDataFrame:
-    work = dim_segment_df[dim_segment_df["is_routable"] & dim_segment_df["geometry"].notna()].copy()
+    work = dim_segment_df[dim_segment_df["geometry"].notna()].copy()
     work["geometry"] = work["geometry"].apply(wkt.loads)
     return gpd.GeoDataFrame(work, geometry="geometry", crs=LION_CRS)
 

@@ -1,6 +1,6 @@
 """합성 속도 데이터 생성 — 실시간 속도 피드가 커버 안 하는 LION 세그먼트용.
 
-실제 속도 피드는 고정된 125개 link뿐이라 LION routable 세그먼트의 약
+실제 속도 피드는 고정된 125개 link뿐이라 LION 세그먼트의 약
 7.6%만 커버한다(나머지 92%는 매칭되는 link 자체가 근처에 없음). 나머지
 세그먼트도 speed 값을 갖게 하기 위해, 그 세그먼트 자신의 geometry를
 link_points로, LION의 POSTED_SPEED(제한속도, 없으면 뉴욕시 기본값
@@ -19,6 +19,7 @@ from shapely import wkt as shapely_wkt
 
 from src.common.config import GOLD2_DIR, LION_CRS
 from src.common.logger import get_logger
+from src.common.utils import save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_synthetic")
 
@@ -40,7 +41,7 @@ SPEED_COLUMNS = [
     "transcom_id", "borough", "link_name",
 ]
 
-# 참고표(reference table) 스키마 - routable 세그먼트마다 무거운 계산
+# 참고표(reference table) 스키마 - 세그먼트마다 무거운 계산
 # (geometry->link_points 변환, POSTED_SPEED 조회)을 미리 끝내둔 결과.
 REFERENCE_TABLE_COLUMNS = [
     "segment_id", "link_points", "base_speed", "street_name", "borough", "length_ft",
@@ -56,7 +57,7 @@ REFERENCE_TABLE_PATH = GOLD2_DIR / "speed_synthetic_reference.parquet"
 def _clean_posted_speed(raw_df: pd.DataFrame) -> pd.Series:
     """LION 원본의 SegmentID/POSTED_SPEED 컬럼을 segment_id -> mph 시리즈로
     정리한다. POSTED_SPEED 결측은 NaN이 아니라 공백 문자열("  ")로 들어있어서
-    (routable 세그먼트의 18.8%가 이 상태) 여기서 명시적으로 NaN 처리한다."""
+    (세그먼트의 18.8%가 이 상태) 여기서 명시적으로 NaN 처리한다."""
 
     speed = pd.to_numeric(raw_df["POSTED_SPEED"].str.strip(), errors="coerce")
     return pd.Series(speed.values, index=raw_df["SegmentID"].values)
@@ -93,7 +94,7 @@ def _random_speed(base_speed: float, rng: random.Random) -> float:
 
 
 def build_reference_table(dim_segment_df: pd.DataFrame, posted_speed: pd.Series) -> pd.DataFrame:
-    """routable 세그먼트 전체에 대해 geometry->link_points 변환과
+    """세그먼트 전체에 대해 geometry->link_points 변환과
     POSTED_SPEED(없으면 기본값) 조회를 미리 끝내둔 참고표를 만든다.
 
     이게 이 모듈에서 제일 무거운 계산이라(세그먼트당 shapely/geopandas
@@ -134,13 +135,11 @@ def load_or_build_reference_table(
         return pd.read_parquet(str(reference_path))
 
     dim_segment = dim_segment_loader()
-    routable = dim_segment[dim_segment["is_routable"]] if "is_routable" in dim_segment else dim_segment
     posted_speed = posted_speed_loader()
 
-    table = build_reference_table(routable, posted_speed)
+    table = build_reference_table(dim_segment, posted_speed)
 
-    reference_path.parent.mkdir(parents=True, exist_ok=True)
-    table.to_parquet(str(reference_path), index=False)
+    save_parquet(table, reference_path.parent, reference_path.name)
     logger.info(f"[speed_synthetic] 참고표 캐시 저장 -> {reference_path}")
 
     return table

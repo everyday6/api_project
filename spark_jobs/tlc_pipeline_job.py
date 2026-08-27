@@ -16,6 +16,7 @@ from pyspark import StorageLevel
 from pyspark.sql import SparkSession
 from pyspark.sql.functions import col, max as spark_max, min as spark_min, to_date
 
+from src.common import gold_snapshot
 from src.common.config import TLC_TYPE3_ROLLING_WEEKS
 from src.common.gx import validate_spark_dataframe
 from src.common.logger import get_logger
@@ -30,7 +31,7 @@ from src.tlc.gold2 import (
     select_latest_date_partitions,
     validate_daily_zone_month,
     validate_segment_values,
-    write_type3_rolling_to_dynamodb,
+    write_type3_rolling_to_rds,
 )
 from src.tlc.silver1_transform import transform
 
@@ -171,6 +172,40 @@ def _publish_type3_daily(spark: SparkSession, payload: dict) -> dict:
     }
 
 
+def _export_type3_snapshot(zone_rolling, mapping) -> None:
+    """RDS가 죽었을 때 서빙 쪽(src/serving/api.py)이 대신 쓸 스냅샷 2개를
+    S3에 내보낸다.
+
+    zone→segment로 확장된 결과(세그먼트 21만 개 기준 7,300만 건)를 그대로
+    스냅샷으로 남기면 너무 크다 - 대신 확장 *전* 재료 두 개(zone 단위
+    rolling 평균 8.8만 행, segment→zone 매핑 21.8만 행)만 남긴다. 이
+    확장은 zone_id로 조인해서 값을 그대로 복사하는 것뿐이라(가중치 계산
+    없음 - expand_zone_values_to_segments 참고) 서빙 쪽이 이 두 스냅샷만
+    있으면 join 없이 딕셔너리 조회 두 번으로 원본과 동일한 값을 재구성할
+    수 있다(무손실).
+
+    RDS 쓰기가 이미 성공한 뒤에만 호출되므로, 매번 최신 RDS 상태와 같은
+    시점의 zone/매핑을 같이 내보내게 된다 - 이 둘을 따로따로 갱신하면
+    "zone 값은 새 매핑 버전 기준인데 스냅샷 매핑은 옛 버전" 같은 정합성
+    문제가 생길 수 있어서, 항상 세트로 같이 갱신하는 것으로 그 문제 자체를
+    피한다. 스냅샷 갱신 자체가 실패해도 RDS 쓰기는 이미 끝난 뒤라
+    파이프라인을 실패시키지 않는다."""
+
+    try:
+        zone_snapshot = {
+            f"{row['zone_id']}#{row['dow']}#{row['time']}": row["value"]
+            for row in zone_rolling.select("zone_id", "dow", "time", "value").collect()
+        }
+        mapping_snapshot = {
+            row["segment_id"]: row["zone_id"]
+            for row in mapping.select("segment_id", "zone_id").collect()
+        }
+        gold_snapshot.write_snapshot("type3_zone", zone_snapshot)
+        gold_snapshot.write_snapshot("type3_mapping", mapping_snapshot)
+    except Exception:
+        logger.exception("[tlc_pipeline_job] Type3 S3 스냅샷 갱신 실패(RDS 쓰기 자체는 성공)")
+
+
 def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
     plan = payload["publish_plan"]
     daily_root = S3Path(payload["daily_root"])
@@ -195,7 +230,7 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
         plan["window_start"] != window_start.isoformat()
         or plan["window_end"] != window_end.isoformat()
     ):
-        raise ValueError("DynamoDB 적재 계획 이후 Type 3 날짜 범위가 변경됐습니다")
+        raise ValueError("RDS 적재 계획 이후 Type 3 날짜 범위가 변경됐습니다")
 
     # Airflow 쪽에서 이미 올바르게 계산된 경로를 그대로 쓴다 - EMR 컨테이너
     # 안에서 current_mapping_version()을 인자 없이 부르면 SILVER2_DIR가
@@ -203,7 +238,7 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
     mapping_version = current_mapping_version(S3Path(payload["mapping_version_path"]))
     if plan.get("mapping_version") != mapping_version:
         raise ValueError(
-            "DynamoDB 적재 계획 이후 zone-segment 매핑 버전이 변경됐습니다: "
+            "RDS 적재 계획 이후 zone-segment 매핑 버전이 변경됐습니다: "
             f"plan={plan.get('mapping_version')} current={mapping_version}"
         )
 
@@ -237,14 +272,12 @@ def _publish_type3_rolling(spark: SparkSession, payload: dict) -> dict:
         )
         try:
             final_stats = validate_segment_values(segment_values, mapping)
-            written = write_type3_rolling_to_dynamodb(
+            written = write_type3_rolling_to_rds(
                 payload["table_name"],
                 segment_values,
-                window_start,
                 window_end,
-                rolling_weeks,
-                mapping_version,
             )
+            _export_type3_snapshot(zone_rolling, mapping)
         finally:
             segment_values.unpersist()
     finally:

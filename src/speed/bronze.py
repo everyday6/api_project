@@ -20,13 +20,15 @@ from zoneinfo import ZoneInfo
 
 import pandas as pd
 
-from src.common.config import BRONZE_DIR, DATASETS
+from src.common.config import BRONZE_DIR, BUCKET_MINUTES, DATASETS
 from src.common.logger import get_logger
 from src.common.socrata import fetch_all, make_session
+from src.common.utils import save_parquet
 from src.lion.bronze import BRONZE_ROOT as LION_BRONZE_ROOT
-from src.lion.gold2 import DIM_SEGMENT_PATH
+from src.lion.silver1 import DIM_SEGMENT_BASE_PATH as DIM_SEGMENT_PATH
 from src.silver2.segment_speed_match import match_links_to_segments
 from src.speed import synthetic
+from src.speed.bronze_validation import _validate_and_decide_df
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_bronze")
 
@@ -111,28 +113,31 @@ def _find_latest_lion_gdb(lion_bronze_root=LION_BRONZE_ROOT):
 
 
 def _synthesize_uncovered_segments(links_df: pd.DataFrame, data_as_of: str) -> pd.DataFrame:
-    """실제 속도 피드(고정 125개 link)가 커버 안 하는 LION routable
-    세그먼트에 대해 synthetic speed row를 만든다(src/speed/synthetic.py
-    참고) - routable 세그먼트의 92% 이상이 실제 피드와 매칭되는 link가
-    근처에 없다."""
+    """실제 속도 피드(고정 125개 link)가 커버 안 하는 LION 세그먼트에 대해
+    synthetic speed row를 만든다(src/speed/synthetic.py 참고) - 전체
+    세그먼트의 92% 이상이 실제 피드와 매칭되는 link가 근처에 없다.
+
+    length_ft<=0인 세그먼트는 제외한다 - nav_time Gold2(compute_time_seconds)가
+    길이로 나눠 통행시간을 계산하므로, 그런 세그먼트가 섞이면
+    validate_bucket_time_seconds가 0 나누기 방지용으로 매번 하드 실패한다."""
 
     if not DIM_SEGMENT_PATH.exists():
         logger.warning("[speed_bronze] dim_segment 없음 - synthetic 보강 스킵")
         return pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
 
     dim_segment = pd.read_parquet(str(DIM_SEGMENT_PATH))
-    routable = dim_segment[dim_segment["is_routable"]]
+    usable = dim_segment[dim_segment["length_ft"] > 0]
 
-    matched = match_links_to_segments(links_df, routable)
+    matched = match_links_to_segments(links_df, usable)
     covered_ids = set(matched["segment_id"])
-    uncovered_ids = set(routable["segment_id"]) - covered_ids
+    uncovered_ids = set(usable["segment_id"]) - covered_ids
 
     # 참고표(geometry->link_points 변환 + POSTED_SPEED 조회, 세그먼트당
     # 무거운 계산)는 캐시가 있으면 그대로 읽는다 - LION은 분기에 한 번만
     # 바뀌는데 이 함수는 30분마다 불려서, 캐시 없이는 매번 gdb 원본을
     # 다시 읽게 된다(로드만 9초+).
     reference_table = synthetic.load_or_build_reference_table(
-        dim_segment_loader=lambda: routable,
+        dim_segment_loader=lambda: usable,
         posted_speed_loader=lambda: synthetic.load_posted_speed(_find_latest_lion_gdb()),
     )
 
@@ -140,13 +145,22 @@ def _synthesize_uncovered_segments(links_df: pd.DataFrame, data_as_of: str) -> p
 
 
 def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
-    """마커보다 새로운 속도 판독값을 전부 받아 Bronze에 parquet으로 저장하고,
-    저장에 성공한 경우에만 마커를 이번 배치의 최댓값(data_as_of)으로
-    갱신한다.
+    """마커보다 새로운 속도 판독값을 전부 받아, 저장하기 전에 검증하고
+    통과한 경우에만 Bronze에 parquet으로 저장한 뒤 마커를 이번 배치의
+    최댓값(data_as_of)으로 갱신한다.
+
+    API 응답은 이 시점에 이미 메모리에 다 있으므로, 저장 후 다시 읽어서
+    검증하는 대신 저장 직전에 바로 검증한다(critical 검증 실패시 저장
+    자체를 하지 않는다 - 2026-08-26 순서 변경. TLC처럼 파일을 먼저
+    "다운로드"해야만 하는 경우와 달리, speed는 API 응답이라 검증에 파일이
+    필요 없다).
 
     결과가 0건이면 마커를 건드리지 않고 빈 문자열을 반환한다(정상 케이스 —
     상위 DAG가 short-circuit으로 이미 걸러내지만, 이 함수 자체도 방어적으로
-    처리한다).
+    처리한다). critical 검증 실패도 마커를 안 건드리고 빈 문자열을
+    반환한다 - 둘 다 "이번 사이클엔 유효한 새 데이터가 없다"는 같은
+    결과라, collect_bronze 태스크 자체가 @task.short_circuit으로 뒤(Silver)
+    실행 여부를 판단한다.
     """
 
     marker = _read_marker(bronze_root)
@@ -159,14 +173,37 @@ def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
     df = pd.DataFrame(rows)
     max_data_as_of = str(df["data_as_of"].max())
 
-    links_df = df.drop_duplicates("link_id")[["link_id", "link_points"]]
-    synthetic_df = _synthesize_uncovered_segments(links_df, max_data_as_of)
+    # 마커가 없거나 오래돼서(부트스트랩, 장애 복구 등) 한 번에 여러 30분
+    # 버킷치가 몰려 들어오면, synthetic 보강을 배치 전체에 한 번만 하면 안
+    # 된다 - 그러면 보강된 행이 전부 배치의 최신 시각(max_data_as_of) 하나로
+    # 찍혀서, 그 버킷만 거의 다 채워지고 나머지 버킷은 실제 센서로 잡힌
+    # segment만 남아 듬성듬성해진다(실제로 겪은 사고 - 2026-08-26). 30분
+    # 버킷별로 나눠서 각자 자기 몫의 synthetic을 자기 시각으로 찍어야 모든
+    # 버킷이 고르게 채워진다. 정상 상황(백로그 없이 한 사이클에 버킷 1개)
+    # 에서는 그룹이 1개뿐이라 지금과 동일하게 한 번만 돈다.
+    bucket = pd.to_datetime(df["data_as_of"]).dt.floor(f"{BUCKET_MINUTES}min")
+    synthetic_frames = []
+    for _, bucket_df in df.groupby(bucket):
+        bucket_links_df = bucket_df.drop_duplicates("link_id")[["link_id", "link_points"]]
+        bucket_max_data_as_of = str(bucket_df["data_as_of"].max())
+        synthetic_frames.append(
+            _synthesize_uncovered_segments(bucket_links_df, bucket_max_data_as_of)
+        )
+
+    synthetic_df = (
+        pd.concat(synthetic_frames, ignore_index=True)
+        if synthetic_frames
+        else pd.DataFrame(columns=synthetic.SPEED_COLUMNS)
+    )
     if not synthetic_df.empty:
         df = pd.concat([df, synthetic_df], ignore_index=True)
 
-    bronze_root.mkdir(parents=True, exist_ok=True)
-    out_path = bronze_root / f"batch_end={max_data_as_of.replace(':', '')}.parquet"
-    df.to_parquet(str(out_path), index=False)
+    if not _validate_and_decide_df(df, f"batch_end={max_data_as_of}, rows={len(df)}"):
+        return ""
+
+    out_path = save_parquet(
+        df, bronze_root, f"batch_end={max_data_as_of.replace(':', '')}.parquet"
+    )
 
     # parquet 저장이 성공한 뒤에만 마커를 갱신한다 — 저장이 실패하면 마커를
     # 건드리지 않아야 재시도가 이번 배치를 통째로 다시 수집할 수 있다.
