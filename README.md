@@ -116,7 +116,7 @@
 **4. <mark style="background-color:#fef08a; color:#1a1a1a;">승객 많은 경로</mark>**
 
 ## 3. 데이터 파이프라인과 아키텍처
-<img width="10576" height="4768" alt="image (4)" src="https://github.com/user-attachments/assets/165230ab-b1ea-480e-8b45-6b43cbdea35d" />
+<img width="10576" height="5364" alt="Pipeline Architecture" src="docs/images/pipeline-architecture.png" />
 
 
 ### **파이프라인 INPUT**
