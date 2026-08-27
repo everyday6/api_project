@@ -155,36 +155,63 @@
 
 ## 5. Airflow DAG 설계
 
-타입마다 원본 데이터의 갱신 패턴이 달라, DAG 스케줄도 타입별로 다르게 설계했습니다.
+타입마다 원본 데이터의 갱신 패턴이 달라, DAG 스케줄도 타입별로 다르게 설계했습니다. 9개 DAG는 트리거 방식 기준 **Cron 4개 + Asset 4개 + 수동 1개**로 나뉩니다.
 
 ```mermaid
-graph LR
-    subgraph Bronze
-        lion["lion_pipeline<br/>도로망(LION) 원본 수집"]
-        zone["taxi_zone_pipeline<br/>택시존 원본 수집"]
-        tollb["toll_bronze_pipeline<br/>통행료 원본 수집(수동)"]
+graph TD
+    subgraph Cron["Cron 스케줄 (4개)"]
+        lion["lion_pipeline<br/>매일 04:00"]
+        zone["taxi_zone_pipeline<br/>매월 1일 04:00"]
+        t1["segment_time_pipeline<br/>30분마다"]
+        tlcIngest["tlc_ingest_pipeline<br/>매주 월요일 04:00"]
     end
 
-    subgraph Silver
-        zs["zone_segment_pipeline<br/>Zone-Segment 매핑 생성"]
+    subgraph Manual["수동 트리거 (1개)"]
+        tollb["toll_bronze_pipeline"]
     end
 
-    subgraph Gold
-        t1["segment_time_pipeline<br/>Type1(소요시간) 계산"]
-        t3["tlc_daily<br/>Type3(수요) 계산"]
-        t2["segment_length_pipeline<br/>Type2(길이) 계산"]
-        t4["toll_silver_gold_pipeline<br/>Type4(통행료) 계산"]
+    subgraph AssetTriggered["Asset 트리거 (4개)"]
+        t2["segment_length_pipeline"]
+        zs["zone_segment_pipeline"]
+        t4["toll_silver_gold_pipeline"]
+        t3["tlc_type3_serving_pipeline"]
     end
 
-    tollmon["toll_rate_monitor<br/>매달 요금표 변경 확인 알림"]
-
-    lion --> zs
-    zone --> zs
-    lion --> t2
-    lion --> t4
-    tollb --> t4
-    tollmon -.->|사람 확인 후 수동 실행| tollb
+    lion -->|lion_dim_segment_ready| t2
+    lion -->|lion_dim_segment_ready| zs
+    zone -->|taxi_zone_silver1_updated| zs
+    lion -->|lion_bronze_updated| t4
+    tollb -->|toll_bronze_updated| t4
+    zs -->|map_zone_segment_ready| t3
+    tlcIngest -->|tlc_type3_gold2_ready| t3
+    t2 -.dim_segment.parquet 런타임 참조.-> t1
 ```
+
+> `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `segment_length_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(Asset 트리거가 아니라 런타임 의존성이라 점선으로 표시).
+
+**Cron 스케줄 (4개)**
+
+| DAG | 주기 | 역할 |
+| --- | --- | --- |
+| lion_pipeline | 매일 04:00 (`0 4 * * *`) | LION 도로망 원본 수집·정제 |
+| taxi_zone_pipeline | 매월 1일 04:00 (`0 4 1 * *`) | 택시존 원본 수집·정제 |
+| segment_time_pipeline | 30분마다 (`*/30 * * * *`) | Type1(소요시간) 계산 |
+| tlc_ingest_pipeline | 매주 월요일 04:00 (`0 4 * * 1`) | TLC 원본 수집·정제 |
+
+**Asset 트리거 (4개)** — `|`는 OR 조건, 연결된 Asset 중 하나만 갱신돼도 실행됩니다.
+
+| DAG | 의존 Asset | 발행 DAG |
+| --- | --- | --- |
+| segment_length_pipeline | `lion_dim_segment_ready` | lion_pipeline |
+| zone_segment_pipeline | `lion_dim_segment_ready` \| `taxi_zone_silver1_updated` | lion_pipeline, taxi_zone_pipeline |
+| toll_silver_gold_pipeline | `toll_bronze_updated` \| `lion_bronze_updated` | toll_bronze_pipeline, lion_pipeline |
+| tlc_type3_serving_pipeline | `tlc_type3_gold2_ready` \| `map_zone_segment_ready` | tlc_ingest_pipeline, zone_segment_pipeline |
+
+**수동 트리거 (1개)**
+
+| DAG | 역할 |
+| --- | --- |
+| toll_bronze_pipeline | 통행료 원본 수집. 요금표 변경 여부를 사람이 확인한 뒤 직접 실행 |
 
 ### DAG별 태스크 목록
 
@@ -302,15 +329,6 @@ graph LR
 | build_and_write_gold | Type4 Gold 계산·RDS 기록 |
 
 </details>
-
-### DAG 설계 시 중요하게 생각한 포인트
-
-| 포인트 | 설계 |
-| --- | --- |
-| 원본 데이터마다 다른 갱신 패턴 | Type1은 30분 폴링, Type2·Type4는 Asset 기반 이벤트 트리거, Type3는 매일 확인 후 필요할 때만 재계산 |
-| 재실행 시 중복 방지 | Gold 적재는 `(segment_id, sk)` upsert, Type3는 워터마크(기간·매핑버전)로 재계산 필요 여부 판단 |
-| 실패 후 남은 임시 데이터 정리 | S3 Staging Lifecycle로 실패 시 남은 스테이징 결과를 7일 뒤 자동 삭제 |
-| 리소스 경합으로 인한 장애 대응 | EC2 CPU 경합으로 DagBag import timeout(30초→120초) 조정, DynamoDB 쓰기 32-way→10-way + adaptive 재시도로 처리량 한도 초과 해결 |
 
 ## 6. 예외 처리 및 스키마 검증
 
