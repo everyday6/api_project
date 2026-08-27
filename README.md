@@ -340,6 +340,7 @@ graph LR
 | **TLC Silver1 공통 스키마** | PySpark SQL의 `StructType`, `StructField`, `cast` | 네 종류의 TLC 데이터를 `timestamp 2개 + integer 3개 + double 1개`의 공통 6개 컬럼으로 변환 | FHV에 원래 없는 `passenger_count`, `trip_distance`는 지정 타입의 nullable 컬럼으로 추가하고, 필수 원본 컬럼 누락은 거부 | [`src/tlc/silver1_transform.py`](src/tlc/silver1_transform.py) |
 | **Zone-Segment 매핑** | pandas DataFrame의 `is_unique`, `isna`, `between`, `isin` | 모든 LION `segment_id`가 정확히 하나의 `zone_id`를 가져야 하며, zone은 1~263, 매핑 방식은 `contains` 또는 `nearest`만 허용 | 입력 세그먼트가 218,373개인데 매핑이 218,372개이거나 `segment_id`가 중복되면 검증 실패 | [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py) |
 | **Type3 시공간 스키마** | PySpark SQL DataFrame의 `filter`, `groupBy`, `distinct`, `count` | Zone 결과는 `zone_id, type, date, time, value`, Segment 결과는 `segment_id, type, dow, time, value`로 고정하고 복합키와 전체 시간대 coverage를 검사 | 컬럼은 정상이더라도 특정 Zone의 14:30 값이 빠지면 `Zone × 날짜 × 48개 시간대` 예상 행 수와 달라 게시 중단 | [`src/tlc/gold2.py`](src/tlc/gold2.py) |
+| **LION 원본 변경 전파** | Zone-Segment 매핑 결과를 `segment_id` 정렬 후 SHA-256 해시(`hashlib`) + Airflow Asset 트리거 | 매핑 내용의 해시를 `mapping_version`으로 저장해 "내용이 실제로 바뀌었는지"(run_id만으로는 구분 불가)를 판별 | LION이 갱신되면 Type2/4는 Asset(`lion_dim_segment_ready`/`lion_bronze_updated`)로 바로 재계산되고, Type3는 TLC 날짜 범위가 그대로여도 `mapping_version`이 달라지면 재계산이 트리거됨. Type1은 별도 트리거 없이 30분마다 최신 `dim_segment.parquet`을 직접 읽어 반영 | [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py), [`src/tlc/type3_pipeline.py`](src/tlc/type3_pipeline.py) |
 
 **LION 원본이 바뀌면 하위 데이터에 이렇게 전파됩니다**
 
