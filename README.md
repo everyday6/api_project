@@ -184,7 +184,7 @@ graph TD
     tollb -->|toll_bronze_updated| t4
     zs -->|map_zone_segment_ready| t3
     tlcIngest -->|tlc_type3_gold2_ready| t3
-    t2 -.dim_segment.parquet 런타임 참조.-> t1
+    t2 -.->|dim_segment 런타임 참조| t1
 ```
 
 > `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `segment_length_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(Asset 트리거가 아니라 런타임 의존성이라 점선으로 표시).
