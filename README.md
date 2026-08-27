@@ -427,7 +427,6 @@ API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같
 | **CI/CD** | ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white) |
 | **모니터링** | ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white) |
 
-> DynamoDB도 검토했지만 비용 이슈로 RDS(PostgreSQL)를 최종 채택 — 자세한 배경은 [8. 기술적 고민과 결정](#8-기술적-고민과-결정)을 참고하세요.
 
 ## 10. 한계와 다음 단계
 
