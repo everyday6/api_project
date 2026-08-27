@@ -209,22 +209,22 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 
 각 결정의 배경(관측된 사실, 고려한 대안, 기각 사유, 검증 방법)은 링크한 문서에서 자세히 볼 수 있습니다.
 
-| 고민 | 결정 | 링크 |
-| --- | --- | --- |
-| (예시) 서빙 저장소로 무엇을 쓸까 → | (예시) 비용 이슈로 DynamoDB 대신 RDS(PostgreSQL) 선택 | [상세](docs/decisions/00-example.md) |
-|  |  | [상세](docs/decisions/01-decision.md) |
-|  |  | [상세](docs/decisions/02-decision.md) |
-|  |  | [상세](docs/decisions/03-decision.md) |
-|  |  | [상세](docs/decisions/04-decision.md) |
-|  |  | [상세](docs/decisions/05-decision.md) |
-|  |  | [상세](docs/decisions/06-decision.md) |
-|  |  | [상세](docs/decisions/07-decision.md) |
-|  |  | [상세](docs/decisions/08-decision.md) |
-|  |  | [상세](docs/decisions/09-decision.md) |
-|  |  | [상세](docs/decisions/10-decision.md) |
-|  |  | [상세](docs/decisions/11-decision.md) |
-|  |  | [상세](docs/decisions/12-decision.md) |
-|  |  | [상세](docs/decisions/13-decision.md) |
+| # | 고민 | 결정 | 링크 |
+| :---: | --- | --- | --- |
+| 0 | (예시) 서빙 저장소로 무엇을 쓸까 → | (예시) 비용 이슈로 DynamoDB 대신 RDS(PostgreSQL) 선택 | [상세](docs/decisions/00-example.md) |
+| 1 |  |  | [상세](docs/decisions/01-decision.md) |
+| 2 |  |  | [상세](docs/decisions/02-decision.md) |
+| 3 |  |  | [상세](docs/decisions/03-decision.md) |
+| 4 |  |  | [상세](docs/decisions/04-decision.md) |
+| 5 |  |  | [상세](docs/decisions/05-decision.md) |
+| 6 |  |  | [상세](docs/decisions/06-decision.md) |
+| 7 |  |  | [상세](docs/decisions/07-decision.md) |
+| 8 |  |  | [상세](docs/decisions/08-decision.md) |
+| 9 |  |  | [상세](docs/decisions/09-decision.md) |
+| 10 |  |  | [상세](docs/decisions/10-decision.md) |
+| 11 |  |  | [상세](docs/decisions/11-decision.md) |
+| 12 |  |  | [상세](docs/decisions/12-decision.md) |
+| 13 |  |  | [상세](docs/decisions/13-decision.md) |
 
 ## 8. 기술 스택
 
