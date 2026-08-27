@@ -1,0 +1,1449 @@
+{
+  "id": null,
+  "uid": "nav-gold-overview",
+  "title": "nav-gold Overview (RDS + EMR Serverless)",
+  "tags": [
+    "nav-gold"
+  ],
+  "timezone": "browser",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "1m",
+  "time": {
+    "from": "now-6h",
+    "to": "now"
+  },
+  "panels": [
+    {
+      "id": 90,
+      "type": "row",
+      "title": "종합 현황 (한눈에 보기)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 0
+      }
+    },
+    {
+      "id": 91,
+      "type": "gauge",
+      "title": "RDS CPU 사용률",
+      "description": "AWS/RDS CPUUtilization - nav-segment-serving",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 0,
+        "y": 1
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "CPUUtilization",
+          "dimensions": {
+            "DBInstanceIdentifier": "nav-segment-serving"
+          },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 92,
+      "type": "gauge",
+      "title": "EC2 CPU idle % (낮을수록 바쁨 - 참고: idle 기준이라 임계값 방향이 반대)",
+      "description": "CWAgent cpu_usage_idle. 메트릭 수식(100-idle) 대신 idle 값을 그대로 쓰고, 임계값 방향만 반대로 줬다 - idle이 낮을수록(=CPU 바쁠수록) 빨간색이 되도록.",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 6,
+        "y": 1
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "cpu_usage_idle",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 15
+              },
+              {
+                "color": "green",
+                "value": 30
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 93,
+      "type": "gauge",
+      "title": "EC2 메모리 사용률",
+      "description": "CWAgent mem_used_percent",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 12,
+        "y": 1
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "mem_used_percent",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 85
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 94,
+      "type": "gauge",
+      "title": "EC2 디스크 사용률",
+      "description": "CWAgent disk_used_percent",
+      "gridPos": {
+        "h": 8,
+        "w": 6,
+        "x": 18,
+        "y": 1
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "disk_used_percent",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "min": 0,
+          "max": 100,
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "green",
+                "value": null
+              },
+              {
+                "color": "yellow",
+                "value": 70
+              },
+              {
+                "color": "red",
+                "value": 90
+              }
+            ]
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 1,
+      "type": "row",
+      "title": "RDS (nav-segment-serving)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 9
+      },
+      "collapsed": false
+    },
+    {
+      "id": 2,
+      "type": "timeseries",
+      "title": "DatabaseConnections",
+      "description": "동시 연결 수 - EMR job 여러 개가 겹치면 여기서 급증하는 걸 볼 수 있음",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 10
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "DatabaseConnections",
+          "dimensions": {
+            "DBInstanceIdentifier": "nav-segment-serving"
+          },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "type": "timeseries",
+      "title": "CPUUtilization",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 10
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "CPUUtilization",
+          "dimensions": {
+            "DBInstanceIdentifier": "nav-segment-serving"
+          },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "type": "timeseries",
+      "title": "FreeableMemory",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 18
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "FreeableMemory",
+          "dimensions": {
+            "DBInstanceIdentifier": "nav-segment-serving"
+          },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "type": "timeseries",
+      "title": "Read / Write IOPS",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 18
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/RDS",
+          "metricName": "ReadIOPS",
+          "dimensions": {
+            "DBInstanceIdentifier": "nav-segment-serving"
+          },
+          "statistic": "Average",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/RDS",
+          "metricName": "WriteIOPS",
+          "dimensions": {
+            "DBInstanceIdentifier": "nav-segment-serving"
+          },
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "iops"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 10,
+      "type": "row",
+      "title": "EMR Serverless (00g870ett46id32p)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 26
+      },
+      "collapsed": false
+    },
+    {
+      "id": 11,
+      "type": "timeseries",
+      "title": "CPU / Memory Allocated (전체 WorkerType/CapacityType 합산)",
+      "description": "계정 vCPU 할당량 한도(quota)에 근접하는지 여기서 추세를 볼 수 있음. 실제 지표는 ApplicationId+ApplicationName+WorkerType+CapacityAllocationType 조합으로만 존재해서, ApplicationId만으로 부분 매칭(matchExact: false)한다 - Spark_Driver/Kernel/Executor x OnDemand/PreInit 조합별로 여러 시리즈가 따로 나온다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 27
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "CPUAllocated",
+          "dimensions": {
+            "ApplicationId": "00g870ett46id32p"
+          },
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "MemoryAllocated",
+          "dimensions": {
+            "ApplicationId": "00g870ett46id32p"
+          },
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 12,
+      "type": "timeseries",
+      "title": "Worker 개수 (Running / Pending / Idle)",
+      "description": "EMR Serverless는 job 성공/실패 카운트를 CloudWatch로 보내지 않는다(계정에서 확인됨) - 대신 워커(Spark_Driver/Kernel/Executor) 단위 지표만 있어서, 활동량 추세를 이걸로 대체 확인한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 27
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "RunningWorkerCount",
+          "dimensions": {
+            "ApplicationId": "00g870ett46id32p"
+          },
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "PendingCreationWorkerCount",
+          "dimensions": {
+            "ApplicationId": "00g870ett46id32p"
+          },
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "IdleWorkerCount",
+          "dimensions": {
+            "ApplicationId": "00g870ett46id32p"
+          },
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 20,
+      "type": "row",
+      "title": "계정 전체 (모든 EMR Serverless 애플리케이션 합산 — vCPU 할당량 확인용)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 35
+      },
+      "collapsed": false
+    },
+    {
+      "id": 21,
+      "type": "timeseries",
+      "title": "계정 전체 CPU Allocated (모든 앱 스택)",
+      "description": "ApplicationId 필터를 안 걸어서 이 계정/리전에 있는 모든 EMR Serverless 애플리케이션(nav-spark, traffic-score-emr-serverless 등)의 CPUAllocated를 다 가져온다. stacking(쌓기)을 켜서 그래프 맨 위 높이가 사실상 '이 순간 계정 전체가 쓰고 있는 총 vCPU'가 되게 했다 - 계정 vCPU 동시 사용 한도(Service Quotas 콘솔에서 확인)에 얼마나 가까운지 이 맨 위 높이로 판단하면 된다.\n\nTODO: 실제 한도 숫자를 Service Quotas 콘솔에서 확인해서, 이 패널에 수동으로 기준선(Threshold)을 추가해야 함 - CloudWatch가 한도 값 자체를 지표로 안 줘서 여기 자동으로는 못 넣었음.",
+      "gridPos": {
+        "h": 9,
+        "w": 24,
+        "x": 0,
+        "y": 36
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/EMRServerless",
+          "metricName": "CPUAllocated",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "stacking": {
+              "mode": "normal"
+            },
+            "fillOpacity": 30
+          }
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 30,
+      "type": "row",
+      "title": "Lambda (nav-api)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 45
+      },
+      "collapsed": false
+    },
+    {
+      "id": 31,
+      "type": "timeseries",
+      "title": "Invocations / Errors / Throttles",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 46
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/Lambda",
+          "metricName": "Invocations",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/Lambda",
+          "metricName": "Errors",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/Lambda",
+          "metricName": "Throttles",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "Sum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 32,
+      "type": "timeseries",
+      "title": "Duration (Average / p50 / p99)",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 46
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/Lambda",
+          "metricName": "Duration",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "Average",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/Lambda",
+          "metricName": "Duration",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "p50",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/Lambda",
+          "metricName": "Duration",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "p99",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 33,
+      "type": "timeseries",
+      "title": "ConcurrentExecutions",
+      "description": "동시 실행 수 - Lambda 계정 동시성 한도에 근접하는지 여기서 확인",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 54
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/Lambda",
+          "metricName": "ConcurrentExecutions",
+          "dimensions": {
+            "FunctionName": "nav-api"
+          },
+          "statistic": "Maximum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 40,
+      "type": "row",
+      "title": "API Gateway (nav-api, HTTP API gv37o51ey6)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 62
+      },
+      "collapsed": false
+    },
+    {
+      "id": 41,
+      "type": "timeseries",
+      "title": "Count / 4xx / 5xx",
+      "description": "HTTP API(v2)는 REST API(v1)와 지표 이름이 다르다(4XXError가 아니라 4xx) - 안 뜨면 CloudWatch에서 실제 이름 확인 필요(EMR Serverless 때와 같은 이유).",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 63
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "Count",
+          "dimensions": {
+            "ApiId": "gv37o51ey6"
+          },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "4xx",
+          "dimensions": {
+            "ApiId": "gv37o51ey6"
+          },
+          "statistic": "Sum",
+          "region": "default"
+        },
+        {
+          "refId": "C",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "5xx",
+          "dimensions": {
+            "ApiId": "gv37o51ey6"
+          },
+          "statistic": "Sum",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 42,
+      "type": "timeseries",
+      "title": "Latency / IntegrationLatency",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 63
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "Latency",
+          "dimensions": {
+            "ApiId": "gv37o51ey6"
+          },
+          "statistic": "p99",
+          "region": "default"
+        },
+        {
+          "refId": "B",
+          "namespace": "AWS/ApiGateway",
+          "metricName": "IntegrationLatency",
+          "dimensions": {
+            "ApiId": "gv37o51ey6"
+          },
+          "statistic": "p99",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 50,
+      "type": "row",
+      "title": "Airflow 파이프라인 (메타데이터 DB 직접 조회 - 별도 계측 불필요)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 71
+      },
+      "collapsed": false
+    },
+    {
+      "id": 51,
+      "type": "timeseries",
+      "title": "DAG Run 상태별 개수",
+      "description": "dag_run 테이블을 1시간 단위로 집계 - success/failed/running/queued별 추세",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 72
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "airflow-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-postgres"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroup(start_date, '1h') AS time, state, count(*) AS value FROM dag_run WHERE $__timeFilter(start_date) GROUP BY 1, state ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 52,
+      "type": "timeseries",
+      "title": "DAG별 평균 태스크 소요시간",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 72
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "airflow-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-postgres"
+          },
+          "format": "time_series",
+          "editorMode": "code",
+          "rawSql": "SELECT $__timeGroup(start_date, '1h') AS time, dag_id, avg(duration) AS value FROM task_instance WHERE $__timeFilter(start_date) AND duration IS NOT NULL GROUP BY 1, dag_id ORDER BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 53,
+      "type": "table",
+      "title": "최근 실패 태스크 목록",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 80
+      },
+      "datasource": {
+        "type": "postgres",
+        "uid": "airflow-postgres"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-postgres"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT start_date, dag_id, task_id, try_number, duration FROM task_instance WHERE state = 'failed' AND $__timeFilter(start_date) ORDER BY start_date DESC LIMIT 50"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      }
+    },
+    {
+      "id": 60,
+      "type": "row",
+      "title": "EC2 호스트 (Airflow+Grafana 도는 인스턴스) - CloudWatch Agent 설치 필요",
+      "description": "scripts/install_cloudwatch_agent.sh 실행 + EC2 인스턴스 역할에 cloudwatch:PutMetricData 권한 추가 전까지는 이 행이 비어있는 게 정상이다.",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 88
+      },
+      "collapsed": false
+    },
+    {
+      "id": 61,
+      "type": "timeseries",
+      "title": "CPU idle % (참고: 이 값이 낮을수록 CPU가 바쁜 것 - 사용률이 아니라 유휴율임에 주의)",
+      "description": "CloudWatch Agent 기본 지표가 idle%이라 그대로 뒀다 - '사용률'로 보려면 100에서 빼서 읽으면 된다. InstanceId 차원 필터 없이(matchExact: false) 이 계정에 에이전트가 붙은 인스턴스가 있으면 다 잡는다.",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 0,
+        "y": 89
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "cpu_usage_idle",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 62,
+      "type": "timeseries",
+      "title": "메모리 사용률",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 8,
+        "y": 89
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "mem_used_percent",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 63,
+      "type": "timeseries",
+      "title": "디스크 사용률 (/)",
+      "gridPos": {
+        "h": 8,
+        "w": 8,
+        "x": 16,
+        "y": 89
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "namespace": "CWAgent",
+          "metricName": "disk_used_percent",
+          "dimensions": {},
+          "matchExact": false,
+          "statistic": "Average",
+          "region": "default"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 70,
+      "type": "row",
+      "title": "데이터 신선도 (RDS 직접 조회 - Airflow가 초록불이어도 실제 값이 안 채워질 수 있어 별도 확인)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 97
+      }
+    },
+    {
+      "id": 71,
+      "type": "table",
+      "title": "타입별 row 수 / 정확한 갱신 시각",
+      "description": "row 수는 RDS 직접 조회(type3는 5천만 행이 넘어 pg_class.reltuples 추정치 사용 - 정확한 COUNT는 40초+ 걸려 실제 서빙과 자원 경합함). updated_at은 RDS의 updated_date(시:분:초 없는 순수 날짜)가 아니라, 그 타입을 채우는 Gold DAG의 마지막 성공 시각(Airflow dag_run.end_date)이다 - DAG 완료 = RDS 쓰기 완료라 사실상 같은 시각이면서 진짜 시:분:초까지 정확하다. type1=segment_time_pipeline, type2=segment_length_pipeline, type3=tlc_type3_serving_pipeline, type4=toll_silver_gold_pipeline. 두 개의 다른 데이터소스(RDS/Airflow 메타데이터 DB) 쿼리 결과를 type 기준으로 합쳤다(Join by field 변환).",
+      "gridPos": {
+        "h": 8,
+        "w": 24,
+        "x": 0,
+        "y": 98
+      },
+      "datasource": {
+        "type": "datasource",
+        "uid": "-- Mixed --"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "postgres",
+            "uid": "rds-postgres"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT 'type1' AS type, COUNT(*) AS row_count, MAX(last_sample_at) AS last_sample_at, ROUND(EXTRACT(EPOCH FROM (NOW() - MAX(last_sample_at))) / 3600, 1) AS hours_since_last_sample FROM segment_metrics_type1 UNION ALL SELECT 'type2', COUNT(*), NULL, NULL FROM segment_metrics_type2 UNION ALL SELECT 'type3', (SELECT reltuples::bigint FROM pg_class WHERE relname = 'segment_metrics_type3'), NULL, NULL UNION ALL SELECT 'type4', COUNT(*), NULL, NULL FROM segment_metrics_type4"
+        },
+        {
+          "refId": "B",
+          "datasource": {
+            "type": "postgres",
+            "uid": "airflow-postgres"
+          },
+          "format": "table",
+          "editorMode": "code",
+          "rawSql": "SELECT CASE WHEN dag_id = 'segment_time_pipeline' THEN 'type1' WHEN dag_id = 'segment_length_pipeline' THEN 'type2' WHEN dag_id IN ('tlc_type3_serving_daily', 'tlc_type3_serving_pipeline') THEN 'type3' WHEN dag_id = 'toll_silver_gold_pipeline' THEN 'type4' END AS type, MAX(end_date) AS updated_at FROM dag_run WHERE dag_id IN ('segment_time_pipeline', 'segment_length_pipeline', 'tlc_type3_serving_daily', 'tlc_type3_serving_pipeline', 'toll_silver_gold_pipeline') AND state = 'success' GROUP BY 1"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "transformations": [
+        {
+          "id": "joinByField",
+          "options": {
+            "byField": "type",
+            "mode": "outer"
+          }
+        }
+      ]
+    },
+    {
+      "id": 80,
+      "type": "row",
+      "title": "서빙 성능 (앱 레벨 로그 기반 - CloudWatch Logs Insights)",
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 106
+      }
+    },
+    {
+      "id": 81,
+      "type": "timeseries",
+      "title": "Type1 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type1 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 107
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type1\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 84,
+      "type": "timeseries",
+      "title": "Type2 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type2 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 107
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type2\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 85,
+      "type": "timeseries",
+      "title": "Type3 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type3 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 115
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type3\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 86,
+      "type": "timeseries",
+      "title": "Type4 쿼리 응답시간 (p50/p95/p99)",
+      "description": "segment_metrics_type4 테이블에 대한 [rds_query_duration] 로그(호출 1건당 소요 ms)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 115
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /rds_query_duration/ | parse @message \"table=* ms=*\" as tbl, ms | filter tbl = \"segment_metrics_type4\" | stats pct(ms, 50) as p50, pct(ms, 95) as p95, pct(ms, 99) as p99 by bin(1m)"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 82,
+      "type": "timeseries",
+      "title": "Type1 fallback 계층 비율 (fresh / avg / hardcoded)",
+      "description": "src/serving/nav_lookup.py의 _resolve_time_values()가 요청당 한 번 남기는 [fallback_tier_summary] 로그(type=1)를 집계한다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 123
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /fallback_tier_summary/ and @message like /type=1/ | parse @message \"fresh=* avg=* hardcoded=* total=*\" as fresh_n, avg_n, hardcoded_n, total_n | stats sum(fresh_n) as fresh_sum, sum(avg_n) as avg_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields fresh_sum * 100.0 / total_sum as fresh_pct, avg_sum * 100.0 / total_sum as avg_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 87,
+      "type": "timeseries",
+      "title": "Type2 fallback 계층 비율 (rds / global / snapshot / hardcoded)",
+      "description": "src/serving/nav_lookup.py의 _resolve_length_values()가 요청당 한 번 남기는 [type2_fallback_tier_summary] 로그를 집계한다. rds=세그먼트 자체 row를 RDS에서 직접 찾음, global=RDS는 살아있지만 이 세그먼트 값이 없어 GLOBAL 기본값 사용, snapshot=RDS 자체가 죽어 S3 스냅샷의 세그먼트별 값 사용, hardcoded=스냅샷에도 없어 코드 상수 사용.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 123
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /type2_fallback_tier_summary/ | parse @message \"rds=* global=* snapshot=* hardcoded=* total=*\" as rds_n, global_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(global_n) as global_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, global_sum * 100.0 / total_sum as global_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 83,
+      "type": "timeseries",
+      "title": "Type3 fallback 계층 비율 (rds / snapshot / hardcoded)",
+      "description": "src/serving/api.py의 get_type3_values()가 요청당 한 번 남기는 [type3_fallback_tier_summary] 로그를 집계한다. rds=RDS 직접 조회 성공, snapshot=RDS 실패 시 S3 zone 스냅샷으로 재구성, hardcoded=아무것도 없어 기본값(0) 응답. hardcoded 비율이 올라가면 RDS 장애 + 스냅샷도 못 커버하는 세그먼트가 늘고 있다는 뜻.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 131
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /type3_fallback_tier_summary/ | parse @message \"rds=* snapshot=* hardcoded=* total=*\" as rds_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 88,
+      "type": "timeseries",
+      "title": "Type4 fallback 계층 비율 (rds / snapshot / hardcoded)",
+      "description": "src/toll/serving.py의 get_toll_values()가 요청당 한 번 남기는 [type4_fallback_tier_summary] 로그를 집계한다. RDS가 정상 응답했는데 특정 세그먼트에 통행료가 없는 건 폴백이 아니라 '진짜 통행료 대상이 아님'이라 rds 계층으로 센다.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 12,
+        "y": 131
+      },
+      "datasource": {
+        "type": "cloudwatch",
+        "uid": "cloudwatch"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "datasource": {
+            "type": "cloudwatch",
+            "uid": "cloudwatch"
+          },
+          "queryMode": "Logs",
+          "region": "ap-northeast-2",
+          "logGroups": [
+            {
+              "arn": "arn:aws:logs:ap-northeast-2:181252290322:log-group:/aws/lambda/nav-api:*",
+              "name": "/aws/lambda/nav-api"
+            }
+          ],
+          "expression": "fields @timestamp, @message | filter @message like /type4_fallback_tier_summary/ | parse @message \"rds=* snapshot=* hardcoded=* total=*\" as rds_n, snapshot_n, hardcoded_n, total_n | stats sum(rds_n) as rds_sum, sum(snapshot_n) as snapshot_sum, sum(hardcoded_n) as hardcoded_sum, sum(total_n) as total_sum by bin(5m) | fields rds_sum * 100.0 / total_sum as rds_pct, snapshot_sum * 100.0 / total_sum as snapshot_pct, hardcoded_sum * 100.0 / total_sum as hardcoded_pct"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "max": 100,
+          "min": 0
+        },
+        "overrides": []
+      }
+    }
+  ]
+}

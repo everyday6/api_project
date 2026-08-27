@@ -1,0 +1,22 @@
+# Airflow 메타데이터 DB(dag_run/task_instance)를 그대로 데이터소스로 붙인다.
+# 별도 계측 코드 없이 Airflow가 이미 갖고 있는 DAG 실행 이력을 SQL로
+# 바로 조회할 수 있다 - docker-compose의 postgres 서비스(POSTGRES_* env)를
+# 그대로 재사용한다.
+apiVersion: 1
+
+datasources:
+  - name: Airflow Postgres
+    uid: airflow-postgres
+    type: postgres
+    access: proxy
+    url: postgres:5432
+    database: ${POSTGRES_DB}
+    user: ${POSTGRES_USER}
+    secureJsonData:
+      password: ${POSTGRES_PASSWORD}
+    jsonData:
+      sslmode: disable
+      postgresVersion: 1600
+      timescaledb: false
+    isDefault: false
+    editable: true

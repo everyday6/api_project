@@ -2,11 +2,10 @@
 Silver1 변환: LION bronze -> dim_segment(기본 컬럼)
 
 구조적 정제(컬럼명 통일, 타입 캐스팅, 도로명 정규화, SegmentID dedupe)만
-한다. is_routable 계산은 src/lion/gold2.py가 이 산출물을 읽어서 한다 —
-그 계산에 필요한 원본 코드 컬럼(RW_TYPE, FeatureTyp)은 이름 그대로
-통과시켜 둔다. POSTED_SPEED(제한속도)도 같은 이유로 통과시키되, type1
-SPEC Estimate 폴백(src/nav_time/gold2.py)이 바로 쓸 수 있게 speed_limit_mph로
-이름만 바꾼다.
+한다. 이 산출물이 곧 dim_segment 완성본이다 — 모든 소비자가 이 파일을
+그대로 쓴다. POSTED_SPEED(제한속도)는 type1 SPEC Estimate 폴백
+(src/nav_time/gold2.py)이 바로 쓸 수 있게 speed_limit_mph로 이름만 바꿔서
+통과시킨다.
 
 pandas를 쓰는 이유: LION은 분기 1회 갱신되는 24만 행짜리 참조 테이블이라
 이 컴퓨터 한 대의 메모리로 몇 초면 끝난다. Spark로 짜면 밑줄로 시작하는
@@ -28,11 +27,12 @@ from pathlib import Path
 from uuid import uuid4
 
 import pandas as pd
+from airflow.exceptions import AirflowSkipException
 from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
-from src.common.utils import clean_street
+from src.common.utils import clean_street, save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
@@ -149,12 +149,26 @@ def _gdb_to_flat_csv(gdb_path: Path, out_path: Path) -> Path:
 
 
 def build_dim_segment_staged(
-    bronze_version_path: str,
+    bronze_version_result: dict,
     staging_root=DIM_SEGMENT_STAGING_ROOT,
 ) -> dict:
-    """지정된 Bronze 스냅샷을 정제해 실행별 임시 경로에 저장한다."""
+    """지정된 Bronze 스냅샷을 정제해 실행별 임시 경로에 저장한다.
 
-    version_dir = _as_path(bronze_version_path)
+    bronze_version_result는 ingest_lion의 반환값(XCom)이다. 원본이 안
+    바뀌었으면(changed=False) 재계산할 게 없으니 건너뛴다 -
+    AirflowSkipException을 던지면 Airflow 기본 trigger_rule(all_success)에
+    따라 뒤따르는 validate_staged_dim_segment/publish_dim_segment/
+    cleanup_dim_segment_staging도 자동으로 같이 스킵되고, publish의
+    outlet Asset(lion_dim_segment_ready)도 emit되지 않는다 - 그래서
+    별도 태스크나 플래그 전파 없이도 downstream 전체가 조용히 스킵된다
+    (src/taxi_zone/silver1.py의 동일 패턴 참고)."""
+
+    if not bronze_version_result.get("changed", True):
+        raise AirflowSkipException(
+            "LION 원본이 안 바뀌어 Silver1 재생성을 건너뜁니다"
+        )
+
+    version_dir = _as_path(bronze_version_result["path"])
     if not (version_dir / "_metadata.txt").exists():
         raise FileNotFoundError(f"완료되지 않은 LION Bronze 스냅샷입니다: {version_dir}")
 
@@ -170,8 +184,7 @@ def build_dim_segment_staged(
     run_id = uuid4().hex
     run_path = _staging_run_path(run_id, staging_root)
     stage_path = run_path / "dim_segment.parquet"
-    stage_path.parent.mkdir(parents=True, exist_ok=True)
-    dim_segment.to_parquet(str(stage_path), index=False)
+    save_parquet(dim_segment, stage_path.parent, stage_path.name)
 
     logger.info(
         "[lion_silver] staging 저장 완료: rows=%s source=%s path=%s",

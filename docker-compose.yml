@@ -44,24 +44,36 @@ x-airflow-env: &airflow-env
   # local/aws 모드 스위치(src/common/config.py 참고). 여기서 명시적으로
   # 안 넘기면 컨테이너 안에서는 항상 기본값(aws)으로 떨어져서 .env에
   # APP_ENV=local을 설정해도 무시된다(실제로 겪음 — AWS_REGION이 빈
-  # 문자열이라 dynamodb 엔드포인트가 "https://dynamodb..amazonaws.com"
-  # 같은 잘못된 값으로 만들어져서 실패했다).
+  # 문자열이라 S3/EMR 등 AWS SDK 호출이 잘못된 엔드포인트로 실패했다).
   APP_ENV: ${APP_ENV:-aws}
 
-  # S3(Bronze/Silver/Gold)/RDS(Gold 서빙 테이블) 접속 정보. S3는 정적 키
-  # 없이 EC2 인스턴스에 붙은 IAM 롤로 인증한다.
+  # S3(Bronze/Silver/Gold) 접속 정보. S3는 정적 키 없이 EC2 인스턴스에
+  # 붙은 IAM 롤로 인증한다.
   AWS_REGION: ${AWS_REGION}
   S3_BUCKET_DATA: ${S3_BUCKET_DATA}
   TLC_TYPE3_ROLLING_WEEKS: ${TLC_TYPE3_ROLLING_WEEKS:-8}
 
-  # EMR Serverless(Spark 잡 실행)/DynamoDB(세그먼트 메트릭 서빙 테이블) 접속 정보.
-  # 4개 타입 전부 같은 DYNAMODB_TABLE_TYPEn 이름/기본값 패턴을 공유한다.
+  # EMR Serverless(Spark 잡 실행) 접속 정보.
   EMR_APPLICATION_ID: ${EMR_APPLICATION_ID:-}
   EMR_JOB_ROLE_ARN: ${EMR_JOB_ROLE_ARN:-}
-  DYNAMODB_TABLE_TYPE1: ${DYNAMODB_TABLE_TYPE1:-SegmentMetricsType1}
-  DYNAMODB_TABLE_TYPE2: ${DYNAMODB_TABLE_TYPE2:-SegmentMetricsType2}
-  DYNAMODB_TABLE_TYPE3: ${DYNAMODB_TABLE_TYPE3:-SegmentMetricsType3}
-  DYNAMODB_TABLE_TYPE4: ${DYNAMODB_TABLE_TYPE4:-SegmentMetricsType4}
+
+  # RDS(세그먼트 메트릭 서빙 테이블, src/common/db.py) 접속 정보 — DynamoDB
+  # 사용 중단으로 전환했다. 로컬 개발은 이미 떠 있는 postgres 서비스를
+  # 그대로 재사용한다(별도 RDS 인스턴스를 로컬에 새로 안 띄움 — 운영에서는
+  # RDS_HOST/RDS_DB를 실제 RDS 엔드포인트로 덮어쓴다).
+  RDS_HOST: ${RDS_HOST:-postgres}
+  RDS_PORT: ${RDS_PORT:-5432}
+  RDS_DB: ${RDS_DB:-${POSTGRES_DB}}
+  RDS_USER: ${RDS_USER:-${POSTGRES_USER}}
+  RDS_PASSWORD: ${RDS_PASSWORD:-${POSTGRES_PASSWORD}}
+
+  # 4개 타입 전부 같은 SERVING_TABLE_TYPEn 이름/기본값 패턴을 공유한다(단,
+  # 테이블 스키마 자체는 타입마다 다르다 - src/common/config.py의
+  # SERVING_TABLE_TYPE*_COLUMNS 참고).
+  SERVING_TABLE_TYPE1: ${SERVING_TABLE_TYPE1:-segment_metrics_type1}
+  SERVING_TABLE_TYPE2: ${SERVING_TABLE_TYPE2:-segment_metrics_type2}
+  SERVING_TABLE_TYPE3: ${SERVING_TABLE_TYPE3:-segment_metrics_type3}
+  SERVING_TABLE_TYPE4: ${SERVING_TABLE_TYPE4:-segment_metrics_type4}
 
   PYTHONPATH: /opt/airflow
 
@@ -174,9 +186,11 @@ services:
       --email ${AIRFLOW_ADMIN_EMAIL}
       || true &&
       airflow pools set downloads 16 'TLC 파일 다운로드 동시 실행 제한 (네트워크 대역폭 보호용)' &&
-      airflow pools set silver_pool 3 'TLC Silver 변환(Spark) 동시 실행 제한 (spark-master 1대 자원 보호용)' &&
-      python /opt/airflow/scripts/create_dynamodb_tables.py &&
-      python /opt/airflow/scripts/seed_dynamodb_defaults.py
+      airflow pools set tlc_ingest_pool 17 'EMR Serverless 계정 vCPU 쿼터(64) 중 tlc_ingest_daily 전용 예산 - 대그 전용 풀이라 이 대그 안 taxi_type별 병렬 태스크(validate_bronze_quality/build_silver)가 몰려도 합계가 17을 못 넘는다 (2026-08 EMR 동시성 사고 대응)' &&
+      airflow pools set tlc_type3_serving_pool 30 'EMR Serverless 계정 vCPU 쿼터(64) 중 tlc_type3_serving_daily 전용 예산' &&
+      airflow pools set segment_time_pool 17 'EMR Serverless 계정 vCPU 쿼터(64) 중 segment_time_pipeline 전용 예산' &&
+      python /opt/airflow/scripts/create_rds_tables.py &&
+      python /opt/airflow/scripts/seed_rds_defaults.py
       "
 
 
@@ -386,6 +400,58 @@ services:
 
 
   # =========================================================
+  # Grafana
+  #
+  # RDS/EMR Serverless/Lambda 등 CloudWatch에 이미 쌓이는 지표를 한
+  # 화면에서 보기 위한 대시보드. CloudWatch 데이터소스는
+  # grafana/provisioning/datasources/cloudwatch.yaml이 시작 시 자동
+  # 등록한다 - authType: default라 이 EC2 인스턴스에 이미 붙어있는 IAM
+  # 롤(CloudWatchReadOnlyAccess)을 그대로 쓰고, 별도 액세스 키를
+  # 관리할 필요가 없다(S3 접근과 동일한 원칙).
+  # =========================================================
+  grafana:
+    image: grafana/grafana-oss:11.3.0
+
+    container_name: navigation-grafana
+
+    # 예상 못 한 이유로(OOM 등) 죽으면 Docker가 자동으로 다시 띄운다
+    # (자세한 설명은 airflow-scheduler 서비스의 주석 참고).
+    restart: unless-stopped
+
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+    environment:
+      AWS_REGION: ${AWS_REGION}
+      GF_SECURITY_ADMIN_USER: ${GRAFANA_ADMIN_USERNAME:-admin}
+      GF_SECURITY_ADMIN_PASSWORD: ${GRAFANA_ADMIN_PASSWORD:?GRAFANA_ADMIN_PASSWORD가 .env에 설정되어야 합니다}
+      # Airflow 메타데이터 DB(dag_run/task_instance)를 Postgres 데이터소스로
+      # 붙이는 데 재사용 - grafana/provisioning/datasources/airflow-postgres.yaml 참고.
+      POSTGRES_DB: ${POSTGRES_DB}
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      # 서빙용 RDS(nav-segment-serving)를 직접 조회하는 데이터소스 -
+      # grafana/provisioning/datasources/rds-postgres.yaml 참고. src/common/db.py와
+      # 같은 자격증명을 재사용한다.
+      RDS_HOST: ${RDS_HOST}
+      RDS_PORT: ${RDS_PORT}
+      RDS_DB: ${RDS_DB}
+      RDS_USER: ${RDS_USER}
+      RDS_PASSWORD: ${RDS_PASSWORD}
+
+    volumes:
+      - grafana_data:/var/lib/grafana
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+
+    ports:
+      - "3000:3000"
+
+    networks:
+      - airflow-network
+
+
+  # =========================================================
   # 컨테이너 크래시 감시
   #
   # restart 정책은 "죽으면 다시 살리기"만 할 뿐, 죽었다는 사실 자체는
@@ -406,7 +472,7 @@ services:
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
-      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master
+      WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master,navigation-grafana
       POLL_INTERVAL_SECONDS: 30
 
     volumes:
@@ -425,6 +491,7 @@ services:
 # =========================================================
 volumes:
   postgres_data:
+  grafana_data:
 
 
 # =========================================================

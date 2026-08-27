@@ -2,10 +2,19 @@
 Bronze 적재 모듈
 
 역할
-1. 다운로드된 파일을 Bronze 폴더에 저장
-2. 다음 Task에서 사용할 Bronze 파일 정보를 dict로 반환
+1. 다운로드된 파일이 실제로 열리는 Parquet인지 확인
+2. 다운로드된 파일을 Bronze 폴더에 저장
+3. 다음 Task에서 사용할 Bronze 파일 정보를 dict로 반환
 
 Airflow Task 간 데이터 전달은 dict를 사용한다.
+
+validate_download(src/common/validator.py)가 "파일이 존재하고 비어있지
+않은지"는 이미 확인했지만, "이게 진짜 Parquet으로 열리는지"는 아직
+아니다 - LION(GDB 존재 확인)/Taxi Zone(shp 존재 확인)은 압축을 풀어보는
+것 자체가 이 확인을 겸하는데, TLC는 다운로드한 파일을 그대로 업로드만
+해서 이 검증이 빠져있었다. taxi_type별 컬럼 값 검증(GX)은 별도
+downstream 단계(src/tlc/bronze_validation.py)의 몫이라 여기서는 형식만
+본다.
 """
 
 from pathlib import Path
@@ -13,6 +22,7 @@ from pathlib import Path
 from airflow.decorators import task
 
 from src.common.config import BRONZE_DIR
+from src.common.file_validation import validate_parquet
 from src.common.logger import get_logger
 
 
@@ -82,6 +92,11 @@ def store_bronze(
     # -----------------------------------------
 
     try:
+
+        # 실제로 열리는 Parquet인지 먼저 확인한다 - 깨진 파일이 Bronze에
+        # 올라가면 Silver 단계의 Spark job이 읽다가 죽을 때까지 아무도
+        # 모른다.
+        validate_parquet(tmp_path)
 
         # bronze_path는 S3Path — 로컬 tmp 파일을 업로드하고, 성공하면
         # 로컬 tmp는 지운다(shutil.move는 로컬 전용이라 S3엔 못 씀).

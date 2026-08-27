@@ -2,7 +2,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 import geopandas as gpd
-import pandas as pd
 import yaml
 from shapely.geometry import LineString, Polygon
 
@@ -102,7 +101,9 @@ def test_match_lion_cbd_reprojects_when_crs_differs():
 def test_load_lion_segments_drops_duplicate_segment_ids():
     # 실측: LION 원본은 같은 segment_id가 여러 행으로 중복돼 있다
     # (243,237행 중 고유 segment_id는 218,373개). 중복이 남아있으면
-    # DynamoDB batch_write_item이 "duplicate keys" 에러를 낸다(실제로 겪음).
+    # 서빙 저장소 upsert가 같은 PK를 두 번 써서 에러를 낸다(DynamoDB
+    # batch_write_item 시절 "duplicate keys" 에러로 실제로 겪음 - RDS
+    # 배치 upsert도 동일 배치 안 중복 PK는 허용하지 않아 여전히 유효하다).
     raw = gpd.GeoDataFrame({
         "SegmentID": ["S1", "S1", "S2"],
         "Street": ["MAIN ST", "MAIN ST", "5 AVE"],

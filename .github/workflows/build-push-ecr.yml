@@ -43,6 +43,8 @@ on:
       - spark_jobs/**
       - docker/emr-python-env/Dockerfile
       - docker/lambda/Dockerfile
+      - docker-compose.yml
+      - grafana/**
       - .github/workflows/build-push-ecr.yml
   workflow_dispatch: {}
 

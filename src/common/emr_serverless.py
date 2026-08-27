@@ -7,7 +7,7 @@ src/ 전체를 zip으로 묶어 --py-files로 넘겨서, 잡 스크립트가 src
 기존 순수 변환 함수를 그대로 import해서 쓸 수 있게 한다 — 변환 로직을
 spark_jobs 쪽에 복제하지 않기 위함이다.
 
-우리 Spark job(nav_length_job.py, nav_time_job.py 등)은 pandas/geopandas/
+우리 Spark job(nav_time_silver_job.py, nav_time_gold_job.py 등)은 pandas/geopandas/
 shapely/pyproj/cloudpathlib 같은 서드파티 라이브러리도 쓰는데, EMR
 Serverless 기본 이미지에는 이게 없다. --py-files는 순수 파이썬 코드만
 배포하고 패키지를 설치해주지 않으므로, venv-pack으로 미리 패키징해둔
@@ -36,6 +36,11 @@ from src.common.config import (
     EMR_JOBS_DIR,
     EMR_PYTHON_ENV_S3_PATH,
     PROJECT_ROOT,
+    RDS_DB,
+    RDS_HOST,
+    RDS_PASSWORD,
+    RDS_PORT,
+    RDS_USER,
     TMP_DIR,
 )
 from src.common.logger import get_logger
@@ -54,6 +59,46 @@ _EMR_LOGS_DIR = EMR_JOBS_DIR / "logs"
 
 # 태스크 로그가 너무 길어지는 걸 막기 위해 드라이버 로그 마지막 N줄만 찍는다.
 _LOG_TAIL_LINES = 200
+
+
+def _validate_rds_env() -> None:
+    """RDS_HOST/RDS_DB가 없으면 바로 에러를 낸다.
+
+    EMR Serverless 컨테이너에는 .env 파일이 없어서(src/common/config.py 참고)
+    RDS_HOST 등이 os.getenv()로 그냥 두면 전부 None이 된다. 이 값들이 없으면
+    잡 안에서 db.py._dsn()이 결국 터지긴 하지만, boto3 클라이언트 생성/S3
+    업로드까지 다 하고 EMR에 잡을 제출한 뒤 몇 분 기다렸다가 실패하는 것보다,
+    run_spark_job() 맨 앞에서 바로 에러를 내는 게 디버깅이 훨씬 빠르다."""
+    if not RDS_HOST or not RDS_DB:
+        raise RuntimeError(
+            "RDS_HOST/RDS_DB 환경변수가 필요합니다 - .env에 실제 RDS 접속 정보를 채워주세요"
+        )
+
+
+def _rds_env_conf() -> str:
+    """RDS(PostgreSQL) 접속 정보를 driver/executor 환경변수로 주입하는 spark-submit
+    conf 조각을 만든다. 호출 전에 _validate_rds_env()로 이미 검증됐다고 가정한다.
+
+    nav_time_silver_job.py/nav_time_gold_job.py는 드라이버에서, tlc_pipeline_job.py의
+    Type3 롤링 발행은 foreachPartition으로 executor에서 db.py의 write 함수를
+    호출하므로 둘 다 필요하다.
+
+    비밀번호를 그대로 커맨드라인 문자열로 넘기므로 EMR 잡 실행 이력(콘솔/
+    get-job-run API)에 평문으로 남는다 — PYSPARK_PYTHON 관련 conf와 동일한
+    방식을 우선 맞췄지만, 운영에서는 Secrets Manager 조회로 바꾸는 걸 권장한다.
+    """
+    pairs = {
+        "RDS_HOST": RDS_HOST,
+        "RDS_PORT": RDS_PORT,
+        "RDS_DB": RDS_DB,
+        "RDS_USER": RDS_USER,
+        "RDS_PASSWORD": RDS_PASSWORD,
+    }
+    return " ".join(
+        f"--conf spark.{scope}Env.{key}={value} "
+        for key, value in pairs.items()
+        for scope in ("emr-serverless.driver", "executor")
+    ).strip()
 
 
 def _upload_src_bundle() -> str:
@@ -130,18 +175,32 @@ def run_spark_job(
     job_name: str,
     entry_point_script: Path,
     entry_point_args: list[str],
+    max_executors: int | None = None,
 ) -> None:
     """EMR Serverless에 Spark 잡을 제출하고 끝날 때까지 기다린다.
 
     실패(FAILED/CANCELLED)면 예외를 던져 Airflow가 기존 재시도/Slack
     실패 알림 경로를 그대로 타게 한다.
+
+    max_executors: 계정 전체 vCPU 쿼터(64)를 여러 DAG가 나눠 쓰다가 서로
+    충돌하는 사고(2026-08 EMR 동시성 인시던트)가 있어서, DAG별로 정해둔
+    vCPU 예산 안에 들어오게 executor 개수를 여기서 고정한다. None이면
+    EMR 기본 동적 할당 그대로 둔다(제한 없음).
     """
+    _validate_rds_env()
+
     client = boto3.client("emr-serverless", region_name=AWS_REGION)
 
     src_bundle_s3 = _upload_src_bundle()
     entry_point_s3 = _upload_script(entry_point_script, job_name)
 
     logger.info(f"EMR Serverless 잡 제출: {job_name}")
+
+    max_executors_conf = (
+        f"--conf spark.dynamicAllocation.maxExecutors={max_executors} "
+        if max_executors is not None
+        else ""
+    )
 
     response = client.start_job_run(
         applicationId=EMR_APPLICATION_ID,
@@ -161,7 +220,9 @@ def run_spark_job(
                     # (cloudpathlib 등)가 패키징한 venv 없이 실행돼 죽는다.
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_DRIVER_PYTHON=./environment/bin/python "
                     f"--conf spark.emr-serverless.driverEnv.PYSPARK_PYTHON=./environment/bin/python "
-                    f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python"
+                    f"--conf spark.executorEnv.PYSPARK_PYTHON=./environment/bin/python "
+                    f"{max_executors_conf}"
+                    f"{_rds_env_conf()}"
                 ),
             }
         },

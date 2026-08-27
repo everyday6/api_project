@@ -17,6 +17,7 @@ from shapely.strtree import STRtree
 
 from src.common.config import SILVER1_DIR, SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
+from src.common.utils import save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
 
@@ -29,7 +30,7 @@ MAP_ZONE_SEGMENT_STAGING_ROOT = SILVER2_DIR / "_staging" / "map_zone_segment"
 # Type 3가 "매핑이 실제로 바뀌었는지"를 TLC 날짜 범위와 별개로 판단할 수
 # 있도록, 승격에 성공할 때마다 매핑 내용의 해시를 여기 남긴다. 이게 없으면
 # LION/Taxi Zone이 갱신돼 zone-segment 매핑이 바뀌어도, TLC 쪽 날짜 범위가
-# 그대로면 DynamoDB Type 3 값이 조용히 갱신되지 않는다.
+# 그대로면 RDS Type 3 값이 조용히 갱신되지 않는다.
 MAP_ZONE_SEGMENT_VERSION_PATH = SILVER2_DIR / "map_zone_segment_version.txt"
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
 
@@ -207,8 +208,7 @@ def build_map_zone_segment_staged(
     run_id = uuid4().hex
     run_path = _staging_run_path(run_id, staging_root)
     stage_path = run_path / "map_zone_segment.parquet"
-    stage_path.parent.mkdir(parents=True, exist_ok=True)
-    mapping.to_parquet(str(stage_path), index=False)
+    save_parquet(mapping, stage_path.parent, stage_path.name)
     mapping_version = _content_hash(mapping)
     logger.info(
         "segment-zone staging 저장 완료: %s행(nearest=%s행) version=%s -> %s",
@@ -283,7 +283,7 @@ def publish_map_zone_segment(
     if not output_path.exists():
         raise RuntimeError(f"zone-segment 운영 경로 승격 실패: {output_path}")
 
-    # Type 3(tlc_daily)가 매핑이 바뀐 걸 알아챌 수 있도록 버전 마커를
+    # Type 3(tlc_type3_serving_pipeline)가 매핑이 바뀐 걸 알아챌 수 있도록 버전 마커를
     # 승격 성공 시점에만 기록한다 - 검증 실패로 승격 자체가 안 되면 이
     # 줄까지 못 와서 예전 버전이 그대로 남는다(안전한 방향).
     mapping_version = validated_stage.get("mapping_version")
