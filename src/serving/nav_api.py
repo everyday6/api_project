@@ -15,7 +15,7 @@ from typing import Literal
 from fastapi import FastAPI, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.logger import get_logger
 from src.serving.api import get_type3_values
@@ -64,6 +64,16 @@ class SegmentValuesRequest(BaseModel):
     type: Literal[1, 2]
     time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
 
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "segment_ids": ["0094334", "0093449"],
+                "type": 1,
+                "time": "18:30",
+            }
+        }
+    )
+
 
 class SegmentValuesResponse(BaseModel):
     values: list[int]
@@ -74,6 +84,17 @@ class NavigationValuesRequest(BaseModel):
     type: Literal[1, 2, 3, 4]
     date: str = Field(pattern=r"^\d{4}-\d{2}-\d{2}$")
     time: str = Field(pattern=r"^([01]\d|2[0-3]):[0-5]\d$")
+
+    model_config = ConfigDict(
+        json_schema_extra={
+            "example": {
+                "segment_ids": ["0094334", "0093449"],
+                "type": 1,
+                "date": "2026-08-27",
+                "time": "18:30",
+            }
+        }
+    )
 
 
 class NavigationValuesResponse(BaseModel):
