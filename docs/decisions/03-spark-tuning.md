@@ -27,8 +27,8 @@
 
 | DAG | 고정 배분 |
 | --- | --- |
-| tlc_ingest | 최대 17개 |
-| tlc_type3_serving | 최대 30개 |
-| segment_time | 최대 17개 |
+| tlc_ingest | 최대 16개 |
+| tlc_type3_serving | 최대 28개 |
+| segment_time | 최대 16개 |
 
 - 결과: EMR이 터지는 일이 없어짐
