@@ -1,4 +1,4 @@
-# 02. [Type3] (zone⋈segment) ⋈ TLC 파티션 스큐
+# 08. [Type3] (zone⋈segment) ⋈ TLC 파티션 스큐
 
 ## 문제
 
