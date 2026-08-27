@@ -13,7 +13,6 @@
 <p align="center">
 <sub>Grafana ID: admin</sub>
 </p>
-
 <p align="center">
 <sub>Grafana PW: 1234</sub>
 </p>
