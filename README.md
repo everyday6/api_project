@@ -211,8 +211,7 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 
 | # | 고민 | 결정 | 링크 |
 | :---: | --- | --- | --- |
-| 0 | (예시) 서빙 저장소로 무엇을 쓸까 → | (예시) 비용 이슈로 DynamoDB 대신 RDS(PostgreSQL) 선택 | [상세](docs/decisions/00-example.md) |
-| 1 |  |  | [상세](docs/decisions/01-decision.md) |
+| 1 | (예시) 서빙 저장소로 무엇을 쓸까 → | (예시) 비용 이슈로 DynamoDB 대신 RDS(PostgreSQL) 선택 | [상세](docs/decisions/01-example.md) |
 | 2 |  |  | [상세](docs/decisions/02-decision.md) |
 | 3 |  |  | [상세](docs/decisions/03-decision.md) |
 | 4 |  |  | [상세](docs/decisions/04-decision.md) |
@@ -225,6 +224,7 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 | 11 |  |  | [상세](docs/decisions/11-decision.md) |
 | 12 |  |  | [상세](docs/decisions/12-decision.md) |
 | 13 |  |  | [상세](docs/decisions/13-decision.md) |
+| 14 |  |  | [상세](docs/decisions/14-decision.md) |
 
 ## 8. 기술 스택
 
