@@ -157,37 +157,36 @@
 
 타입마다 원본 데이터의 갱신 패턴이 달라, DAG 스케줄도 타입별로 다르게 설계했습니다. 9개 DAG는 트리거 방식 기준 **Cron 4개 + Asset 4개 + 수동 1개**로 나뉩니다.
 
-```mermaid
-graph TD
-    subgraph Cron["Cron 스케줄 (4개)"]
-        lion["lion_pipeline<br/>매일 04:00"]
-        zone["taxi_zone_pipeline<br/>매월 1일 04:00"]
-        t1["segment_time_pipeline<br/>30분마다"]
-        tlcIngest["tlc_ingest_pipeline<br/>매주 월요일 04:00"]
-    end
-
-    subgraph Manual["수동 트리거 (1개)"]
-        tollb["toll_bronze_pipeline"]
-    end
-
-    subgraph AssetTriggered["Asset 트리거 (4개)"]
-        t2["segment_length_pipeline"]
-        zs["zone_segment_pipeline"]
-        t4["toll_silver_gold_pipeline"]
-        t3["tlc_type3_serving_pipeline"]
-    end
-
-    lion -->|lion_dim_segment_ready| t2
-    lion -->|lion_dim_segment_ready| zs
-    zone -->|taxi_zone_silver1_updated| zs
-    lion -->|lion_bronze_updated| t4
-    tollb -->|toll_bronze_updated| t4
-    zs -->|map_zone_segment_ready| t3
-    tlcIngest -->|tlc_type3_gold2_ready| t3
-    t2 -.->|dim_segment 런타임 참조| t1
+```
+lion_pipeline
+  ├── lion_bronze_updated ─────────────→ toll_silver_gold_pipeline
+  │                                         ↑
+  │                                         │ toll_bronze_updated (trigger)
+  │                                  toll_bronze_pipeline
+  │
+  └── lion_dim_segment_ready
+        ├──→ segment_length_pipeline
+        │       │
+        │       └── dim_segment.parquet ·················┐
+        │                                                ↓
+        │                                   segment_time_pipeline
+        │                                   (30분 Cron 독립 실행)
+        │                                   NYC DOT Speed
+        │                                          ↓
+        │                                   Type1 시간 RDS
+        │
+        └──→ zone_segment_pipeline
+               ↑                │
+               │                │ map_zone_segment_ready
+               │                ↓
+taxi_zone_pipeline       tlc_type3_serving_pipeline
+  │                              ↑
+  └── taxi_zone_silver1_updated  │ tlc_type3_gold2_ready
+                                 │
+                         tlc_ingest_pipeline
 ```
 
-> `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `segment_length_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(Asset 트리거가 아니라 런타임 의존성이라 점선으로 표시).
+> `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `segment_length_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(Asset 트리거가 아니라 런타임 의존성, 위 다이어그램의 점선 부분).
 
 **Cron 스케줄 (4개)**
 
