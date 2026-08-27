@@ -335,6 +335,9 @@ graph LR
 | **Type3 시공간 스키마** | PySpark SQL DataFrame의 `filter`, `groupBy`, `distinct`, `count` | Zone 결과는 `zone_id, type, date, time, value`, Segment 결과는 `segment_id, type, dow, time, value`로 고정하고 복합키와 전체 시간대 coverage를 검사 | 컬럼은 정상이더라도 특정 Zone의 14:30 값이 빠지면 `Zone × 날짜 × 48개 시간대` 예상 행 수와 달라 게시 중단 | [`src/tlc/gold2.py`](src/tlc/gold2.py) |
 
 ## 7. 모니터링
+<img width="1183" height="353" alt="image" src="https://github.com/user-attachments/assets/04c1d5d7-7518-447e-8e1b-87563bf61eb1" />
+<img width="588" height="301" alt="image" src="https://github.com/user-attachments/assets/09eba1fd-8e49-4cde-8bc6-7f6951e33328" />
+<img width="1182" height="618" alt="image" src="https://github.com/user-attachments/assets/bcfab373-ef94-4828-b58a-1bd67b11ff24" />
 
 RDS 쿼리 응답시간(p50/p95/p99), 타입별 fallback 계층 비율, API 전체 응답시간을 Grafana로 봅니다. fallback 비율은 사용자가 실제로 얼마나 자주 부정확한 값을 받는지 보여줘 개선 우선순위를 정하는 근거가 되고, API·RDS·Lambda 응답시간을 나란히 보면 병목이 RDS인지 Lambda 콜드스타트인지 구분할 수 있습니다.
 
