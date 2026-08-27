@@ -6,9 +6,15 @@
 </p>
 
 <p align="center">
-  <a href="https://nav-api-dashboard-lsy341.s3-website.ap-northeast-2.amazonaws.com"><img src="https://img.shields.io/badge/대시보드_바로가기-569A31?style=for-the-badge&logo=amazons3&logoColor=white" alt="대시보드"/></a>
-  <a href="http://3.38.96.76:8080"><img src="https://img.shields.io/badge/Airflow_바로가기-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white" alt="Airflow"/></a>
-  <a href="http://3.38.96.76:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-12h&to=now&timezone=browser&refresh=5m"><img src="https://img.shields.io/badge/Grafana_바로가기-F46800?style=for-the-badge&logo=grafana&logoColor=white" alt="Grafana"/></a>
+  <a href="http://nav-api-dashboard-lsy341.s3-website.ap-northeast-2.amazonaws.com"><img src="https://img.shields.io/badge/대시보드_바로가기-569A31?style=for-the-badge&logo=amazons3&logoColor=white" alt="대시보드"/></a>
+  <a href="http://3.38.96.76:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-24h&to=now&timezone=browser&refresh=1m"><img src="https://img.shields.io/badge/Grafana_바로가기-F46800?style=for-the-badge&logo=grafana&logoColor=white" alt="Grafana"/></a>
+</p>
+
+<p align="center">
+<sub>Grafana ID: admin</sub>
+</p>
+<p align="center">
+<sub>Grafana PW: 1234</sub>
 </p>
 
 <p align="center">
@@ -22,13 +28,14 @@
 1. [프로덕트 개요](#1-프로덕트-개요)
 2. [최종 데이터 스키마](#2-최종-데이터-스키마)
 3. [데이터 파이프라인과 아키텍처](#3-데이터-파이프라인과-아키텍처)
-4. [타입별 설계: 데이터가 다르면 답도 다르다](#4-타입별-설계-데이터가-다르면-답도-다르다)
-5. [무조건 응답하는 서비스 만들기](#5-무조건-응답하는-서비스-만들기)
-6. [운영과 성능](#6-운영과-성능)
-7. [기술적 고민과 결정](#7-기술적-고민과-결정)
-8. [기술 스택](#8-기술-스택)
-9. [한계와 다음 단계](#9-한계와-다음-단계)
-10. [팀원 소개](#10-팀원-소개)
+4. [AWS 아키텍처](#4-aws-아키텍처)
+5. [Airflow DAG 설계](#5-airflow-dag-설계)
+6. [스키마 검증](#6-스키마-검증)
+7. [모니터링](#7-모니터링)
+8. [기술적 고민과 결정](#8-기술적-고민과-결정)
+9. [기술 스택](#9-기술-스택)
+10. [한계와 다음 단계](#10-한계와-다음-단계)
+11. [팀원 소개](#11-팀원-소개)
 
 ## 1. 프로덕트 개요
 
@@ -109,103 +116,302 @@
 **4. <mark style="background-color:#fef08a; color:#1a1a1a;">승객 많은 경로</mark>**
 
 ## 3. 데이터 파이프라인과 아키텍처
+<img width="10576" height="4768" alt="image (4)" src="https://github.com/user-attachments/assets/165230ab-b1ea-480e-8b45-6b43cbdea35d" />
 
-**INPUT**
 
-| 제공처 | 수집 대상 | 수집 방식 · 주기 |
+### **파이프라인 INPUT**
+
+| 제공처 | 수집 대상 | 수집 방식 | 주기 | 규모 |
+| --- | --- | --- | --- | --- |
+| NYC DOT / NYC Open Data | 도로별 속도 데이터 | Socrata API| 5분 | 실제 관측 지점 125개 |
+| NYC DCP / NYC Open Data | 도로망(LION) | Socrata API | 분기 1회 | 세그먼트 218,373개 |
+| NYC TLC Data | 택시 운행 기록 | 정적 파일 다운로드 | 월 1회 | 월 수천만 건 |
+| NYC TLC Data | 택시존 | 정적 파일 다운로드 | 최초 1회 | 263개 zone |
+| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 크롤러 | 정책 변경 시 | — |
+
+
+### **파이프라인 OUTPUT**
+
+| type | 계산 방식 | 산출값 | 규모 | 업데이트 주기 |
+| :---: | --- | --- | --- | --- |
+| 세그먼트별 통과시간 (type1) | 길이 ÷ 가중평균 속도 | 30분 버킷 통과시간(초) | 약 1,000만 행 | 30분 |
+| 세그먼트별 길이 (type2) | LION 원본 그대로 | 정적 길이값(m) | 약 22만 행 | LION 갱신 시(분기 1회) |
+| 세그먼트별 택시 승차수요 (type3) | 최근 N주 평균 → zone→segment 확산 | 요일×30분 슬롯 평균 승차수 | 약 7,000만 건 ~ 1억 건| 한 달 |
+| 세그먼트별 통행료 (type4) | 혼잡통행료 + 도로통행료 합산 | 세그먼트당 통행료 | — (통행료 대상만, 희소) | 통행료·LION 원본 갱신 시(요금표는 매달 1일 변경 여부 확인) |
+
+
+
+
+## 4. AWS 아키텍처
+
+<img width="5368" height="1688" alt="image (5)" src="https://github.com/user-attachments/assets/a33e1932-243a-457e-b406-0b264f01e0ea" />
+
+| 구성 | 서비스 | 역할 |
 | --- | --- | --- |
-| NYC DOT / NYC Open Data | 도로별 속도 데이터 | Socrata API · 5분 |
-| NYC DCP / NYC Open Data | 도로망(LION), 세그먼트 약 10만 개 | Socrata API · 분기 1회 |
-| NYC TLC Data | 택시 운행 기록 | 정적 파일 다운로드 · 월 1회 |
-| NYC TLC Data | 택시존, 263개 zone | 정적 파일 다운로드 · 최초 1회 |
-| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 크롤러 · 정책 변경 시 |
+| Data Lake | S3 | Bronze/Silver/Gold 원본·중간·최종 데이터 저장 |
+| 이미지 저장소 | ECR | Airflow·Spark 실행용 컨테이너 이미지 저장 |
+| 오케스트레이션 | EC2(Airflow) | 파이프라인 스케줄링 및 실행 관리 |
+| 대용량 처리 | EMR(Spark) | Silver/Gold 단계 데이터 정제·집계 |
+| 서빙 저장소 | RDS(Gold DB) | 최종 지표(type1~4) 저장, API 조회 대상 |
+| 서빙 API | Lambda | RDS 조회 + 인메모리 캐시로 응답 생성 |
+| API 엔드포인트 | API Gateway | 외부 요청을 Lambda로 라우팅 |
+| 대시보드 | S3(정적 호스팅) | 프론트엔드 대시보드 배포 |
 
-**OUTPUT**
+※ EC2·EMR·RDS는 같은 VPC 안에서 통신합니다.
 
-| type | 계산 방식 | 산출값 |
-| :---: | --- | --- |
-| 세그먼트별 통과시간 (type1) | 길이 ÷ 가중평균 속도 | 30분 버킷 통과시간(초) |
-| 세그먼트별 길이 (type2) | LION 원본 그대로 | 정적 길이값(m) |
-| 세그먼트별 택시 승차수요 (type3) | 최근 N주 rolling 평균 → zone→segment 확산 | 요일×30분 슬롯 평균 승차수 |
-| 세그먼트별 통행료 (type4) | 혼잡통행료 + 도로통행료 합산 | 세그먼트당 통행료 |
+## 5. Airflow DAG 설계
 
-**아키텍처**
+타입마다 원본 데이터의 갱신 패턴이 달라, DAG 스케줄도 타입별로 다르게 설계했습니다. 9개 DAG는 트리거 방식 기준 **Cron 4개 + Asset 4개 + 수동 1개**로 나뉩니다.
+
+```mermaid
+graph LR
+    zone["taxi_zone_pipeline<br/>(택시존 수집·정제)"]
+    lion["lion_pipeline<br/>(LION 도로망 수집·정제)"]
+    tollb["toll_bronze_pipeline<br/>(통행료 수집, 수동)"]
+    tlcIngest["tlc_ingest_pipeline<br/>(TLC 원본 수집·정제)"]
+
+    zs["zone_segment_pipeline<br/>(Zone-Segment 매핑 생성)"]
+    t2["segment_length_pipeline<br/>(Type2 길이 계산)"]
+    t4["toll_silver_gold_pipeline<br/>(Type4 통행료 계산)"]
+
+    t3["tlc_type3_serving_pipeline<br/>(Type3 수요 계산)"]
+    t1["segment_time_pipeline<br/>(Type1 소요시간 계산)"]
+
+    zone -->|taxi_zone_silver1_updated| zs
+    lion -->|lion_dim_segment_ready| zs
+    lion -->|lion_dim_segment_ready| t2
+    lion -->|lion_bronze_updated| t4
+    tollb -->|toll_bronze_updated| t4
+    zs -->|map_zone_segment_ready| t3
+    tlcIngest -->|tlc_type3_gold2_ready| t3
+    lion -.->|dim_segment 런타임 참조| t1
+    t2 ~~~ t1
+```
+
+> `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `lion_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(점선으로 표시, Asset 트리거는 아님).
+
+**Cron 스케줄 (4개)**
+
+| DAG | 주기 | 역할 |
+| --- | --- | --- |
+| lion_pipeline | 매일 04:00 (`0 4 * * *`) | LION 도로망 원본 수집·정제 |
+| taxi_zone_pipeline | 매월 1일 04:00 (`0 4 1 * *`) | 택시존 원본 수집·정제 |
+| segment_time_pipeline | 30분마다 (`*/30 * * * *`) | Type1(소요시간) 계산 |
+| tlc_ingest_pipeline | 매주 월요일 04:00 (`0 4 * * 1`) | TLC 원본 수집·정제 |
+
+**Asset 트리거 (4개)** — `|`는 OR 조건, 연결된 Asset 중 하나만 갱신돼도 실행됩니다.
+
+| DAG | 의존 Asset | 발행 DAG | 설명 |
+| --- | --- | --- | --- |
+| segment_length_pipeline | `lion_dim_segment_ready` | lion_pipeline | LION 도로망이 갱신되면 Type2(길이)를 다시 계산한다 |
+| zone_segment_pipeline | `lion_dim_segment_ready` \| `taxi_zone_silver1_updated` | lion_pipeline, taxi_zone_pipeline | LION 도로망 또는 택시존 정보가 바뀌면 Zone-Segment 매핑을 다시 만든다 |
+| toll_silver_gold_pipeline | `toll_bronze_updated` \| `lion_bronze_updated` | toll_bronze_pipeline, lion_pipeline | 통행료 원본 또는 LION 도로망이 바뀌면 Type4(통행료)를 다시 계산한다 |
+| tlc_type3_serving_pipeline | `tlc_type3_gold2_ready` \| `map_zone_segment_ready` | tlc_ingest_pipeline, zone_segment_pipeline | TLC 집계 결과 또는 Zone-Segment 매핑이 바뀌면 Type3(수요)를 다시 서빙한다 |
+
+**수동 트리거 (1개)**
+
+| DAG | 역할 |
+| --- | --- |
+| toll_bronze_pipeline | 통행료 원본 수집. 요금표 변경 여부를 사람이 확인한 뒤 직접 실행 |
+
+### DAG별 태스크 목록
+
+<details>
+<summary>lion_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| ingest_lion | LION 원본 데이터 수집(Bronze) |
+| build_dim_segment_staged | dim_segment 스테이징 테이블 빌드 |
+| validate_staged_dim_segment | 스테이징 데이터 검증 |
+| publish_dim_segment | 검증 통과한 dim_segment 게시(운영 반영) |
+| cleanup_dim_segment_staging | 스테이징 임시 데이터 정리 |
+
+</details>
+
+<details>
+<summary>taxi_zone_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| ingest_taxi_zone_shapefile | 택시존 shapefile 원본 수집 |
+| build_taxi_zone_silver1 | 택시존 Silver1 정제(변경 없으면 게시 스킵) |
+
+</details>
+
+<details>
+<summary>toll_bronze_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| upload_rates_task | 통행료 요금표 업로드 |
+| upload_facilities_task | 통행료 부과 시설 목록 업로드 |
+| upload_cbd_geofence_task | 혼잡통행료 구역(CBD) geofence 업로드 |
+| publish_toll_bronze | 통행료 Bronze 게시 |
+
+</details>
+
+<details>
+<summary>toll_rate_monitor</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| send_reminder | 매달 요금표 변경 여부 확인 Slack 알림 |
+
+</details>
+
+<details>
+<summary>segment_time_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| check_new_data | 신규 속도 데이터 존재 확인(short-circuit) |
+| collect_bronze | 도로 속도 데이터 수집(Bronze) |
+| check_dim_segment_exists | dim_segment 존재 여부 확인(short-circuit) |
+| submit_nav_time_job | Type1 Silver/Gold 계산 작업 제출(EMR) |
+
+</details>
+
+<details>
+<summary>tlc_daily</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| generate_incremental_download_list | 신규 다운로드 대상 목록 생성 |
+| download_file | TLC 파일 다운로드(taxi_type별 병렬) |
+| validate_download | 다운로드 결과 검증 |
+| store_bronze | Bronze 저장 |
+| find_pending_silver_files | Bronze는 있지만 Silver1 미완료인 파일 복구 |
+| chunk_bronze_files | taxi_type별 청크 묶기 |
+| validate_bronze_quality | 청크별 Bronze 품질 검증(Great Expectations) |
+| build_silver | 검증 통과 파일 Silver1 변환·저장 |
+| find_pending_type3_months | Type3 처리 대상 월 탐색 |
+| build_type3_staged_records | Type3 임시(스테이징) 레코드 생성 |
+| validate_type3_staged_records | Type3 스테이징 레코드 검증 |
+| publish_type3_daily_records | 검증 통과분 운영 파티션으로 승격 |
+| cleanup_type3_staging | Type3 스테이징 정리 |
+| check_type3_publish_needed | RDS 값이 최신 N주보다 오래됐는지 판단 |
+| check_type3_reference_ready | zone-segment 매핑 준비 여부 확인 |
+| publish_type3_rolling_values | Type3 롤링 평균 RDS 게시 |
+
+</details>
+
+<details>
+<summary>segment_length_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| build_gold2_lion | Gold 계산용 LION 데이터 빌드 |
+| submit_nav_length_job | Type2 계산 작업 제출(EMR) |
+| build_and_write_spec_estimates | 스펙 기반 추정치 계산·기록 |
+
+</details>
+
+<details>
+<summary>zone_segment_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| validate_reference_inputs | 참조 입력(LION·택시존) 유효성 검증 |
+| build_map_zone_segment_staged | zone-segment 매핑 스테이징 빌드 |
+| validate_staged_map_zone_segment | 매핑 스테이징 검증 |
+| publish_map_zone_segment | 검증 통과한 매핑 게시 |
+
+</details>
+
+<details>
+<summary>toll_silver_gold_pipeline</summary>
+
+| 태스크 | 역할 |
+| --- | --- |
+| find_latest_lion_gdb | 최신 LION GDB 파일 탐색 |
+| build_lion_facility_mapping_task | 시설-세그먼트 매핑 빌드 |
+| build_lion_cbd_mapping_task | CBD(혼잡구역)-세그먼트 매핑 빌드 |
+| build_and_write_gold | Type4 Gold 계산·RDS 기록 |
+
+</details>
+
+## 6. 스키마 검증
+
+| 검증 지점 | 검증 방식·라이브러리 | 코드에 정의한 스키마 | 검증 예시 | 구현 |
+| --- | --- | --- | --- | --- |
+| **API 요청·응답** | FastAPI + Pydantic의 `BaseModel`, `Field`, `Literal` | `segment_ids` 1-500개, type은 1-4, 날짜는 `YYYY-MM-DD`, 시간은 `HH:MM`, 응답은 숫자 배열로 제한 | `type=5`, 빈 경로, `25:00` 요청은 FastAPI가 422로 거부 | [`src/serving/nav_api.py`](src/serving/nav_api.py) |
+| **TLC Bronze 원본** | Great Expectations의 `ExpectColumnToExist`를 PySpark DataFrame에 실행 | 택시 종류마다 서로 다른 필수 원본 컬럼을 검사 | Yellow Taxi 파일에 `tpep_dropoff_datetime`이 없으면 critical 스키마 실패로 판정 | [`src/tlc/expectations.py`](src/tlc/expectations.py), [`src/tlc/bronze_validation.py`](src/tlc/bronze_validation.py) |
+| **TLC Silver1 공통 스키마** | PySpark SQL의 `StructType`, `StructField`, `cast` | 네 종류의 TLC 데이터를 `timestamp 2개 + integer 3개 + double 1개`의 공통 6개 컬럼으로 변환 | FHV에 원래 없는 `passenger_count`, `trip_distance`는 지정 타입의 nullable 컬럼으로 추가하고, 필수 원본 컬럼 누락은 거부 | [`src/tlc/silver1_transform.py`](src/tlc/silver1_transform.py) |
+| **Zone-Segment 매핑** | pandas DataFrame의 `is_unique`, `isna`, `between`, `isin` | 모든 LION `segment_id`가 정확히 하나의 `zone_id`를 가져야 하며, zone은 1~263, 매핑 방식은 `contains` 또는 `nearest`만 허용 | 입력 세그먼트가 218,373개인데 매핑이 218,372개이거나 `segment_id`가 중복되면 검증 실패 | [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py) |
+| **Type3 시공간 스키마** | PySpark SQL DataFrame의 `filter`, `groupBy`, `distinct`, `count` | Zone 결과는 `zone_id, type, date, time, value`, Segment 결과는 `segment_id, type, dow, time, value`로 고정하고 복합키와 전체 시간대 coverage를 검사 | 컬럼은 정상이더라도 특정 Zone의 14:30 값이 빠지면 `Zone × 날짜 × 48개 시간대` 예상 행 수와 달라 게시 중단 | [`src/tlc/gold2.py`](src/tlc/gold2.py) |
+
+**LION 원본이 바뀌면 하위 데이터에 이렇게 전파됩니다**
+
+LION은 거의 모든 지표가 기준으로 삼는 데이터라, `lion_pipeline`이 새 `dim_segment.parquet`을 발행하면(`lion_dim_segment_ready`/`lion_bronze_updated` Asset) 그 영향이 여러 타입으로 퍼집니다.
+
+- **Type2(길이)** — `segment_length_pipeline`이 `lion_dim_segment_ready`에 바로 반응해 재계산합니다.
+- **Type4(통행료)** — `toll_silver_gold_pipeline`이 `lion_bronze_updated`에 반응해 통행료 매핑을 다시 계산합니다.
+- **Zone-Segment 매핑 → Type3(수요)** — `zone_segment_pipeline`이 매핑을 다시 만들면서, 그 결과를 `segment_id` 기준으로 정렬해 SHA-256으로 해시한 값을 `mapping_version`으로 저장합니다. `tlc_type3_serving_pipeline`은 TLC 원본 날짜 범위가 그대로여도 이 `mapping_version`이 이전과 다르면 재계산을 트리거합니다 — 매핑 run_id(uuid)만으로는 "내용이 실제로 바뀌었는지"를 구분할 수 없어서(재승격했지만 무관한 속성만 바뀐 경우도 있음), 내용 자체를 해시해 불필요한 재계산을 피합니다.
+- **Type1(소요시간)** — 별도 트리거 없이, `segment_time_pipeline`이 30분마다 실행될 때마다 그 시점의 `dim_segment.parquet`을 코드 레벨로 직접 읽어 최신 상태를 자연히 반영합니다([5. Airflow DAG 설계](#5-airflow-dag-설계) 참고).
+
+구현: [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py), [`src/tlc/type3_pipeline.py`](src/tlc/type3_pipeline.py)
+
+## 7. 모니터링
+
+### 1. Grafana
+
+[Grafana 대시보드 열기](http://3.38.96.76:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-24h&to=now&timezone=browser&refresh=1m)
+
+| 관측 영역 | 주요 지표 | 확인 목적 |
+| --- | --- | --- |
+| 인프라 | RDS 및 EC2 CPU·메모리·디스크 점유율 | 병목이 DB 자원인지 애플리케이션인지 구분 |
+| 서빙 | Lambda 호출·소요시간, API Gateway Latency | API 장애·지연 인지 |
+| 파이프라인·데이터 | Airflow DAG 상태·태스크 소요시간·최근 실패, 타입별 row 수·마지막 갱신 시각 | DAG 성공 여부와 실제 RDS 데이터 신선도를 교차 검증 |
+| 사용자 체감 성능 | RDS 쿼리 p50/p95/p99, 타입별 fallback 계층 비율 | 느린 쿼리와 부정확한 대체값 응답 비율을 함께 추적 |
 
 <p align="center">
-  <img src="🚧 TODO: 아키텍처 다이어그램 이미지 URL" width="100%" alt="시스템 아키텍처">
+  <img width="100%" alt="Grafana RDS 및 EC2 자원 종합 현황" src="https://github.com/user-attachments/assets/04c1d5d7-7518-447e-8e1b-87563bf61eb1" /><br>
+  <sub>RDS와 Airflow·Grafana가 동작하는 EC2의 CPU, 메모리, 디스크 상태</sub>
 </p>
 
-| 단계 | 구성 | 내용 |
-| --- | --- | --- |
-| Bronze | S3 | 원본 그대로 저장 |
-| Silver1/2 | S3 · Spark | 정제 + 도로망 매핑/조인 |
-| Gold | PostgreSQL · Spark | type1~4 최종 지표 upsert |
-| Data Access | EC2 · FastAPI | 도로별 정보 조회 API |
+#### 모니터링으로 해결한 문제: RDS 쓰기 중 읽기 지연
 
-> ⚠️ `nav` 코드는 아직 Lambda + DynamoDB 기준입니다. 위 구성은 이번에 확정한 목표 아키텍처(EC2+FastAPI+RDS)입니다.
+Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같은 테이블을 읽는 API 쿼리의 응답시간이 증가했고, 일부 쿼리는 1초 `statement_timeout`으로 취소됐습니다. Grafana에서 다음 지표를 함께 비교해 원인을 좁혔습니다.
 
-## 4. 타입별 설계: 데이터가 다르면 답도 다르다
+1. Type3 쿼리 p95/p99(p99는 약 1.7초까지 증가)
+2. RDS 직접 조회 실패. 하드코딩 fallback 비율 최대 93.5%까지 급등
+3. 같은 시각 RDS CPU와 디스크 지연은 정상 범위. `DatabaseConnections`는 57개에서 76개로 증가
+4. 대량 upsert 트랜잭션과 API 읽기 쿼리 사이의 경합이 원인이라고 판단함.
 
-4개 타입은 같은 파이프라인을 거치지만, 원본 데이터의 갱신 주기·정밀도·노이즈 특성이 서로 달라 타입마다 다른 설계 결정을 내렸습니다.
+<p align="center">
+  <img width="70%" alt="Grafana Type3 RDS 쿼리 응답시간 p50 p95 p99" src="https://github.com/user-attachments/assets/09eba1fd-8e49-4cde-8bc6-7f6951e33328" /><br>
+  <sub>Type3 쿼리 응답시간 분포: 평균만으로 숨겨지는 느린 요청을 p95·p99로 확인</sub>
+</p>
 
-### Type1 — 세그먼트별 통행 소요시간
+<p align="center">
+  <img width="100%" alt="Grafana Type1부터 Type4까지 fallback 계층 비율" src="https://github.com/user-attachments/assets/bcfab373-ef94-4828-b58a-1bd67b11ff24" /><br>
+  <sub>타입별 RDS 직접 조회와 snapshot·hardcoded fallback 비율</sub>
+</p>
 
-원본(도로 속도 데이터)은 5분마다 갱신되지만 결측이 많아 fresh한 값을 항상 확보할 수는 없습니다. 1-2시간만 오래돼도 실제 교통 상황과 어긋날 만큼 신선도가 중요해, 결측 시에도 정확한 대체값이 필요합니다. 다만 그 대체값을 구하는 연산이 무거워지면 파이프라인이 5분 주기를 따라잡지 못하므로, 정확도와 파이프라인 처리 속도를 동시에 지켜야 했습니다.
+해결책으로 운영 테이블에 행 단위 upsert를 반복하는 대신, 새 데이터를 별도 staging 테이블에 모두 적재하고 테이블 이름만 RENAME 하도록 변경했습니다.
+API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같은 테이블에서 오래 경합하지 않습니다.
 
-RDS는 정상 응답했지만 이 세그먼트·시간대 값의 신뢰도가 낮을 때(결측/오래됨), 신뢰도 순으로 내려가는 3단계 체인을 둡니다.
+### 2. Airflow 장애 알림 (Slack)
 
-| 단계 | 값 | 조건 |
-| :---: | --- | --- |
-| 1 | 최신 실측값 (Fresh) | `현재 - last_sample_at ≤ 신선도 기준` |
-| 2 | 과거 대표값 (Historical AVG) | Fresh 없거나 오래됨 |
-| 3 | 코드 기본값 (Hardcoded) | AVG도 없음 |
+| 구분 | 핵심 동작 |
+| --- | --- |
+| 태스크 실패 | 재시도 소진 후 DAG·Task·예외 요약과 Airflow 로그 링크를 Slack으로 전송 |
+| 파일 검증 실패 | 제외된 TLC 파일과 사유를 청크당 한 메시지로 요약 |
 
-AVG는 매번 전체 히스토리를 재계산하지 않고, 새 관측값이 들어올 때마다 기존 평균을 살짝 업데이트하는 지수이동평균(EMA) 방식으로 계산합니다.
+구현: [`src/common/alerts.py`](src/common/alerts.py)
 
-```
-new_avg = old_avg + (new_value - old_avg) / min(count, 스무딩 윈도우)
-```
+### 3. 로그
 
-`count`는 이 슬롯이 몇 번 갱신됐는지 추적해 최근 값 반영 비중을 조절합니다 — 초반엔 안정적으로 쌓이다가, 일정 횟수를 넘으면 최근 값에 더 큰 비중을 줘 도로공사 등 실제 패턴 변화를 빠르게 따라잡습니다. 매번 전체 히스토리를 훑지 않으니 연산량도 늘지 않습니다.
+| 구분 | 핵심 동작 |
+| --- | --- |
+| 지표 로그 | RDS 쿼리 시간·fallback 계층 로그를 CloudWatch Logs Insights로 집계해 Grafana에 표시 |
+| 장애 로그 | Lambda는 표준 출력으로 기록하고, EMR 실패 시 Spark Driver 로그 끝부분을 Airflow에 첨부 |
 
-또한 경로 전체를 요청 시각 하나로 조회하지 않고, 앞선 세그먼트들의 예상 소요시간을 누적해 각 세그먼트의 예상 진입 시각을 계산한 뒤 그 시간대 값을 조회합니다. 예상 진입 시각이 미래라면 그 시간대 실측값은 아직 존재할 수 없으므로, Fresh 대신 Historical AVG를 곧바로 사용합니다.
+구현: [`src/common/logger.py`](src/common/logger.py), [`src/common/emr_serverless.py`](src/common/emr_serverless.py)
 
-### Type2 — 세그먼트별 길이
 
-값 자체는 정적이지만, LION 도로망은 Type1·Type3가 세그먼트 정의의 기준으로 삼는 데이터라 다른 타입에 영향이 전파됩니다. 매핑 결과를 콘텐츠 해시로 버전 관리해, 하위 파이프라인이 자신이 사용한 매핑 버전을 함께 기록하고 최신 버전과 비교하도록 설계했습니다. 도로망이 갱신되더라도 하위 파이프라인이 조용히 낡은 매핑으로 남지 않고 자동으로 재계산되는 구조입니다.
-
-### Type3 — 세그먼트별 택시 승차 승객 수
-
-TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세그먼트별로 직접 집계할 수 없습니다. zone 평균을 계산한 뒤 해당 zone의 모든 세그먼트에 동일하게 복제해 서빙합니다. 이 복제 과정에서 결과 건수가 요일·시간대까지 곱해져 7,300만 건까지 불어나는데, zone당 세그먼트 수가 22개~3,435개로 편차가 커 zone 단위로 처리하면 특정 파티션에 데이터가 몰리는 스큐가 발생해 OOM 장애로 이어졌습니다. 대신 훨씬 촘촘한 segment_id 기준으로 재분배해 스큐를 해소했습니다(파티션 최대·최소 크기 비율 105배→1.2배).
-
-### Type4 — 세그먼트별 통행료
-
-대부분의 세그먼트가 통행료 대상이 아니라 값이 극도로 희소하고, 정책 변경 시에만 갱신되는 정적 데이터입니다. RDS가 정상 응답했는데 특정 세그먼트가 없는 것은 장애가 아니라 "진짜로 통행료가 없는 도로"라는 정상 응답으로 구분해, RDS 조회 실패(연결 불가)와 값 부재를 서로 다른 상황으로 취급합니다.
-
-> 테이블 스키마는 [2. 최종 데이터 스키마](#2-최종-데이터-스키마)를 참고하세요.
-
-## 5. 무조건 응답하는 서비스 만들기
-
-내비게이션 경로 계산은 여러 세그먼트 값을 실시간으로 조합해야 해서, 값 하나가 지연되면 경로 계산 전체가 막힙니다. 그래서 "정확한 값을 오래 기다리기"보다 "짧은 시간 안에 항상 유효한 값을 반환"하는 걸 최우선 목표로 삼았습니다 — 장애 상황에서도 API가 에러·무응답을 내지 않고, 응답 지연 없이, 다소 오래된 값이라도 즉시 돌려줍니다.
-
-**왜 RDS인가** — 조회 패턴이 key-value 수준으로 단순하고 데이터 규모도 DynamoDB의 대규모 수평 확장이 필요한 수준은 아니라고 판단해, 관리형 멀티 AZ 가용성을 제공하는 DynamoDB 대신 비용 효율적인 RDS(PostgreSQL)를 Primary Serving Store로 선택했습니다. 대신 DynamoDB가 인프라 레벨에서 제공하던 가용성을, 애플리케이션 레벨의 대체 경로로 재현합니다.
-
-**인프라 장애 시 대체 경로** — RDS 자체가 응답 불가능하면(연결 실패, 타임아웃) Lambda 메모리 캐시 → S3 Gold 스냅샷(마지막 정상 데이터) → 코드 하드코딩 기본값 순으로 내려갑니다. 연결·쿼리 타임아웃을 1초로 짧게 걸고 재시도는 하지 않아, 장애 상황에서 응답이 지연되는 대신 곧바로 다음 단계로 넘어갑니다.
-
-**실제로 검증된 사례** — Type3 배치(Gold 갱신) 파이프라인이 서빙 테이블에 대량 upsert를 하는 동안, 조회 쿼리가 그 쓰기 락에 걸려 statement_timeout(1초)으로 계속 취소되는 장애를 실제로 겪었습니다. 하드코딩 폴백 비율이 평소 대비 93.5%까지 치솟았고, RDS CPU(30%대)·디스크 지연(10~20ms)은 정상이었지만 DatabaseConnections만 57→76으로 튀어 있어 원인이 디스크·CPU가 아니라 쓰기 트랜잭션의 락 대기라는 걸 확인했습니다.
-
-해결책은 행 단위 upsert 대신, 새 데이터를 별도 테이블에 완전히 채운 뒤 테이블 이름만 원자적으로 스왑(RENAME)하는 방식입니다. 인덱스도 데이터를 다 채운 뒤 한 번에 생성합니다 — 처음엔 인덱스가 있는 빈 테이블에 채워 넣다가 행마다 B-tree를 갱신하느라 20분 넘게 끝나지 않는 사고가 있었고, 정렬 후 한 번에 인덱스를 쌓는 방식(`ADD PRIMARY KEY`)으로 바꿔 해결했습니다. RENAME은 메타데이터만 바꾸는 작업이라 밀리초 안에 끝나, 갱신 중에도 조회가 막히지 않습니다.
-
-## 6. 운영과 성능
-
-- **데이터 품질 검증(Great Expectations)** — Bronze 적재 시 taxi_type별 필수 컬럼이 다 있는지 검증합니다. Silver1 변환 로직과 완전히 같은 컬럼 매핑을 공유해, 검증 기준과 실제 변환 로직이 서로 어긋나는 걸 방지합니다. 검증 실패 시 해당 파일은 처리에서 제외됩니다.
-- **삭제된 세그먼트 정리** — LION 도로망이 갱신돼 사라진 세그먼트는, 최신 유효 세그먼트 집합에 없는 기존 행을 안티조인으로 찾아 자동 삭제합니다. 유효 집합이 비어 있으면 상류 버그로 보고 삭제 대신 예외를 던져, 테이블 전체가 실수로 비워지는 걸 막습니다.
-- **재실행/중복 방지** — Gold 적재는 `(segment_id, sk)` upsert. type3는 워터마크(기간·매핑버전)로 재계산 필요 여부만 판단합니다.
-- **모니터링(Grafana)** — RDS 쿼리 응답시간(p50/p95/p99), 타입별 fallback 계층 비율, API 전체 응답시간을 봅니다. fallback 비율은 사용자가 실제로 얼마나 자주 부정확한 값을 받는지 보여줘 개선 우선순위를 정하는 근거가 되고, API·RDS·Lambda 응답시간을 나란히 보면 병목이 RDS인지 Lambda 콜드스타트인지 구분할 수 있습니다.
-- **S3 Staging Lifecycle** — 실패로 남은 임시 결과만 7일 뒤 자동 삭제(`config/s3-staging-lifecycle.json`).
-- **실제 이슈 대응** — EC2 CPU 경합으로 Airflow DagBag import timeout 발생 → 120초로 조정. 프로토타입 단계 DynamoDB 32-way 쓰기 병렬이 처리량 한도 초과 → 10-way + adaptive 재시도로 해결.
-
-## 7. 기술적 고민과 결정
+## 8. 기술적 고민과 결정
 
 각 결정의 배경(관측된 사실, 고려한 대안, 기각 사유, 검증 방법)은 링크한 문서에서 자세히 볼 수 있습니다.
 
@@ -215,17 +421,18 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 | 2 | Bronze 검증 실패를 어떻게 나눠서 대응할까 | 컬럼 존재 여부는 critical, 값 이상은 log-only로 구분 | [상세](docs/decisions/03-gx.md) |
 | 3 | 여러 DAG가 EMR 자원을 나눠 쓰는 방법 | DAG별로 쓸 수 있는 자원 몫을 고정 배분 | [상세](docs/decisions/04-spark-tuning.md) |
 | 4 | Type3 RDS 갱신을 어떤 방식으로 반영할까 | 파티션마다 임시 테이블에 나눠 담고, 다 담은 뒤 PK 생성 후 통째로 교체 | [상세](docs/decisions/05-rds-insert.md) |
-| 5 |  |  | [상세](docs/decisions/06-decision.md) |
-| 6 |  |  | [상세](docs/decisions/07-decision.md) |
-| 7 |  |  | [상세](docs/decisions/08-decision.md) |
-| 8 |  |  | [상세](docs/decisions/09-decision.md) |
-| 9 |  |  | [상세](docs/decisions/10-decision.md) |
-| 10 |  |  | [상세](docs/decisions/11-decision.md) |
-| 11 |  |  | [상세](docs/decisions/12-decision.md) |
-| 12 |  |  | [상세](docs/decisions/13-decision.md) |
-| 13 |  |  | [상세](docs/decisions/14-decision.md) |
+| 5 | RDS 장애가 API 전체 실패로 이어지는 것을 어떻게 막을까? | 1초 타임아웃 후 메모리 캐시 → S3 스냅샷 → 기본값으로 단계적 폴백 | [상세](docs/decisions/05-decision.md) |
+| 6 | 원천의 새 버전을 언제 처리 완료로 기록할까? | 변경 감지 마커는 운영 데이터 publish가 성공한 후에만 갱신 | [상세](docs/decisions/06-decision.md) |
+| 7 | 검증된 데이터의 준비 완료를 downstream에 어떻게 전달할까? | DAG 직접 호출 대신 publish 완료 Asset을 발행하고 downstream에서 구독 | [상세](docs/decisions/07-decision.md) |
+| 8 |  |  | [상세](docs/decisions/08-decision.md) |
+| 9 |  |  | [상세](docs/decisions/09-decision.md) |
+| 10 |  |  | [상세](docs/decisions/10-decision.md) |
+| 11 |  |  | [상세](docs/decisions/11-decision.md) |
+| 12 |  |  | [상세](docs/decisions/12-decision.md) |
+| 13 |  |  | [상세](docs/decisions/13-decision.md) |
+| 14 |  |  | [상세](docs/decisions/14-decision.md) |
 
-## 8. 기술 스택
+## 9. 기술 스택
 
 | 영역 | 스택 |
 | --- | --- |
@@ -238,19 +445,18 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 | **CI/CD** | ![GitHub Actions](https://img.shields.io/badge/GitHub%20Actions-2088FF?style=for-the-badge&logo=githubactions&logoColor=white) |
 | **모니터링** | ![Grafana](https://img.shields.io/badge/Grafana-F46800?style=for-the-badge&logo=grafana&logoColor=white) |
 
-> DynamoDB도 검토했지만 비용 이슈로 RDS(PostgreSQL)를 최종 채택 ([5. 무조건 응답하는 서비스 만들기](#5-무조건-응답하는-서비스-만들기)).
 
-## 9. 한계와 다음 단계
+## 10. 한계와 다음 단계
 
-- Type3는 zone 평균값을 그 zone에 속한 모든 세그먼트에 동일하게 적용합니다 — 세그먼트별 가중치(도로 유형, 위치 등)를 반영해 차등화하는 방안을 검토 중입니다.
-- RDS 전환 후 실제 장애 상황의 응답 지연·성공률은 별도 측정이 필요합니다.
-- Type3(택시 승차 수)은 실제 확률이 아닌 과거 평균 근사치 — 날씨·이벤트 변수로 확장 가능합니다.
-- 신선도(freshness) 임계값이 현재 고정값 — 세그먼트별 동적 임계값으로 개선할 수 있습니다.
-- Gold 파이프라인이 아직 끝나지 않은 시점에 요청이 들어오면 어떤 값을 반환해야 하는지는 아직 결론을 내리지 못했습니다.
-- EMR 작업을 여러 개로 나눠 돌리는 대신 한 번에 묶어 돌리는 방안과, 데이터 유입 자체를 확인하는 전용 대시보드를 검토 중입니다.
-- RDS 커넥션 수를 점진적으로 줄여가며 병목이 어디서 생기는지 실험적으로 확인하는 작업이 남아 있습니다.
+| # | 한계 | 시도 | 다음 단계 |
+| --- | --- | --- | --- |
+| 1 | zone 안 모든 세그먼트에 동일한 수요값 적용 | zone×요일×시간대 평균을 세그먼트에 동일 적용 | 2016년 정밀좌표로 밀집 스팟 검증 후 세그먼트별 가중치 차등 적용 |
+| 2 | TLC 데이터는 분석용 — 실시간 기사 판단 지표로는 부적합할 수 있음 | 과거 평균 근사치를 수요 지표로 그대로 서빙 | 실측 기반 유의미성 검증 |
+| 3 | 속도 데이터 결측·수집 주기 불안정 (외부 API 의존 한계) | 도로 스펙(길이÷제한속도) 추정치로 백필 | 유사 도로 실측 통계 반영해 추정 정확도 개선 |
+| 4 | 세그먼트 순차 누적 조회라 경로 길어질수록 오차 누적 | 보정 없이 누적 시각 그대로 순차 조회 | 재보정 체크포인트 또는 오차 범위 함께 반환 |
+| 5 | 비용 고려 부족 — DynamoDB 과금, EMR 리소스 과다 사용 | 접근 패턴 검증 없이 DynamoDB 채택 → RDS로 전환 | 배치/즉시 작업 구분, 사전 비용 산정, Budget Alert 도입 |
 
-## 10. 팀원 소개
+## 11. 팀원 소개
 
 <div align="center">
 
