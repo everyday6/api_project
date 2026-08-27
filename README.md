@@ -157,6 +157,26 @@
 
 타입마다 원본 데이터의 갱신 패턴이 달라, DAG 스케줄도 타입별로 다르게 설계했습니다.
 
+```mermaid
+graph LR
+    lion["lion_pipeline<br/>도로망(LION) 원본 수집·정제"]
+    zone["taxi_zone_pipeline<br/>택시존 원본 수집·정제"]
+    tollb["toll_bronze_pipeline<br/>통행료 원본 수집(수동)"]
+    tollmon["toll_rate_monitor<br/>매달 요금표 변경 확인 알림"]
+    t1["segment_time_pipeline<br/>Type1(소요시간) 계산"]
+    t3["tlc_daily<br/>Type3(수요) 계산"]
+    t2["segment_length_pipeline<br/>Type2(길이) 계산"]
+    zs["zone_segment_pipeline<br/>Zone-Segment 매핑 생성"]
+    t4["toll_silver_gold_pipeline<br/>Type4(통행료) 계산"]
+
+    lion --> t2
+    lion --> zs
+    zone --> zs
+    lion --> t4
+    tollb --> t4
+    tollmon -.->|사람 확인 후 수동 실행| tollb
+```
+
 - **폴링형(Type1)** — 원본이 5분마다 갱신되지만 정확히 언제 새 데이터가 올라오는지 보장이 안 돼, DAG를 30분(`*/30 * * * *`)마다 돌려 새 데이터 유무를 확인합니다.
 - **이벤트 기반(Type2, Type4)** — LION·통행료 원본은 갱신 빈도가 낮고 불규칙해서, 고정 스케줄 대신 Airflow Asset으로 "원본이 갱신되면" 트리거되도록 설계했습니다.
 - **일 단위 확인형(Type3)** — TLC 원본이 월 단위로 불규칙하게 공개돼, 매일(`@daily`) 새 데이터 유무만 확인하고 실제로 있을 때만 재계산합니다.
