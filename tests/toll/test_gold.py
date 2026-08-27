@@ -1,13 +1,20 @@
+from unittest.mock import patch
+
 import pandas as pd
+import pytest
 import yaml
 
+from src.toll import gold
 from src.toll.gold import (
-    TYPE_TOLL,
     build_gold_items,
     get_toll_value,
     load_rate_table,
     write_gold_items,
 )
+
+# 이 파일 대부분은 순수 로직(요금 계산) 테스트라 RDS가 없어도 도는데, 맨
+# 아래 두 테스트만 실제 RDS 왕복이라 개별로 @requires_postgres를 붙인다.
+requires_postgres = pytest.mark.usefixtures("require_postgres")
 
 
 def _write_rate_table(tmp_path):
@@ -36,7 +43,6 @@ def test_build_gold_items_creates_congestion_only_items_for_zone_segments():
     items = build_gold_items(rate_table, zone_map, facility_map)
 
     assert {i["segment_id"]: i["value"] for i in items} == {"Z1": 0.75, "Z2": 0.75}
-    assert all(i["sk"] == f"TYPE#{TYPE_TOLL}" for i in items)
 
 
 def test_build_gold_items_creates_road_toll_only_items():
@@ -83,8 +89,8 @@ def test_build_gold_items_skips_facility_without_rate():
 def test_build_gold_items_dedupes_same_segment_appearing_twice_in_zone_map():
     rate_table = {"congestion": {"taxi_flat_rate": 0.75}, "road": {}}
     # 같은 segment_id가 zone_map에 두 번 들어와도(예: 상류 데이터 중복)
-    # 최종 아이템은 (segment_id, sk) 기준으로 하나만 남아야 한다 —
-    # DynamoDB batch_write_item이 같은 배치 안 중복 키에 에러를 내기 때문.
+    # 최종 아이템은 segment_id 기준으로 하나만 남아야 한다 —
+    # RDS 배치 upsert가 같은 배치 안 중복 PK에 에러를 내기 때문.
     zone_map = pd.DataFrame({"segment_id": ["Z1", "Z1"]})
     facility_map = pd.DataFrame(columns=["segment_id", "facility_key"])
 
@@ -117,14 +123,39 @@ def test_build_gold_items_keeps_first_match_when_segment_matches_two_facilities(
     assert items[0]["value"] == 17.00
 
 
+def test_write_gold_items_exports_snapshot_after_rds_write():
+    items = [{"segment_id": "S1", "value": 2.75}, {"segment_id": "S2", "value": 17.00}]
+
+    with patch.object(gold.db, "ensure_table"), \
+         patch.object(gold.db, "replace_table_snapshot") as mock_write, \
+         patch.object(gold.gold_snapshot, "write_snapshot") as mock_snapshot:
+        write_gold_items(items)
+
+    mock_write.assert_called_once()
+    mock_snapshot.assert_called_once_with("type4", {"S1": 2.75, "S2": 17.00})
+
+
+def test_write_gold_items_survives_snapshot_export_failure():
+    # 스냅샷 갱신이 실패해도 RDS 쓰기 자체는 이미 끝났으므로 예외를
+    # 전파하면 안 된다.
+    items = [{"segment_id": "S1", "value": 2.75}]
+
+    with patch.object(gold.db, "ensure_table"), \
+         patch.object(gold.db, "replace_table_snapshot"), \
+         patch.object(gold.gold_snapshot, "write_snapshot", side_effect=RuntimeError("S3 down")):
+        write_gold_items(items)  # 예외 없이 정상 종료돼야 한다.
+
+
+@requires_postgres
 def test_get_toll_value_returns_zero_when_not_found():
     result = get_toll_value("NO_SUCH_SEGMENT")
 
     assert result == 0
 
 
+@requires_postgres
 def test_get_toll_value_returns_written_value():
-    write_gold_items([{"segment_id": "S99", "sk": f"TYPE#{TYPE_TOLL}", "value": 12.34}])
+    write_gold_items([{"segment_id": "S99", "value": 12.34}])
 
     result = get_toll_value("S99")
 

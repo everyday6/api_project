@@ -33,7 +33,7 @@ def test_match_links_to_segments_buffer_match():
     x, y = _reprojected_link_midpoint()
     # 링크 바로 옆(10ft)에 겹치는 세그먼트 -> buffer(50ft) 매칭
     dim_segment_df = pd.DataFrame([
-        {"segment_id": "seg-close", "geometry": f"LINESTRING ({x-10} {y}, {x+10} {y})", "is_routable": True},
+        {"segment_id": "seg-close", "geometry": f"LINESTRING ({x-10} {y}, {x+10} {y})"},
     ])
     links_df = pd.DataFrame([
         {"link_id": "link-1", "link_points": "40.700,-74.000 40.7001,-74.0001"},
@@ -50,7 +50,7 @@ def test_match_links_to_segments_nearest_fallback_within_max_distance():
     x, y = _reprojected_link_midpoint()
     # buffer(50ft) 밖이지만 max_distance(1000ft) 안: 500ft 떨어진 세그먼트 -> nearest_fallback
     dim_segment_df = pd.DataFrame([
-        {"segment_id": "seg-far", "geometry": f"LINESTRING ({x+500} {y}, {x+520} {y})", "is_routable": True},
+        {"segment_id": "seg-far", "geometry": f"LINESTRING ({x+500} {y}, {x+520} {y})"},
     ])
     links_df = pd.DataFrame([
         {"link_id": "link-1", "link_points": "40.700,-74.000 40.7001,-74.0001"},
@@ -67,7 +67,7 @@ def test_match_links_to_segments_excludes_beyond_max_distance():
     x, y = _reprojected_link_midpoint()
     too_far = SPEED_LION_MAX_DISTANCE_FT + 500
     dim_segment_df = pd.DataFrame([
-        {"segment_id": "seg-toofar", "geometry": f"LINESTRING ({x+too_far} {y}, {x+too_far+20} {y})", "is_routable": True},
+        {"segment_id": "seg-toofar", "geometry": f"LINESTRING ({x+too_far} {y}, {x+too_far+20} {y})"},
     ])
     links_df = pd.DataFrame([
         {"link_id": "link-1", "link_points": "40.700,-74.000 40.7001,-74.0001"},
@@ -80,7 +80,7 @@ def test_match_links_to_segments_excludes_beyond_max_distance():
 
 def test_match_links_to_segments_skips_unparseable_link():
     dim_segment_df = pd.DataFrame([
-        {"segment_id": "seg-1", "geometry": "LINESTRING (0 0, 100 0)", "is_routable": True},
+        {"segment_id": "seg-1", "geometry": "LINESTRING (0 0, 100 0)"},
     ])
     links_df = pd.DataFrame([
         {"link_id": "link-bad", "link_points": "40.700,-74.000"},  # 점 하나뿐 -> 파싱 실패

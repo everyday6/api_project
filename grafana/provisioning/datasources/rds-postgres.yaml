@@ -1,0 +1,26 @@
+# 서빙용 RDS(nav-segment-serving)를 직접 붙인다 - Airflow DAG/태스크
+# 상태(airflow-postgres.yaml)는 "잡이 돌았는지"만 보여주고, 실제로 Gold
+# 값이 RDS에 제대로 채워지고 있는지(신선도/row 수)는 별개라 이 데이터소스가
+# 필요하다. src/common/db.py가 쓰는 것과 같은 RDS_* 자격증명을 재사용한다.
+apiVersion: 1
+
+datasources:
+  - name: RDS Postgres
+    uid: rds-postgres
+    type: postgres
+    access: proxy
+    url: ${RDS_HOST}:${RDS_PORT}
+    database: ${RDS_DB}
+    user: ${RDS_USER}
+    secureJsonData:
+      password: ${RDS_PASSWORD}
+    jsonData:
+      # Grafana의 Postgres 드라이버(Go lib/pq)는 disable/require/verify-ca/
+      # verify-full만 지원한다 - psycopg2의 prefer는 못 씀(src/common/db.py는
+      # psycopg2라 sslmode를 아예 안 정해도 되지만 여기선 명시가 필요).
+      # RDS는 기본적으로 TLS를 지원하니 require로 고정한다.
+      sslmode: require
+      postgresVersion: 1600
+      timescaledb: false
+    isDefault: false
+    editable: true

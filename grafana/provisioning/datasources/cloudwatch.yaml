@@ -1,0 +1,19 @@
+# Grafana가 시작할 때 자동으로 등록하는 데이터소스.
+#
+# authType: default는 Grafana(EC2 컨테이너 안에서 도는)가 AWS SDK 기본
+# 자격증명 체인을 쓰게 한다 - 정적 액세스 키 없이, EC2 인스턴스에 붙은
+# IAM 롤(CloudWatchReadOnlyAccess가 이미 붙어있음, S3 접근과 동일한
+# 방식)을 인스턴스 메타데이터로 자동으로 읽어써서 별도 키 관리가 필요
+# 없다.
+apiVersion: 1
+
+datasources:
+  - name: CloudWatch
+    uid: cloudwatch
+    type: cloudwatch
+    access: proxy
+    jsonData:
+      authType: default
+      defaultRegion: ${AWS_REGION}
+    isDefault: true
+    editable: true

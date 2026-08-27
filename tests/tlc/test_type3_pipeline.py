@@ -1,6 +1,5 @@
 from datetime import date, datetime, timedelta
-from decimal import Decimal
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from pyspark.sql import SparkSession
@@ -10,23 +9,25 @@ from src.common.config import TAXI_TYPES
 from src.tlc.gold2 import (
     DOW_NAMES,
     TIME_SLOTS,
-    _write_type3_partition,
+    _copy_type3_partition,
     build_daily_zone_frame,
     build_weekday_rolling_frame,
     expand_zone_values_to_segments,
     validate_daily_zone_month,
     validate_segment_values,
-    write_type3_rolling_to_dynamodb,
+    write_type3_rolling_to_rds,
 )
 from src.tlc.type3_pipeline import (
+    TYPE3_FRESHNESS_MAX_LAG_DAYS,
     _complete_silver_paths_for_month,
-    _find_pending_type3_months,
-    _month_success_marker,
+    _months_from_silver_results,
+    _read_type3_publish_state,
     _staging_run_path,
     _type3_metadata_is_current,
     _type3_reference_exists,
+    _type3_rds_lag_days,
+    _write_type3_publish_state,
 )
-
 
 @pytest.fixture(scope="module")
 def spark():
@@ -53,52 +54,6 @@ def _rolling_daily_frame(spark, days=98):
         }
         for offset in range(days)
     ])
-
-
-class _FakeBatchWriter:
-    def __init__(self, table):
-        self.table = table
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, exc_type, exc_value, traceback):
-        return False
-
-    def put_item(self, Item):
-        if self.table.fail_batch:
-            raise RuntimeError("DynamoDB batch failure")
-        self.table.items.append(Item)
-
-
-class _FakeTable:
-    """batch_writer로 실제 항목이 쓰이는지 확인하는 가짜 테이블.
-
-    _write_type3_partition은 executor 프로세스 안에서 실행되므로,
-    write_type3_rolling_to_dynamodb를 통째로 호출하는 테스트에는 못 쓴다
-    (mock은 프로세스 경계를 못 넘음) — _write_type3_partition이 반환하는
-    함수를 같은 프로세스에서 직접 호출하는 테스트에만 쓴다.
-    """
-
-    def __init__(self, fail_batch=False):
-        self.fail_batch = fail_batch
-        self.items = []
-        self.overwrite_by_pkeys = None
-
-    def batch_writer(self, overwrite_by_pkeys):
-        self.overwrite_by_pkeys = overwrite_by_pkeys
-        return _FakeBatchWriter(self)
-
-
-class _FakeMetaTable:
-    """write_type3_rolling_to_dynamodb의 완료 메타데이터 기록만 확인하는
-    가짜 테이블. driver에서 직접 호출되므로 monkeypatch로 주입해도 된다."""
-
-    def __init__(self):
-        self.metadata = []
-
-    def put_item(self, Item):
-        self.metadata.append(Item)
 
 
 def test_complete_silver_paths_require_all_taxi_types(tmp_path):
@@ -128,29 +83,18 @@ def test_complete_silver_paths_require_all_taxi_types(tmp_path):
     assert missing_types == []
 
 
-def test_find_pending_type3_months_uses_month_success_marker(tmp_path):
-    silver_root = tmp_path / "silver"
-    marker_root = tmp_path / "markers"
-    for taxi_type in TAXI_TYPES:
-        output = silver_root / f"{taxi_type}_tripdata_2026-05"
-        output.mkdir(parents=True)
-        (output / "_SUCCESS").touch()
+def test_months_from_silver_results_dedupes_and_sorts():
+    silver_results = [
+        {"taxi_type": "yellow", "filename": "yellow_tripdata_2026-05.parquet"},
+        {"taxi_type": "green", "filename": "green_tripdata_2026-05.parquet"},
+        {"taxi_type": "fhv", "filename": "fhv_tripdata_2026-04.parquet"},
+    ]
 
-    assert _find_pending_type3_months(
-        ["2026-05"],
-        silver_root=silver_root,
-        marker_root=marker_root,
-    ) == ["2026-05"]
+    assert _months_from_silver_results(silver_results) == ["2026-04", "2026-05"]
 
-    marker = _month_success_marker("2026-05", marker_root)
-    marker.parent.mkdir(parents=True)
-    marker.touch()
 
-    assert _find_pending_type3_months(
-        ["2026-05"],
-        silver_root=silver_root,
-        marker_root=marker_root,
-    ) == []
+def test_months_from_silver_results_empty_for_no_new_files():
+    assert _months_from_silver_results([]) == []
 
 
 def test_type3_metadata_is_current_only_after_completed_publish():
@@ -182,6 +126,46 @@ def test_type3_metadata_is_current_only_after_completed_publish():
         window_end,
         "map-v2",
     ), "zone-segment 매핑이 바뀌면(mapping_version 불일치) 최신으로 보면 안 된다"
+
+
+def test_type3_publish_state_round_trip(tmp_path):
+    state_path = tmp_path / "_rds_publish_state.json"
+    metadata = {
+        "status": "COMPLETED",
+        "window_start": "2026-05-04",
+        "window_end": "2026-05-31",
+        "rolling_weeks": 12,
+        "mapping_version": "map-v1",
+    }
+
+    assert _read_type3_publish_state(state_path) == {}
+    _write_type3_publish_state(metadata, state_path)
+    assert _read_type3_publish_state(state_path) == metadata
+
+
+def test_type3_rds_lag_days_zero_when_in_sync():
+    gold_window_end = date(2026, 8, 24)
+    state = {"status": "COMPLETED", "window_end": "2026-08-24"}
+
+    assert _type3_rds_lag_days(gold_window_end, state) == 0
+
+
+def test_type3_rds_lag_days_positive_when_rds_behind_gold2():
+    gold_window_end = date(2026, 8, 24)
+    state = {"status": "COMPLETED", "window_end": "2026-08-20"}
+
+    lag_days = _type3_rds_lag_days(gold_window_end, state)
+
+    assert lag_days == 4
+    assert lag_days > TYPE3_FRESHNESS_MAX_LAG_DAYS, (
+        "이 테스트는 '기준을 넘는 gap'을 나타내야 한다 - 임계값이 바뀌면 "
+        "같이 조정할 것"
+    )
+
+
+def test_type3_rds_lag_days_rejects_missing_publish_state():
+    with pytest.raises(ValueError, match="배포 상태가 없습니다"):
+        _type3_rds_lag_days(date(2026, 8, 24), {})
 
 
 def test_type3_reference_exists_is_false_until_mapping_is_published(tmp_path):
@@ -234,106 +218,249 @@ def test_build_weekday_rolling_frame_rejects_missing_date(spark):
         build_weekday_rolling_frame(daily, rolling_weeks=12)
 
 
-def test_write_type3_partition_builds_expected_sk_and_decimal_value():
+class _FixedDate(date):
+    """date.today()를 고정값으로 바꿔치기하기 위한 서브클래스(updated_date
+    검증용) - src.tlc.gold2._copy_type3_partition이 date.today()를 직접
+    부른다."""
+
+    @classmethod
+    def today(cls):
+        return date(2026, 8, 24)
+
+
+def _fake_connection():
+    """with conn.cursor() as cur: 패턴을 지원하는 fake connection/cursor 쌍.
+
+    conn.cursor()를 몇 번을 부르든 항상 같은 cur를 돌려주므로, 여러
+    with 블록에 걸친 cur.execute 호출을 call_args_list 하나로 순서대로
+    모아 검증할 수 있다."""
+
+    cur = MagicMock()
+    cur.__enter__.return_value = cur
+    cur.__exit__.return_value = False
+    conn = MagicMock()
+    conn.cursor.return_value = cur
+    return conn, cur
+
+
+def _fake_task_context(partition_id):
+    """TaskContext.get()을 대체한다 - _copy_type3_partition이 실제 Spark
+    task 밖에서(foreachPartition 없이) 직접 호출될 때는 TaskContext.get()이
+    None이라 partitionId()를 못 부른다."""
+
+    context = MagicMock()
+    context.partitionId.return_value = partition_id
+    return context
+
+
+def test_copy_type3_partition_streams_csv_rows_to_own_staging_table(monkeypatch):
     """executor에서 실제로 도는 부분만 떼어내 같은 프로세스에서 직접 검증한다.
 
-    파티션 안에서 여러 스레드가 청크를 나눠 동시에 쓰므로(성능을 위해),
-    items가 입력 순서 그대로 쌓인다는 보장은 없다 — segment_id로 정렬해
-    내용만 비교한다."""
+    row 하나가 (segment_id, dow, time) 슬롯 하나다(flat 스키마 - 2026-08-24
+    개편). 파티션마다 자기 전용 스테이징 테이블에 쓴다 - 물리 파티션
+    번호(TaskContext)로 테이블명을 정한다. copy_expert가 정확히 한 번
+    호출되고, 그 테이블명과 CSV 내용이 입력 행 순서 그대로인지 검증한다."""
 
-    table = _FakeTable()
+    monkeypatch.setattr("src.tlc.gold2.date", _FixedDate)
+    conn, cur = _fake_connection()
 
-    with patch("src.tlc.gold2.get_table", return_value=table):
-        write_partition = _write_type3_partition("nav-segment-metrics")
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
+         patch("src.tlc.gold2.TaskContext.get", return_value=_fake_task_context(5)):
+        write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
         write_partition([
             {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
             {"segment_id": "0000002", "dow": "MON", "time": "1230", "value": 2.5},
         ])
 
-    assert table.overwrite_by_pkeys == ["segment_id", "sk"]
-    assert sorted(table.items, key=lambda item: item["segment_id"]) == [
-        {"segment_id": "0000001", "sk": "3#FRI#1200", "value": Decimal("1.5")},
-        {"segment_id": "0000002", "sk": "3#MON#1230", "value": Decimal("2.5")},
-    ]
+    cur.copy_expert.assert_called_once()
+    copy_sql, buffer = cur.copy_expert.call_args[0]
+    assert "segment_metrics_type3_staging_abc_p5" in str(copy_sql)
+    assert buffer.read() == (
+        "0000001,FRI,1200,1.5,2026-08-20,2026-08-24\r\n"
+        "0000002,MON,1230,2.5,2026-08-20,2026-08-24\r\n"
+    )
+    conn.close.assert_called_once()
 
 
-def test_write_type3_partition_propagates_batch_failure():
-    table = _FakeTable(fail_batch=True)
+def test_copy_type3_partition_skips_empty_partition():
+    """빈 파티션이면 자기 테이블명을 알아낼 필요도 없이 바로 끝난다 -
+    TaskContext.get()을 mock 안 해도(=None이어도) 문제없어야 한다."""
 
-    with patch("src.tlc.gold2.get_table", return_value=table):
-        write_partition = _write_type3_partition("nav-segment-metrics")
-        with pytest.raises(RuntimeError, match="batch failure"):
+    conn, cur = _fake_connection()
+
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn):
+        write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
+        write_partition([])
+
+    cur.copy_expert.assert_not_called()
+    conn.close.assert_not_called()
+
+
+def test_copy_type3_partition_propagates_copy_failure():
+    conn, cur = _fake_connection()
+    cur.copy_expert.side_effect = RuntimeError("COPY failure")
+
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
+         patch("src.tlc.gold2.TaskContext.get", return_value=_fake_task_context(0)):
+        write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
+        with pytest.raises(RuntimeError, match="COPY failure"):
             write_partition([
                 {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
             ])
 
+    # 실패해도 커넥션은 반드시 정리된다(finally).
+    conn.close.assert_called_once()
 
-def test_write_type3_rolling_to_dynamodb_writes_metadata_after_success(spark, monkeypatch):
-    """실제 파티션 쓰기는 no-op으로 바꿔치기하고, 오케스트레이션(개수 집계 +
-    완료 메타데이터 기록)만 검증한다."""
+
+def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
+    """파티션별 스테이징 테이블 생성 -> 통합 스테이징으로 UNION ALL 병합 ->
+    원자적 스왑 -> 정리까지의 SQL과 COPY 호출을 검증한다.
+
+    실제 파티션 쓰기(_copy_type3_partition)는 no-op으로 바꿔치기하고,
+    driver 쪽에서 직접 여는 db.new_connection()만 fake로 검증한다.
+    TYPE3_RDS_WRITE_PARTITIONS를 3으로 낮춰서 검증 범위를 읽기 쉽게
+    만든다 - 실제 값(200)이어도 로직은 동일하다."""
+
+    monkeypatch.setattr("src.tlc.gold2.TYPE3_RDS_WRITE_PARTITIONS", 3)
 
     rolling = spark.createDataFrame([
         {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
         {"segment_id": "0000002", "dow": "MON", "time": "1230", "value": 2.5},
     ])
-    table = _FakeMetaTable()
-    monkeypatch.setattr("src.tlc.gold2.get_table", lambda _name: table)
-    monkeypatch.setattr(
-        "src.tlc.gold2._write_type3_partition",
-        lambda _table_name: (lambda rows: None),
-    )
+    conn, cur = _fake_connection()
+    copy_calls = []
 
-    written = write_type3_rolling_to_dynamodb(
-        "nav-segment-metrics",
-        rolling,
-        date(2026, 5, 4),
-        date(2026, 5, 31),
-        12,
-        "map-v1",
-    )
+    def _fake_copy(staging_prefix, collected_date):
+        copy_calls.append((staging_prefix, collected_date))
+        return lambda rows: None
+
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
+         patch("src.tlc.gold2._copy_type3_partition", _fake_copy):
+        written = write_type3_rolling_to_rds(
+            "nav-segment-metrics",
+            rolling,
+            date(2026, 8, 20),
+        )
 
     assert written == 2
-    assert len(table.metadata) == 1
-    assert table.metadata[0] | {"updated_at": "ignored"} == {
-        "segment_id": "__META__",
-        "sk": "TYPE#3",
-        "status": "COMPLETED",
-        "window_start": "2026-05-04",
-        "window_end": "2026-05-31",
-        "rolling_weeks": 12,
-        "mapping_version": "map-v1",
-        "updated_at": "ignored",
-    }
+
+    # 파티션 3개 x (CREATE TABLE, ALTER TABLE) = 6, + 통합 스테이징
+    # (CREATE, ALTER UNLOGGED, INSERT...UNION ALL, SET maintenance_work_mem,
+    # ADD PRIMARY KEY, ALTER LOGGED, ANALYZE) = 7,
+    # + RENAME 2 + DROP TABLE 3(파티션들/통합/old 각각) = execute 18번.
+    assert cur.execute.call_count == 18
+    executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
+    for i in range(3):
+        assert "CREATE TABLE" in executed_sql[i * 2]
+        assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
+    assert "CREATE TABLE" in executed_sql[6]
+    assert "INCLUDING ALL" not in executed_sql[6], (
+        "PK가 있는 상태로 채우면 행마다 B-tree를 갱신해야 해서 느려진다 - "
+        "데이터를 다 채운 뒤에 PK를 만들어야 한다"
+    )
+    assert "SET UNLOGGED" in executed_sql[7]
+    assert "UNION ALL" in executed_sql[8]
+    assert "maintenance_work_mem" in executed_sql[9]
+    assert "ADD PRIMARY KEY" in executed_sql[10]
+    assert "SET LOGGED" in executed_sql[11]
+    assert "ANALYZE" in executed_sql[12]
+    assert "RENAME TO" in executed_sql[13]
+    assert "RENAME TO" in executed_sql[14]
+    assert "DROP TABLE" in executed_sql[15]
+    assert "DROP TABLE" in executed_sql[16]
+    assert "DROP TABLE" in executed_sql[17]
+
+    # 두 RENAME이 한 트랜잭션으로 묶여서 커밋됐는지 확인한다(둘 다 성공해야
+    # 라이브 테이블 이름이 존재하지 않는 순간 없이 스왑된다).
+    conn.commit.assert_called_once()
+    conn.rollback.assert_not_called()
+
+    # _copy_type3_partition에도 같은 접두사가 전달됐고, 파티션별 스테이징
+    # 테이블명이 각자의 CREATE/ALTER 및 통합 단계의 UNION ALL, 정리 DROP에
+    # 전부 등장하는지 확인한다(공유 테이블이 아니라 파티션마다 다른
+    # 테이블이라는 것의 증거).
+    assert len(copy_calls) == 1
+    staging_prefix, collected_date = copy_calls[0]
+    assert staging_prefix.startswith("tmp_type3_")
+    assert collected_date == date(2026, 8, 20)
+    for i in range(3):
+        table_name = f"{staging_prefix}_p{i}"
+        assert table_name in executed_sql[i * 2]
+        assert table_name in executed_sql[8]
+        assert table_name in executed_sql[15]
+
+    # 라이브 테이블 이름이 첫 번째 RENAME(라이브->old)과 두 번째
+    # RENAME(통합 스테이징->라이브)에 그대로 쓰였는지 확인한다.
+    assert "nav-segment-metrics" in executed_sql[13]
+    assert "nav-segment-metrics" in executed_sql[14]
+
+    conn.close.assert_called_once()
 
 
-def test_write_type3_rolling_to_dynamodb_does_not_complete_after_partition_failure(
+def test_write_type3_rolling_to_rds_skips_empty_input(spark):
+    """빈 DataFrame이면 스테이징 테이블도 안 만들고 바로 0을 반환한다."""
+
+    rolling = spark.createDataFrame(
+        [], "segment_id string, dow string, time string, value double"
+    )
+    conn, cur = _fake_connection()
+
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn):
+        written = write_type3_rolling_to_rds(
+            "nav-segment-metrics",
+            rolling,
+            date(2026, 8, 20),
+        )
+
+    assert written == 0
+    cur.execute.assert_not_called()
+    conn.close.assert_not_called()
+
+
+def test_write_type3_rolling_to_rds_cleans_up_staging_tables_on_partition_failure(
     spark, monkeypatch,
 ):
+    """COPY 단계에서 실패해도 만들어둔 스테이징 테이블 전부 DROP은 반드시 실행된다."""
+
+    monkeypatch.setattr("src.tlc.gold2.TYPE3_RDS_WRITE_PARTITIONS", 3)
+
     rolling = spark.createDataFrame([
         {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
     ])
-    table = _FakeMetaTable()
+    conn, cur = _fake_connection()
 
-    def _always_fail(_table_name):
+    def _always_fail(_staging_prefix, _collected_date):
         def _write(_rows):
-            raise RuntimeError("DynamoDB batch failure")
+            raise RuntimeError("COPY failure")
         return _write
 
-    monkeypatch.setattr("src.tlc.gold2.get_table", lambda _name: table)
-    monkeypatch.setattr("src.tlc.gold2._write_type3_partition", _always_fail)
+    with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
+         patch("src.tlc.gold2._copy_type3_partition", _always_fail):
+        # foreachPartition은 executor 예외를 Spark 자체 예외 타입으로
+        # 감싸서 driver에 전파하므로, 원래 예외 타입이 아니라 메시지만으로
+        # 확인한다.
+        with pytest.raises(Exception, match="COPY failure"):
+            write_type3_rolling_to_rds(
+                "nav-segment-metrics",
+                rolling,
+                date(2026, 8, 20),
+            )
 
-    # foreachPartition은 executor 예외를 Spark 자체 예외 타입으로 감싸서
-    # driver에 전파하므로, 원래 예외 타입이 아니라 메시지만으로 확인한다.
-    with pytest.raises(Exception, match="batch failure"):
-        write_type3_rolling_to_dynamodb(
-            "nav-segment-metrics",
-            rolling,
-            date(2026, 5, 4),
-            date(2026, 5, 31),
-            12,
-        )
-
-    assert table.metadata == []
+    # 파티션 3개의 CREATE/ALTER(6개)까지만 성공하고 통합/스왑은 못 갔지만,
+    # DROP 3개(파티션들 한 번에/통합 스테이징-애초에 안 생겼어도 IF EXISTS라
+    # 조용히 넘어감/old-마찬가지)는 finally에서 실행돼야 한다.
+    executed_sql = [str(call.args[0]) for call in cur.execute.call_args_list]
+    assert len(executed_sql) == 9
+    for i in range(3):
+        assert "CREATE TABLE" in executed_sql[i * 2]
+        assert "SET UNLOGGED" in executed_sql[i * 2 + 1]
+    assert "DROP TABLE" in executed_sql[6]
+    for i in range(3):
+        assert f"_p{i}" in executed_sql[6]
+    assert "DROP TABLE" in executed_sql[7]
+    assert "DROP TABLE" in executed_sql[8]
+    conn.commit.assert_not_called()
+    conn.close.assert_called_once()
 
 
 def _write_staged_month(spark, stage_path, dates, zone_ids=(1, 2)):

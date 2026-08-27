@@ -21,6 +21,7 @@ import yaml
 
 from src.common.config import SILVER2_DIR
 from src.common.logger import get_logger
+from src.common.utils import save_parquet
 from src.toll.bronze import BRONZE_ROOT
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_silver2")
@@ -81,8 +82,7 @@ def build_lion_facility_mapping(
     logger.info(f"[toll_silver2] {len(segments)}개 segment 대상 시설명 매칭 시작")
     result = match_lion_facilities(segments, facilities_path)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    result.to_parquet(str(out_path), index=False)
+    save_parquet(result, out_path.parent, out_path.name)
 
     logger.info(f"[toll_silver2] lion_facility 매핑 {len(result)}행 저장 -> {out_path}")
     return str(out_path)
@@ -123,8 +123,7 @@ def build_lion_cbd_mapping(
     logger.info(f"[toll_silver2] {len(segments)}개 segment 대상 CBD 공간조인 시작")
     result = match_lion_cbd(segments, zone_polygon)
 
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    result.to_parquet(str(out_path), index=False)
+    save_parquet(result, out_path.parent, out_path.name)
 
     logger.info(f"[toll_silver2] lion_cbd 매핑 {len(result)}행 저장 -> {out_path}")
     return str(out_path)

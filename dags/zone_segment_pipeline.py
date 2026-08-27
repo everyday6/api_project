@@ -7,9 +7,8 @@ lion_pipeline(Asset("lion_dim_segment_ready"))이나 taxi_zone_pipeline
 두 소스가 같은 날 겹쳐도 스케줄러가 중복 실행 없이 하나로 묶어 처리한다.
 
 publish_map_zone_segment는 Asset("map_zone_segment_ready")를 outlet으로
-내보낸다 — 지금은 구독하는 소비자가 없지만(tlc_daily는 여전히 cron
-스케줄이라 매핑 존재 여부는 check_type3_reference_ready short-circuit으로
-직접 확인한다), 다른 publish 단계들과의 일관성을 위해 남겨둔다.
+내보낸다 — tlc_type3_serving_pipeline이 이 Asset을 구독해서 LION/Taxi Zone
+변경으로 매핑이 갱신될 때 Type3 RDS 값을 즉시 다시 계산한다.
 """
 
 from datetime import datetime, timedelta

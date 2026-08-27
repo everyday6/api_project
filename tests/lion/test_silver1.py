@@ -1,6 +1,8 @@
 import pandas as pd
+import pytest
+from airflow.exceptions import AirflowSkipException
 
-from src.lion.silver1 import _clean_lion_dataframe
+from src.lion.silver1 import _clean_lion_dataframe, build_dim_segment_staged
 
 
 def _raw_row(**overrides):
@@ -58,3 +60,15 @@ def test_clean_lion_dataframe_keeps_rw_type_columns_for_gold2():
 
     assert result.iloc[0]["RW_TYPE"] == "1"
     assert result.iloc[0]["FeatureTyp"] == "0"
+
+
+def test_build_dim_segment_staged_skips_when_bronze_unchanged(tmp_path):
+    # ingest_lion이 changed=False를 주면(원본 그대로), .gdb를 찾거나
+    # ogr2ogr을 돌릴 필요 없이 바로 스킵해야 한다 - 그래야 downstream
+    # (validate/publish/cleanup, Asset emit)까지 all_success 전파로
+    # 조용히 다 같이 스킵된다.
+    with pytest.raises(AirflowSkipException):
+        build_dim_segment_staged(
+            {"path": None, "changed": False},
+            staging_root=tmp_path / "_staging" / "dim_segment",
+        )
