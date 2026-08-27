@@ -375,26 +375,29 @@ Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같�
 
 ### 2. Airflow 장애 알림 (Slack)
 
-- Airflow 태스크가 재시도를 모두 소진해 최종 실패했을 때만 Slack 알림을 보냅니다.
-- 알림에는 DAG·Task·시도 횟수·실행 시각·예외 유형·핵심 원인과 Airflow 로그 링크가 포함됩니다.
-- 긴 Spark/Java 예외는 마지막 `Caused by`를 기준으로 핵심 3줄, 최대 500자로 요약합니다.
-- TLC Bronze 검증에서 특정 파일만 제외된 경우에는 태스크 실패와 별개로 제외 파일과 사유를 청크당 한 메시지로 전달합니다.
-- Slack Webhook 장애가 원래 파이프라인 실패를 가리지 않도록 알림 전송 실패는 로그만 남깁니다.
+| 구분 | 핵심 동작 |
+| --- | --- |
+| 태스크 실패 | 재시도 소진 후 DAG·Task·예외 요약과 Airflow 로그 링크를 Slack으로 전송 |
+| 파일 검증 실패 | 제외된 TLC 파일과 사유를 청크당 한 메시지로 요약 |
+| 알림 장애 | Webhook 오류는 로그만 남겨 원래 파이프라인 실행에 영향을 주지 않음 |
 
 구현: [`src/common/alerts.py`](src/common/alerts.py)
 
 ### 3. 로그
 
-- Airflow가 실행별 로그를 보관하고, 애플리케이션은 Python `logging`과 `RotatingFileHandler`로 도메인별 보조 로그를 남깁니다. 파일은 10MB 단위로 회전하며 최근 5개를 보관합니다.
-- Lambda처럼 파일시스템이 읽기 전용인 환경에서는 파일 기록을 건너뛰고 표준 출력으로 계속 기록해 CloudWatch Logs에서 조회할 수 있습니다.
-- API는 `[rds_query_duration]`, `[fallback_tier_summary]` 같은 식별자를 로그에 기록합니다. Grafana는 CloudWatch Logs Insights로 이를 집계해 쿼리 p50/p95/p99와 fallback 비율을 계산합니다.
-- EMR 작업 실패 시 Spark Driver의 `stdout`·`stderr` 마지막 부분을 Airflow 로그에 붙여 콘솔을 오가지 않고도 원인을 확인합니다.
+| 구분 | 핵심 동작 |
+| --- | --- |
+| 실행 로그 | Airflow 실행별 로그와 10MB × 5개 회전 방식의 도메인별 파일 로그 보관 |
+| 지표 로그 | RDS 쿼리 시간·fallback 계층 로그를 CloudWatch Logs Insights로 집계해 Grafana에 표시 |
+| 장애 로그 | Lambda는 표준 출력으로 기록하고, EMR 실패 시 Spark Driver 로그 끝부분을 Airflow에 첨부 |
 
 구현: [`src/common/logger.py`](src/common/logger.py), [`src/common/emr_serverless.py`](src/common/emr_serverless.py)
 
 ### 4. 컨테이너 재시작 감시
 
-Airflow Worker나 Scheduler가 OOM 등으로 죽으면 그 프로세스 안에서 실행되는 실패 콜백도 함께 멈출 수 있습니다. 별도 감시 컨테이너가 Docker의 누적 `RestartCount`를 30초마다 확인해, 폴링 사이에 죽었다가 자동 복구된 짧은 장애까지 감지합니다. 재시작이 확인되면 컨테이너명·재시작 횟수·현재 상태·마지막 종료 시각과 확인할 로그 명령을 Slack으로 전송합니다.
+| 감시 대상 | 감지 방식 | 알림 내용 |
+| --- | --- | --- |
+| Airflow Worker·Scheduler | Docker `RestartCount`를 30초마다 확인 | 컨테이너명·재시작 횟수·상태·종료 시각·로그 확인 명령을 Slack으로 전송 |
 
 구현: [`scripts/docker_crash_monitor.sh`](scripts/docker_crash_monitor.sh)
 
