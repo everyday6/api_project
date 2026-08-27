@@ -11,12 +11,11 @@
 </p>
 
 <p align="center">
-<sub>소프티어 부트캠프 8기 · Data Engineering 5조 · 김지원 · 이동찬 · 이승연</sub>
+<sub>Grafana ID: admin · PW: 1234</sub>
+</p>
 
-  
-<sub>grafana ID: admin
-  
-grafana PW: 1234</sub>
+<p align="center">
+<sub>소프티어 부트캠프 8기 · Data Engineering 5조 · 김지원 · 이동찬 · 이승연</sub>
 </p>
 
 ---
