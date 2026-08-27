@@ -426,12 +426,7 @@ API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같
 | 6 | 원천의 새 버전을 언제 처리 완료로 기록할까? | 변경 감지 마커는 운영 데이터 publish가 성공한 후에만 갱신 | [상세](docs/decisions/06-decision.md) |
 | 7 | 검증된 데이터의 준비 완료를 downstream에 어떻게 전달할까? | DAG 직접 호출 대신 publish 완료 Asset을 발행하고 downstream에서 구독 | [상세](docs/decisions/07-decision.md) |
 | 8 | 실측값이 결측일 때 코드 상수 대신 쓸 대체값을 어떻게 만들까 | (segment_id, time) 슬롯별 avg를 증분 공식으로 갱신해 같은 행에 저장 | [상세](docs/decisions/08-type1-avg.md) |
-| 9 |  |  | [상세](docs/decisions/09-decision.md) |
-| 10 |  |  | [상세](docs/decisions/10-decision.md) |
-| 11 |  |  | [상세](docs/decisions/11-decision.md) |
-| 12 |  |  | [상세](docs/decisions/12-decision.md) |
-| 13 |  |  | [상세](docs/decisions/13-decision.md) |
-| 14 |  |  | [상세](docs/decisions/14-decision.md) |
+
 
 ## 9. 기술 스택
 
