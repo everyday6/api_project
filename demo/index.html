@@ -8,10 +8,16 @@
   :root {
     --bg: #0b0f1a; --panel: #131a2b; --border: #263252; --text: #e8ecf5; --muted: #8b95ac;
     --a: #4f8cff; --b: #b06cff; --c: #ff9d4f; --win: #35d07f; --bgline: #2a3654;
+    --jsonbg: #0e1420; --jsontext: #9fd6a3; --jsonkey: #7fb0ff; --jsonreq: #ffb454; --jsonres: #35d07f;
+  }
+  :root[data-theme="light"] {
+    --bg: #f4f6fb; --panel: #ffffff; --border: #b7c0d8; --text: #1b2233; --muted: #5c6580;
+    --bgline: #93a1c2;
+    --jsonbg: #f0f3f8; --jsontext: #1a8f5c; --jsonkey: #1f5fbf; --jsonreq: #b5680b; --jsonres: #1a8f5c;
   }
   * { box-sizing: border-box; }
   body { margin: 0; background: var(--bg); color: var(--text); font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Pretendard, sans-serif; }
-  .wrap { display: grid; grid-template-columns: 1fr 340px; grid-template-rows: auto auto 1fr; height: 100vh; }
+  .wrap { display: grid; grid-template-columns: 1fr 640px; grid-template-rows: auto auto 1fr; height: 100vh; }
   header {
     grid-column: 1 / 3;
     padding: 12px 20px;
@@ -20,6 +26,12 @@
   }
   header h1 { font-size: 15px; margin: 0; white-space: nowrap; }
   #status { font-size: 12px; color: var(--muted); }
+  #themeToggle {
+    margin-left: auto; width: 32px; height: 32px; flex-shrink: 0;
+    border: 1px solid var(--border); border-radius: 8px; background: transparent;
+    font-size: 15px; line-height: 1; cursor: pointer; color: var(--text);
+  }
+  #themeToggle:hover { border-color: var(--a); }
 
   .typebar {
     grid-column: 1 / 3;
@@ -70,14 +82,22 @@
   #sendBtn:hover:not(:disabled) { filter: brightness(1.1); }
 
   .jsonbox {
-    background: #0e1420; border: 1px solid var(--border); border-radius: 10px;
+    background: var(--jsonbg); border: 1px solid var(--border); border-radius: 10px;
     padding: 10px 12px; font-family: ui-monospace, "SF Mono", Menlo, monospace;
-    font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-all;
-    color: #9fd6a3; max-height: 220px; overflow-y: auto;
+    font-size: 11.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word;
+    color: var(--jsontext); max-height: 420px; overflow-y: auto;
   }
-  .jsonbox .k { color: #7fb0ff; }
-  .jsonbox .req-line { color: #ffb454; margin-bottom: 4px; }
-  .jsonbox .res-line { color: #35d07f; margin: 8px 0 4px; }
+  .jsonbox .req-line { color: var(--jsonreq); margin-bottom: 4px; font-weight: 700; }
+  .jsonbox .res-line { color: var(--jsonres); margin: 8px 0 4px; font-weight: 700; }
+  .jsonbox .k { color: var(--jsonkey); }
+
+  .schematable { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .schematable th, .schematable td {
+    border: 1px solid var(--border); padding: 6px 8px; text-align: left; vertical-align: top;
+  }
+  .schematable th { color: var(--muted); font-weight: 700; font-size: 11px; }
+  .schematable td:first-child { font-family: ui-monospace, "SF Mono", Menlo, monospace; white-space: nowrap; }
+  .schematable td:last-child { font-family: ui-monospace, "SF Mono", Menlo, monospace; color: var(--jsontext); white-space: nowrap; }
   .placeholder { color: var(--muted); font-size: 12px; }
 </style>
 </head>
@@ -86,6 +106,7 @@
   <header>
     <h1>nav-gold 경로 데모</h1>
     <div id="status">지도를 클릭해 출발지와 도착지를 선택하세요</div>
+    <button id="themeToggle" title="라이트/다크 테마 전환">🌙</button>
   </header>
 
   <div class="typebar" id="typebar"></div>
@@ -103,6 +124,10 @@
     <div>
       <h2>요청 / 응답</h2>
       <div class="jsonbox" id="jsonbox"><span class="placeholder">아직 요청 없음</span></div>
+    </div>
+    <div>
+      <h2>Gold 테이블 스키마</h2>
+      <table class="schematable" id="schematable"></table>
     </div>
   </aside>
 </div>
@@ -125,6 +150,50 @@ const TYPE_CONFIG = {
   3: { label: "수요", agg: "avg", goal: "max", fmt: v => Math.round(v) + "", recommend: "'최대 수요 경로'로 제공" },
   4: { label: "통행료", agg: "max", goal: "min", fmt: v => "$" + v.toFixed(2), recommend: "'최소 통행료 경로'로 제공" },
 };
+
+// Gold 테이블(segment_metrics_typeN) 컬럼 정의 — README "최종 데이터 스키마"와 동일.
+const TYPE_SCHEMA = {
+  1: {
+    table: "segment_metrics_type1", rows: [
+      { col: "segment_id", desc: "세그먼트 식별자", ex: '"0151677"' },
+      { col: "time", desc: "30분 단위 시간 버킷", ex: '"0830"' },
+      { col: "value", desc: "최신 실측 통과시간(초)", ex: "38" },
+      { col: "last_sample_at", desc: "value가 관측된 시각 — 신선도 판정용", ex: "2026-08-27T08:31:02Z" },
+      { col: "avg", desc: "과거 평균 통과시간(초)", ex: "44" },
+      { col: "count", desc: "avg 증분 갱신 계산용 누적 횟수", ex: "312" },
+      { col: "updated_date", desc: "이 행이 마지막으로 갱신된 날짜", ex: "2026-08-27" },
+    ],
+  },
+  2: {
+    table: "segment_metrics_type2", rows: [
+      { col: "segment_id", desc: "세그먼트 식별자", ex: '"0151677"' },
+      { col: "value", desc: "길이(m)", ex: "255" },
+    ],
+  },
+  3: {
+    table: "segment_metrics_type3", rows: [
+      { col: "segment_id", desc: "세그먼트 식별자", ex: '"0151677"' },
+      { col: "dow", desc: "요일", ex: '"MON"' },
+      { col: "time", desc: "30분 단위 시간 버킷", ex: '"0900"' },
+      { col: "value", desc: "평균 승차 수", ex: "12" },
+    ],
+  },
+  4: {
+    table: "segment_metrics_type4", rows: [
+      { col: "segment_id", desc: "세그먼트 식별자", ex: '"0247694"' },
+      { col: "value", desc: "혼잡통행료 + 도로통행료 합산 금액(달러)", ex: "0.75" },
+    ],
+  },
+};
+
+function renderSchemaTable() {
+  const schema = TYPE_SCHEMA[selectedType];
+  const table = document.getElementById("schematable");
+  table.innerHTML =
+    `<caption style="caption-side:top; text-align:left; color:var(--muted); font-size:11px; padding-bottom:6px;">${schema.table}</caption>` +
+    `<tr><th>컬럼</th><th>설명</th><th>예시</th></tr>` +
+    schema.rows.map(r => `<tr><td>${r.col}</td><td>${r.desc}</td><td>${r.ex}</td></tr>`).join("");
+}
 
 // ---------- 지도 렌더링 (dev 브랜치 dashboard/index.html의 canvas 방식 재사용) ----------
 const canvas = document.getElementById("map");
@@ -179,11 +248,11 @@ function drawMarker(x, y, label, color) {
   ctx.fillStyle = color;
   ctx.fill();
   ctx.lineWidth = 2;
-  ctx.strokeStyle = "#0b0f1a";
+  ctx.strokeStyle = cssVar("--bg");
   ctx.stroke();
 
   ctx.font = "700 12px -apple-system, sans-serif";
-  ctx.fillStyle = "#e8ecf5";
+  ctx.fillStyle = cssVar("--text");
   ctx.textBaseline = "bottom";
   ctx.fillText(label, sx + 10, sy - 6);
 }
@@ -444,9 +513,13 @@ function aggregate(values, agg) {
   if (agg === "avg") return values.reduce((a,b) => a+b, 0) / values.length;
   if (agg === "max") return Math.max(...values);
 }
-function truncatedArray(arr, n = 4) {
-  if (arr.length <= n) return JSON.stringify(arr);
-  return `[${arr.slice(0, n).join(", ")}, … 외 ${arr.length - n}개]`;
+function truncatedArrayText(arr, n = 4) {
+  const shown = arr.length <= n ? arr : arr.slice(0, n);
+  const suffix = arr.length > n ? `, … 외 ${arr.length - n}개` : "";
+  return `[${shown.join(", ")}${suffix}]`;
+}
+function kv(key, valueText) {
+  return `  <span class="k">"${key}"</span>: ${valueText}`;
 }
 
 // type -> { A: {request, response}, ... } / type -> [{label, value}, ...]
@@ -458,11 +531,18 @@ function renderJsonBox() {
   const ex = exchangeByType[selectedType]?.[activeLabel];
   const box = document.getElementById("jsonbox");
   if (!ex) { box.innerHTML = '<span class="placeholder">아직 요청 없음</span>'; return; }
+  const { segment_ids, type, date, time } = ex.request; // _label은 화면 표시용이라 실제 요청엔 안 보냄(fetchValues 참고)
+  const reqLines = [
+    kv("segment_ids", truncatedArrayText(segment_ids)),
+    kv("type", type),
+    kv("date", `"${date}"`),
+    kv("time", `"${time}"`),
+  ].join(",\n");
   box.innerHTML =
     `<div class="req-line">POST /api/navigation/values</div>` +
-    `{ <span class="k">segment_ids</span>: ${truncatedArray(ex.request.segment_ids)}, <span class="k">type</span>: ${ex.request.type}, <span class="k">time</span>: "${ex.request.time}" }` +
+    `{\n${reqLines}\n}` +
     `<div class="res-line">200 OK</div>` +
-    `{ <span class="k">value</span>: ${truncatedArray(ex.response.value)} }`;
+    `{\n${kv("value", truncatedArrayText(ex.response.value))}\n}`;
 }
 
 function renderTypebar() {
@@ -480,6 +560,7 @@ function renderTypebar() {
       renderTypebar();
       renderTabs();
       renderJsonBox();
+      renderSchemaTable();
       draw();
     });
   });
@@ -558,8 +639,21 @@ document.getElementById("sendBtn").addEventListener("click", async () => {
   draw();
 });
 
+const themeToggleBtn = document.getElementById("themeToggle");
+function setTheme(theme) {
+  document.documentElement.setAttribute("data-theme", theme);
+  themeToggleBtn.textContent = theme === "light" ? "🌙" : "☀️";
+  localStorage.setItem("nav-gold-theme", theme);
+}
+themeToggleBtn.addEventListener("click", () => {
+  setTheme(document.documentElement.getAttribute("data-theme") === "light" ? "dark" : "light");
+  draw();
+});
+setTheme(localStorage.getItem("nav-gold-theme") || "dark");
+
 renderTypebar();
 renderTabs();
+renderSchemaTable();
 computeBounds();
 resize();
 </script>
