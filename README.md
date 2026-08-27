@@ -211,20 +211,19 @@ TLC 원본 데이터는 픽업 위치가 zone(구역) 단위로만 기록돼 세
 
 | # | 고민 | 결정 | 링크 |
 | :---: | --- | --- | --- |
-| 1 | (예시) 서빙 저장소로 무엇을 쓸까 → | (예시) 비용 이슈로 DynamoDB 대신 RDS(PostgreSQL) 선택 | [상세](docs/decisions/01-example.md) |
-| 2 |  |  | [상세](docs/decisions/02-decision.md) |
-| 3 |  |  | [상세](docs/decisions/03-decision.md) |
-| 4 |  |  | [상세](docs/decisions/04-decision.md) |
-| 5 |  |  | [상세](docs/decisions/05-decision.md) |
-| 6 |  |  | [상세](docs/decisions/06-decision.md) |
-| 7 |  |  | [상세](docs/decisions/07-decision.md) |
-| 8 |  |  | [상세](docs/decisions/08-decision.md) |
-| 9 |  |  | [상세](docs/decisions/09-decision.md) |
-| 10 |  |  | [상세](docs/decisions/10-decision.md) |
-| 11 |  |  | [상세](docs/decisions/11-decision.md) |
-| 12 |  |  | [상세](docs/decisions/12-decision.md) |
-| 13 |  |  | [상세](docs/decisions/13-decision.md) |
-| 14 |  |  | [상세](docs/decisions/14-decision.md) |
+| 1 | zone→segment 확장 시 파티션이 몰리는 문제를 어떻게 풀까 | 파티션 기준을 zone_id에서 segment_id로 교체 (편차 105배 → 1.2배) | [상세](docs/decisions/02-skew.md) |
+| 2 | Bronze 검증 실패를 어떻게 나눠서 대응할까 | 컬럼 존재 여부는 critical, 값 이상은 log-only로 구분 | [상세](docs/decisions/03-gx.md) |
+| 3 | 여러 DAG가 EMR 자원을 나눠 쓰는 방법 | DAG별로 쓸 수 있는 자원 몫을 고정 배분 | [상세](docs/decisions/04-spark-tuning.md) |
+| 4 | Type3 RDS 갱신을 어떤 방식으로 반영할까 | 파티션마다 임시 테이블에 나눠 담고, 다 담은 뒤 PK 생성 후 통째로 교체 | [상세](docs/decisions/05-rds-insert.md) |
+| 5 |  |  | [상세](docs/decisions/06-decision.md) |
+| 6 |  |  | [상세](docs/decisions/07-decision.md) |
+| 7 |  |  | [상세](docs/decisions/08-decision.md) |
+| 8 |  |  | [상세](docs/decisions/09-decision.md) |
+| 9 |  |  | [상세](docs/decisions/10-decision.md) |
+| 10 |  |  | [상세](docs/decisions/11-decision.md) |
+| 11 |  |  | [상세](docs/decisions/12-decision.md) |
+| 12 |  |  | [상세](docs/decisions/13-decision.md) |
+| 13 |  |  | [상세](docs/decisions/14-decision.md) |
 
 ## 8. 기술 스택
 
