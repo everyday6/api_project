@@ -342,10 +342,10 @@ graph LR
 
 | 관측 영역 | 주요 지표 | 확인 목적 |
 | --- | --- | --- |
-| 인프라 | RDS CPU·메모리·연결 수·Read/Write IOPS, EC2 CPU·메모리·디스크 | 병목이 DB 자원인지 애플리케이션인지 구분 |
-| 처리·서빙 | EMR vCPU·Worker, Lambda 호출·오류·소요시간·동시 실행, API Gateway 4xx·5xx·Latency | 배치 처리량과 API 장애·지연을 한 화면에서 비교 |
+| 인프라 | RDS 및 EC2 CPU·메모리·디스크 점유율 | 병목이 DB 자원인지 애플리케이션인지 구분 |
+| 서빙 | Lambda 호출·소요시간, API Gateway Latency | API 장애·지연 인지 |
 | 파이프라인·데이터 | Airflow DAG 상태·태스크 소요시간·최근 실패, 타입별 row 수·마지막 갱신 시각 | DAG 성공 여부와 실제 RDS 데이터 신선도를 교차 검증 |
-| 사용자 체감 성능 | Type1~4 RDS 쿼리 p50/p95/p99, 타입별 fallback 계층 비율 | 느린 쿼리와 부정확한 대체값 응답 비율을 함께 추적 |
+| 사용자 체감 성능 | RDS 쿼리 p50/p95/p99, 타입별 fallback 계층 비율 | 느린 쿼리와 부정확한 대체값 응답 비율을 함께 추적 |
 
 <p align="center">
   <img width="100%" alt="Grafana RDS 및 EC2 자원 종합 현황" src="https://github.com/user-attachments/assets/04c1d5d7-7518-447e-8e1b-87563bf61eb1" /><br>
@@ -356,10 +356,10 @@ graph LR
 
 Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같은 테이블을 읽는 API 쿼리의 응답시간이 증가했고, 일부 쿼리는 1초 `statement_timeout`으로 취소됐습니다. Grafana에서 다음 지표를 함께 비교해 원인을 좁혔습니다.
 
-1. Type3 쿼리 p95/p99가 상승하고 p99는 약 1.7초까지 증가했습니다.
-2. RDS 직접 조회가 실패하면서 하드코딩 fallback 비율이 최대 93.5%까지 상승했습니다.
-3. 같은 시각 RDS CPU와 디스크 지연은 정상 범위였지만 `DatabaseConnections`는 57개에서 76개로 증가했습니다.
-4. 따라서 CPU·디스크 부족보다 대량 upsert의 쓰기 트랜잭션과 API 읽기 쿼리 사이의 경합이 원인이라고 판단했습니다.
+1. Type3 쿼리 p95/p99(p99는 약 1.7초까지 증가)
+2. RDS 직접 조회 실패. 하드코딩 fallback 비율 최대 93.5%까지 급등
+3. 같은 시각 RDS CPU와 디스크 지연은 정상 범위. `DatabaseConnections`는 57개에서 76개로 증가
+4. 대량 upsert 트랜잭션과 API 읽기 쿼리 사이의 경합이 원인이라고 판단함.
 
 <p align="center">
   <img width="70%" alt="Grafana Type3 RDS 쿼리 응답시간 p50 p95 p99" src="https://github.com/user-attachments/assets/09eba1fd-8e49-4cde-8bc6-7f6951e33328" /><br>
@@ -371,7 +371,8 @@ Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같�
   <sub>타입별 RDS 직접 조회와 snapshot·hardcoded fallback 비율</sub>
 </p>
 
-해결책으로 운영 테이블에 행 단위 upsert를 반복하는 대신, 새 데이터를 별도 staging 테이블에 모두 적재하고 인덱스를 마지막에 생성한 뒤 테이블 이름만 원자적으로 교체(`RENAME`)하도록 변경했습니다. API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같은 테이블에서 오래 경합하지 않습니다.
+해결책으로 운영 테이블에 행 단위 upsert를 반복하는 대신, 새 데이터를 별도 staging 테이블에 모두 적재하고 테이블 이름만 교체 RENAME 하도록 변경했습니다.
+API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같은 테이블에서 오래 경합하지 않습니다.
 
 ### 2. Airflow 장애 알림 (Slack)
 
@@ -379,7 +380,6 @@ Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같�
 | --- | --- |
 | 태스크 실패 | 재시도 소진 후 DAG·Task·예외 요약과 Airflow 로그 링크를 Slack으로 전송 |
 | 파일 검증 실패 | 제외된 TLC 파일과 사유를 청크당 한 메시지로 요약 |
-| 알림 장애 | Webhook 오류는 로그만 남겨 원래 파이프라인 실행에 영향을 주지 않음 |
 
 구현: [`src/common/alerts.py`](src/common/alerts.py)
 
@@ -387,19 +387,11 @@ Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같�
 
 | 구분 | 핵심 동작 |
 | --- | --- |
-| 실행 로그 | Airflow 실행별 로그와 10MB × 5개 회전 방식의 도메인별 파일 로그 보관 |
 | 지표 로그 | RDS 쿼리 시간·fallback 계층 로그를 CloudWatch Logs Insights로 집계해 Grafana에 표시 |
 | 장애 로그 | Lambda는 표준 출력으로 기록하고, EMR 실패 시 Spark Driver 로그 끝부분을 Airflow에 첨부 |
 
 구현: [`src/common/logger.py`](src/common/logger.py), [`src/common/emr_serverless.py`](src/common/emr_serverless.py)
 
-### 4. 컨테이너 재시작 감시
-
-| 감시 대상 | 감지 방식 | 알림 내용 |
-| --- | --- | --- |
-| Airflow Worker·Scheduler | Docker `RestartCount`를 30초마다 확인 | 컨테이너명·재시작 횟수·상태·종료 시각·로그 확인 명령을 Slack으로 전송 |
-
-구현: [`scripts/docker_crash_monitor.sh`](scripts/docker_crash_monitor.sh)
 
 ## 8. 기술적 고민과 결정
 
