@@ -132,8 +132,12 @@
 | 세그먼트별 택시 승차수요 (type3) | 최근 N주 평균 → zone→segment 확산 | 요일×30분 슬롯 평균 승차수 | 약 7,000만 건 ~ 1억 건| 한 달 |
 | 세그먼트별 통행료 (type4) | 혼잡통행료 + 도로통행료 합산 | 세그먼트당 통행료 | — (통행료 대상만, 희소) | 통행료·LION 원본 갱신 시(요금표는 매달 1일 변경 여부 확인) |
 
-### **아키텍처**
 
+
+
+## 4. AWS 아키텍처
+
+<img width="5368" height="1688" alt="image (5)" src="https://github.com/user-attachments/assets/a33e1932-243a-457e-b406-0b264f01e0ea" />
 
 | 단계 | 구성 | 내용 |
 | --- | --- | --- |
@@ -141,10 +145,6 @@
 | Silver1/2 | S3  | 정제 + 도로망 매핑/조인 |
 | Gold | RDS(PostgreSQL) · S3(백업) | type1~4 최종 지표 upsert |
 | Data Access | EC2(FastAPI) | 도로별 정보 조회 API |
-
-## 4. AWS 아키텍처
-
-<!-- TODO: AWS 아키텍처 다이어그램 이미지 -->
 
 ## 5. 무조건 응답하는 서비스 만들기
 
