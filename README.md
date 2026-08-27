@@ -186,18 +186,7 @@ graph LR
     tollmon -.->|사람 확인 후 수동 실행| tollb
 ```
 
-- **폴링형(Type1)** — 원본이 5분마다 갱신되지만 정확히 언제 새 데이터가 올라오는지 보장이 안 돼, DAG를 30분(`*/30 * * * *`)마다 돌려 새 데이터 유무를 확인합니다.
-- **이벤트 기반(Type2, Type4)** — LION·통행료 원본은 갱신 빈도가 낮고 불규칙해서, 고정 스케줄 대신 Airflow Asset으로 "원본이 갱신되면" 트리거되도록 설계했습니다.
-- **일 단위 확인형(Type3)** — TLC 원본이 월 단위로 불규칙하게 공개돼, 매일(`@daily`) 새 데이터 유무만 확인하고 실제로 있을 때만 재계산합니다.
-
-**재실행/중복 방지** — Gold 적재는 `(segment_id, sk)` upsert라 재실행해도 중복이 쌓이지 않고, Type3는 재계산 조건(기간·매핑버전)을 워터마크로 판단해 불필요한 재계산을 막습니다.
-
-**S3 Staging Lifecycle** — DAG 실행 중 실패로 남은 임시 스테이징 결과만 7일 뒤 자동 삭제합니다(`config/s3-staging-lifecycle.json`).
-
-**실제 이슈 대응** — EC2 CPU 경합으로 Airflow DagBag import가 timeout(30초)을 넘겨 죽던 문제를 120초로 조정해 해결했고, 프로토타입 단계 DynamoDB 쓰기 32-way 병렬이 처리량 한도를 넘겨 죽던 문제를 10-way + adaptive 재시도로 해결했습니다.
-
-<details>
-<summary>DAG별 태스크 목록</summary>
+### DAG별 태스크 목록
 
 **lion_pipeline**
 
@@ -287,7 +276,14 @@ graph LR
 | build_lion_cbd_mapping_task | CBD(혼잡구역)-세그먼트 매핑 빌드 |
 | build_and_write_gold | Type4 Gold 계산·RDS 기록 |
 
-</details>
+### DAG 설계 시 중요하게 생각한 포인트
+
+| 포인트 | 설계 |
+| --- | --- |
+| 원본 데이터마다 다른 갱신 패턴 | Type1은 30분 폴링, Type2·Type4는 Asset 기반 이벤트 트리거, Type3는 매일 확인 후 필요할 때만 재계산 |
+| 재실행 시 중복 방지 | Gold 적재는 `(segment_id, sk)` upsert, Type3는 워터마크(기간·매핑버전)로 재계산 필요 여부 판단 |
+| 실패 후 남은 임시 데이터 정리 | S3 Staging Lifecycle로 실패 시 남은 스테이징 결과를 7일 뒤 자동 삭제 |
+| 리소스 경합으로 인한 장애 대응 | EC2 CPU 경합으로 DagBag import timeout(30초→120초) 조정, DynamoDB 쓰기 32-way→10-way + adaptive 재시도로 처리량 한도 초과 해결 |
 
 ## 6. 예외 처리 및 스키마 검증
 
