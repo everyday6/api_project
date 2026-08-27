@@ -127,7 +127,7 @@
 | NYC DCP / NYC Open Data | 도로망(LION) | Socrata API | 분기 1회 | 세그먼트 218,373개 |
 | NYC TLC Data | 택시 운행 기록 | 정적 파일 다운로드 | 월 1회 | 월 수천만 건 |
 | NYC TLC Data | 택시존 | 정적 파일 다운로드 | 최초 1회 | 263개 zone |
-| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 크롤러 | 정책 변경 시 | — |
+| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 수동 다운로드(크롤러 차단) | 정책 변경 시 | 31건 |
 
 
 ### **파이프라인 OUTPUT**
