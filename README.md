@@ -171,6 +171,7 @@ graph LR
     t3["tlc_type3_serving_pipeline<br/>(Type3 수요 계산)"]
     t1["segment_time_pipeline<br/>(Type1 소요시간 계산)"]
 
+    tlcIngest ~~~ zone
     zone -->|taxi_zone_silver1_updated| zs
     lion -->|lion_dim_segment_ready| zs
     lion -->|lion_dim_segment_ready| t2
