@@ -8,7 +8,7 @@
 <p align="center">
   <a href="https://nav-api-dashboard-lsy341.s3-website.ap-northeast-2.amazonaws.com"><img src="https://img.shields.io/badge/대시보드_바로가기-569A31?style=for-the-badge&logo=amazons3&logoColor=white" alt="대시보드"/></a>
   <a href="http://3.38.96.76:8080"><img src="https://img.shields.io/badge/Airflow_바로가기-017CEE?style=for-the-badge&logo=apacheairflow&logoColor=white" alt="Airflow"/></a>
-  <a href="http://3.38.96.76:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-12h&to=now&timezone=browser&refresh=5m"><img src="https://img.shields.io/badge/Grafana_바로가기-F46800?style=for-the-badge&logo=grafana&logoColor=white" alt="Grafana"/></a>
+  <a href="http://3.38.96.76:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-24h&to=now&timezone=browser&refresh=1m"><img src="https://img.shields.io/badge/Grafana_바로가기-F46800?style=for-the-badge&logo=grafana&logoColor=white" alt="Grafana"/></a>
 </p>
 
 <p align="center">
@@ -335,13 +335,68 @@ graph LR
 | **Type3 시공간 스키마** | PySpark SQL DataFrame의 `filter`, `groupBy`, `distinct`, `count` | Zone 결과는 `zone_id, type, date, time, value`, Segment 결과는 `segment_id, type, dow, time, value`로 고정하고 복합키와 전체 시간대 coverage를 검사 | 컬럼은 정상이더라도 특정 Zone의 14:30 값이 빠지면 `Zone × 날짜 × 48개 시간대` 예상 행 수와 달라 게시 중단 | [`src/tlc/gold2.py`](src/tlc/gold2.py) |
 
 ## 7. 모니터링
-<img width="1183" height="353" alt="image" src="https://github.com/user-attachments/assets/04c1d5d7-7518-447e-8e1b-87563bf61eb1" />
-<img width="588" height="301" alt="image" src="https://github.com/user-attachments/assets/09eba1fd-8e49-4cde-8bc6-7f6951e33328" />
-<img width="1182" height="618" alt="image" src="https://github.com/user-attachments/assets/bcfab373-ef94-4828-b58a-1bd67b11ff24" />
 
-RDS 쿼리 응답시간(p50/p95/p99), 타입별 fallback 계층 비율, API 전체 응답시간을 Grafana로 봅니다. fallback 비율은 사용자가 실제로 얼마나 자주 부정확한 값을 받는지 보여줘 개선 우선순위를 정하는 근거가 되고, API·RDS·Lambda 응답시간을 나란히 보면 병목이 RDS인지 Lambda 콜드스타트인지 구분할 수 있습니다.
+### 1. Grafana
 
-**모니터링으로 실제 장애를 잡은 사례** — Type3 배치(Gold 갱신) 파이프라인이 서빙 테이블에 대량 upsert를 하는 동안, 조회 쿼리가 그 쓰기 락에 걸려 statement_timeout(1초)으로 계속 취소되는 장애를 Grafana에서 발견했습니다. 하드코딩 폴백 비율이 평소 대비 93.5%까지 치솟은 걸 보고, RDS CPU(30%대)·디스크 지연(10~20ms)은 정상인데 DatabaseConnections만 57→76으로 튄 걸 확인해 원인이 디스크·CPU가 아니라 쓰기 트랜잭션의 락 대기라는 걸 알아냈습니다. 해결책은 행 단위 upsert 대신 새 데이터를 별도 테이블에 완전히 채운 뒤 테이블 이름만 원자적으로 스왑(RENAME)하는 방식으로 바꾼 것입니다. 인덱스도 데이터를 다 채운 뒤 한 번에 생성합니다 — 처음엔 인덱스가 있는 빈 테이블에 채워 넣다가 행마다 B-tree를 갱신하느라 20분 넘게 끝나지 않는 사고가 있었고, 정렬 후 한 번에 인덱스를 쌓는 방식(`ADD PRIMARY KEY`)으로 바꿔 해결했습니다.
+[Grafana 대시보드 열기](http://3.38.96.76:3000/d/nav-gold-overview/nav-gold-overview-rds-2b-emr-serverless?from=now-24h&to=now&timezone=browser&refresh=1m)
+
+| 관측 영역 | 주요 지표 | 확인 목적 |
+| --- | --- | --- |
+| 인프라 | RDS CPU·메모리·연결 수·Read/Write IOPS, EC2 CPU·메모리·디스크 | 병목이 DB 자원인지 애플리케이션인지 구분 |
+| 처리·서빙 | EMR vCPU·Worker, Lambda 호출·오류·소요시간·동시 실행, API Gateway 4xx·5xx·Latency | 배치 처리량과 API 장애·지연을 한 화면에서 비교 |
+| 파이프라인·데이터 | Airflow DAG 상태·태스크 소요시간·최근 실패, 타입별 row 수·마지막 갱신 시각 | DAG 성공 여부와 실제 RDS 데이터 신선도를 교차 검증 |
+| 사용자 체감 성능 | Type1~4 RDS 쿼리 p50/p95/p99, 타입별 fallback 계층 비율 | 느린 쿼리와 부정확한 대체값 응답 비율을 함께 추적 |
+
+<p align="center">
+  <img width="100%" alt="Grafana RDS 및 EC2 자원 종합 현황" src="https://github.com/user-attachments/assets/04c1d5d7-7518-447e-8e1b-87563bf61eb1" /><br>
+  <sub>RDS와 Airflow·Grafana가 동작하는 EC2의 CPU, 메모리, 디스크 상태</sub>
+</p>
+
+#### 모니터링으로 해결한 문제: RDS 쓰기 중 읽기 지연
+
+Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같은 테이블을 읽는 API 쿼리의 응답시간이 증가했고, 일부 쿼리는 1초 `statement_timeout`으로 취소됐습니다. Grafana에서 다음 지표를 함께 비교해 원인을 좁혔습니다.
+
+1. Type3 쿼리 p95/p99가 상승하고 p99는 약 1.7초까지 증가했습니다.
+2. RDS 직접 조회가 실패하면서 하드코딩 fallback 비율이 최대 93.5%까지 상승했습니다.
+3. 같은 시각 RDS CPU와 디스크 지연은 정상 범위였지만 `DatabaseConnections`는 57개에서 76개로 증가했습니다.
+4. 따라서 CPU·디스크 부족보다 대량 upsert의 쓰기 트랜잭션과 API 읽기 쿼리 사이의 경합이 원인이라고 판단했습니다.
+
+<p align="center">
+  <img width="70%" alt="Grafana Type3 RDS 쿼리 응답시간 p50 p95 p99" src="https://github.com/user-attachments/assets/09eba1fd-8e49-4cde-8bc6-7f6951e33328" /><br>
+  <sub>Type3 쿼리 응답시간 분포: 평균만으로 숨겨지는 느린 요청을 p95·p99로 확인</sub>
+</p>
+
+<p align="center">
+  <img width="100%" alt="Grafana Type1부터 Type4까지 fallback 계층 비율" src="https://github.com/user-attachments/assets/bcfab373-ef94-4828-b58a-1bd67b11ff24" /><br>
+  <sub>타입별 RDS 직접 조회와 snapshot·hardcoded fallback 비율</sub>
+</p>
+
+해결책으로 운영 테이블에 행 단위 upsert를 반복하는 대신, 새 데이터를 별도 staging 테이블에 모두 적재하고 인덱스를 마지막에 생성한 뒤 테이블 이름만 원자적으로 교체(`RENAME`)하도록 변경했습니다. API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같은 테이블에서 오래 경합하지 않습니다.
+
+### 2. Airflow 장애 알림 (Slack)
+
+- Airflow 태스크가 재시도를 모두 소진해 최종 실패했을 때만 Slack 알림을 보냅니다.
+- 알림에는 DAG·Task·시도 횟수·실행 시각·예외 유형·핵심 원인과 Airflow 로그 링크가 포함됩니다.
+- 긴 Spark/Java 예외는 마지막 `Caused by`를 기준으로 핵심 3줄, 최대 500자로 요약합니다.
+- TLC Bronze 검증에서 특정 파일만 제외된 경우에는 태스크 실패와 별개로 제외 파일과 사유를 청크당 한 메시지로 전달합니다.
+- Slack Webhook 장애가 원래 파이프라인 실패를 가리지 않도록 알림 전송 실패는 로그만 남깁니다.
+
+구현: [`src/common/alerts.py`](src/common/alerts.py)
+
+### 3. 로그
+
+- Airflow가 실행별 로그를 보관하고, 애플리케이션은 Python `logging`과 `RotatingFileHandler`로 도메인별 보조 로그를 남깁니다. 파일은 10MB 단위로 회전하며 최근 5개를 보관합니다.
+- Lambda처럼 파일시스템이 읽기 전용인 환경에서는 파일 기록을 건너뛰고 표준 출력으로 계속 기록해 CloudWatch Logs에서 조회할 수 있습니다.
+- API는 `[rds_query_duration]`, `[fallback_tier_summary]` 같은 식별자를 로그에 기록합니다. Grafana는 CloudWatch Logs Insights로 이를 집계해 쿼리 p50/p95/p99와 fallback 비율을 계산합니다.
+- EMR 작업 실패 시 Spark Driver의 `stdout`·`stderr` 마지막 부분을 Airflow 로그에 붙여 콘솔을 오가지 않고도 원인을 확인합니다.
+
+구현: [`src/common/logger.py`](src/common/logger.py), [`src/common/emr_serverless.py`](src/common/emr_serverless.py)
+
+### 4. 컨테이너 재시작 감시
+
+Airflow Worker나 Scheduler가 OOM 등으로 죽으면 그 프로세스 안에서 실행되는 실패 콜백도 함께 멈출 수 있습니다. 별도 감시 컨테이너가 Docker의 누적 `RestartCount`를 30초마다 확인해, 폴링 사이에 죽었다가 자동 복구된 짧은 장애까지 감지합니다. 재시작이 확인되면 컨테이너명·재시작 횟수·현재 상태·마지막 종료 시각과 확인할 로그 명령을 Slack으로 전송합니다.
+
+구현: [`scripts/docker_crash_monitor.sh`](scripts/docker_crash_monitor.sh)
 
 ## 8. 기술적 고민과 결정
 
