@@ -159,19 +159,28 @@
 
 ```mermaid
 graph LR
-    lion["lion_pipeline<br/>도로망(LION) 원본 수집·정제"]
-    zone["taxi_zone_pipeline<br/>택시존 원본 수집·정제"]
-    tollb["toll_bronze_pipeline<br/>통행료 원본 수집(수동)"]
-    tollmon["toll_rate_monitor<br/>매달 요금표 변경 확인 알림"]
-    t1["segment_time_pipeline<br/>Type1(소요시간) 계산"]
-    t3["tlc_daily<br/>Type3(수요) 계산"]
-    t2["segment_length_pipeline<br/>Type2(길이) 계산"]
-    zs["zone_segment_pipeline<br/>Zone-Segment 매핑 생성"]
-    t4["toll_silver_gold_pipeline<br/>Type4(통행료) 계산"]
+    subgraph Bronze
+        lion["lion_pipeline<br/>도로망(LION) 원본 수집"]
+        zone["taxi_zone_pipeline<br/>택시존 원본 수집"]
+        tollb["toll_bronze_pipeline<br/>통행료 원본 수집(수동)"]
+    end
 
-    lion --> t2
+    subgraph Silver
+        zs["zone_segment_pipeline<br/>Zone-Segment 매핑 생성"]
+    end
+
+    subgraph Gold
+        t1["segment_time_pipeline<br/>Type1(소요시간) 계산"]
+        t3["tlc_daily<br/>Type3(수요) 계산"]
+        t2["segment_length_pipeline<br/>Type2(길이) 계산"]
+        t4["toll_silver_gold_pipeline<br/>Type4(통행료) 계산"]
+    end
+
+    tollmon["toll_rate_monitor<br/>매달 요금표 변경 확인 알림"]
+
     lion --> zs
     zone --> zs
+    lion --> t2
     lion --> t4
     tollb --> t4
     tollmon -.->|사람 확인 후 수동 실행| tollb
