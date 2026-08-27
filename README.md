@@ -159,10 +159,10 @@
 
 ```mermaid
 graph LR
-    tlcIngest["tlc_ingest_pipeline<br/>(TLC 원본 수집·정제)"]
+    zone["taxi_zone_pipeline<br/>(택시존 수집·정제)"]
     lion["lion_pipeline<br/>(LION 도로망 수집·정제)"]
     tollb["toll_bronze_pipeline<br/>(통행료 수집, 수동)"]
-    zone["taxi_zone_pipeline<br/>(택시존 수집·정제)"]
+    tlcIngest["tlc_ingest_pipeline<br/>(TLC 원본 수집·정제)"]
 
     zs["zone_segment_pipeline<br/>(Zone-Segment 매핑 생성)"]
     t2["segment_length_pipeline<br/>(Type2 길이 계산)"]
