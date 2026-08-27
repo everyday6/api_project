@@ -109,31 +109,32 @@
 **4. <mark style="background-color:#fef08a; color:#1a1a1a;">승객 많은 경로</mark>**
 
 ## 3. 데이터 파이프라인과 아키텍처
+<img width="10576" height="4768" alt="image (4)" src="https://github.com/user-attachments/assets/165230ab-b1ea-480e-8b45-6b43cbdea35d" />
 
-**INPUT**
 
-| 제공처 | 수집 대상 | 수집 방식 · 주기 |
-| --- | --- | --- |
-| NYC DOT / NYC Open Data | 도로별 속도 데이터 | Socrata API · 5분 |
-| NYC DCP / NYC Open Data | 도로망(LION), 세그먼트 약 10만 개 | Socrata API · 분기 1회 |
-| NYC TLC Data | 택시 운행 기록 | 정적 파일 다운로드 · 월 1회 |
-| NYC TLC Data | 택시존, 263개 zone | 정적 파일 다운로드 · 최초 1회 |
-| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 크롤러 · 정책 변경 시 |
+### **파이프라인 INPUT**
 
-**OUTPUT**
+| 제공처 | 수집 대상 | 수집 방식 | 주기 |
+| --- | --- | --- | --- |
+| NYC DOT / NYC Open Data | 도로별 속도 데이터 | Socrata API| 5분 |
+| NYC DCP / NYC Open Data | 도로망(LION), 세그먼트 약 10만 개 | Socrata API | 분기 1회 |
+| NYC TLC Data | 택시 운행 기록 | 정적 파일 다운로드 | 월 1회 |
+| NYC TLC Data | 택시존, 263개 zone | 정적 파일 다운로드 | 최초 1회 |
+| MTA·Port Authority / NY Open Data | 도로·혼잡 통행료 | 크롤러 | 정책 변경 시 |
+
+
+### **파이프라인 OUTPUT**
 
 | type | 계산 방식 | 산출값 |
 | :---: | --- | --- |
 | 세그먼트별 통과시간 (type1) | 길이 ÷ 가중평균 속도 | 30분 버킷 통과시간(초) |
 | 세그먼트별 길이 (type2) | LION 원본 그대로 | 정적 길이값(m) |
-| 세그먼트별 택시 승차수요 (type3) | 최근 N주 rolling 평균 → zone→segment 확산 | 요일×30분 슬롯 평균 승차수 |
+| 세그먼트별 택시 승차수요 (type3) | 최근 N주 평균 → zone→segment 확산 | 요일×30분 슬롯 평균 승차수 |
 | 세그먼트별 통행료 (type4) | 혼잡통행료 + 도로통행료 합산 | 세그먼트당 통행료 |
 
 **아키텍처**
 
-<p align="center">
-  <img src="🚧 TODO: 아키텍처 다이어그램 이미지 URL" width="100%" alt="시스템 아키텍처">
-</p>
+
 
 | 단계 | 구성 | 내용 |
 | --- | --- | --- |
