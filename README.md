@@ -371,7 +371,7 @@ Type3 Gold 데이터를 RDS 서빙 테이블에 대량 upsert하는 동안 같�
   <sub>타입별 RDS 직접 조회와 snapshot·hardcoded fallback 비율</sub>
 </p>
 
-해결책으로 운영 테이블에 행 단위 upsert를 반복하는 대신, 새 데이터를 별도 staging 테이블에 모두 적재하고 테이블 이름만 교체 RENAME 하도록 변경했습니다.
+해결책으로 운영 테이블에 행 단위 upsert를 반복하는 대신, 새 데이터를 별도 staging 테이블에 모두 적재하고 테이블 이름만 RENAME 하도록 변경했습니다.
 API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같은 테이블에서 오래 경합하지 않습니다.
 
 ### 2. Airflow 장애 알림 (Slack)
