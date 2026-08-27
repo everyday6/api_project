@@ -139,12 +139,18 @@
 
 <img width="5368" height="1688" alt="image (5)" src="https://github.com/user-attachments/assets/a33e1932-243a-457e-b406-0b264f01e0ea" />
 
-| 단계 | 구성 | 내용 |
+| 구성 | 서비스 | 역할 |
 | --- | --- | --- |
-| Bronze | S3 | 원본 그대로 저장 |
-| Silver1/2 | S3  | 정제 + 도로망 매핑/조인 |
-| Gold | RDS(PostgreSQL) · S3(백업) | type1~4 최종 지표 upsert |
-| Data Access | EC2(FastAPI) | 도로별 정보 조회 API |
+| Data Lake | S3 | Bronze/Silver/Gold 원본·중간·최종 데이터 저장 |
+| 이미지 저장소 | ECR | Airflow·Spark 실행용 컨테이너 이미지 저장 |
+| 오케스트레이션 | EC2(Airflow) | 파이프라인 스케줄링 및 실행 관리 |
+| 대용량 처리 | EMR(Spark) | Silver/Gold 단계 데이터 정제·집계 |
+| 서빙 저장소 | RDS(Gold DB) | 최종 지표(type1~4) 저장, API 조회 대상 |
+| 서빙 API | Lambda | RDS 조회 + 인메모리 캐시로 응답 생성 |
+| API 엔드포인트 | API Gateway | 외부 요청을 Lambda로 라우팅 |
+| 대시보드 | S3(정적 호스팅) | 프론트엔드 대시보드 배포 |
+
+※ EC2·EMR·RDS는 같은 VPC 안에서 통신합니다.
 
 ## 5. 무조건 응답하는 서비스 만들기
 
