@@ -11,7 +11,9 @@
 </p>
 
 <p align="center">
-<sub>Grafana ID: admin · PW: 1234</sub>
+<sub>Grafana ID: admin
+  
+  PW: 1234</sub>
 </p>
 
 <p align="center">
