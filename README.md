@@ -196,6 +196,99 @@ graph LR
 
 **실제 이슈 대응** — EC2 CPU 경합으로 Airflow DagBag import가 timeout(30초)을 넘겨 죽던 문제를 120초로 조정해 해결했고, 프로토타입 단계 DynamoDB 쓰기 32-way 병렬이 처리량 한도를 넘겨 죽던 문제를 10-way + adaptive 재시도로 해결했습니다.
 
+<details>
+<summary>DAG별 태스크 목록</summary>
+
+**lion_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| ingest_lion | LION 원본 데이터 수집(Bronze) |
+| build_dim_segment_staged | dim_segment 스테이징 테이블 빌드 |
+| validate_staged_dim_segment | 스테이징 데이터 검증 |
+| publish_dim_segment | 검증 통과한 dim_segment 게시(운영 반영) |
+| cleanup_dim_segment_staging | 스테이징 임시 데이터 정리 |
+
+**taxi_zone_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| ingest_taxi_zone_shapefile | 택시존 shapefile 원본 수집 |
+| build_taxi_zone_silver1 | 택시존 Silver1 정제(변경 없으면 게시 스킵) |
+
+**toll_bronze_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| upload_rates_task | 통행료 요금표 업로드 |
+| upload_facilities_task | 통행료 부과 시설 목록 업로드 |
+| upload_cbd_geofence_task | 혼잡통행료 구역(CBD) geofence 업로드 |
+| publish_toll_bronze | 통행료 Bronze 게시 |
+
+**toll_rate_monitor**
+
+| 태스크 | 역할 |
+| --- | --- |
+| send_reminder | 매달 요금표 변경 여부 확인 Slack 알림 |
+
+**segment_time_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| check_new_data | 신규 속도 데이터 존재 확인(short-circuit) |
+| collect_bronze | 도로 속도 데이터 수집(Bronze) |
+| check_dim_segment_exists | dim_segment 존재 여부 확인(short-circuit) |
+| submit_nav_time_job | Type1 Silver/Gold 계산 작업 제출(EMR) |
+
+**tlc_daily**
+
+| 태스크 | 역할 |
+| --- | --- |
+| generate_incremental_download_list | 신규 다운로드 대상 목록 생성 |
+| download_file | TLC 파일 다운로드(taxi_type별 병렬) |
+| validate_download | 다운로드 결과 검증 |
+| store_bronze | Bronze 저장 |
+| find_pending_silver_files | Bronze는 있지만 Silver1 미완료인 파일 복구 |
+| chunk_bronze_files | taxi_type별 청크 묶기 |
+| validate_bronze_quality | 청크별 Bronze 품질 검증(Great Expectations) |
+| build_silver | 검증 통과 파일 Silver1 변환·저장 |
+| find_pending_type3_months | Type3 처리 대상 월 탐색 |
+| build_type3_staged_records | Type3 임시(스테이징) 레코드 생성 |
+| validate_type3_staged_records | Type3 스테이징 레코드 검증 |
+| publish_type3_daily_records | 검증 통과분 운영 파티션으로 승격 |
+| cleanup_type3_staging | Type3 스테이징 정리 |
+| check_type3_publish_needed | RDS 값이 최신 N주보다 오래됐는지 판단 |
+| check_type3_reference_ready | zone-segment 매핑 준비 여부 확인 |
+| publish_type3_rolling_values | Type3 롤링 평균 RDS 게시 |
+
+**segment_length_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| build_gold2_lion | Gold 계산용 LION 데이터 빌드 |
+| submit_nav_length_job | Type2 계산 작업 제출(EMR) |
+| build_and_write_spec_estimates | 스펙 기반 추정치 계산·기록 |
+
+**zone_segment_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| validate_reference_inputs | 참조 입력(LION·택시존) 유효성 검증 |
+| build_map_zone_segment_staged | zone-segment 매핑 스테이징 빌드 |
+| validate_staged_map_zone_segment | 매핑 스테이징 검증 |
+| publish_map_zone_segment | 검증 통과한 매핑 게시 |
+
+**toll_silver_gold_pipeline**
+
+| 태스크 | 역할 |
+| --- | --- |
+| find_latest_lion_gdb | 최신 LION GDB 파일 탐색 |
+| build_lion_facility_mapping_task | 시설-세그먼트 매핑 빌드 |
+| build_lion_cbd_mapping_task | CBD(혼잡구역)-세그먼트 매핑 빌드 |
+| build_and_write_gold | Type4 Gold 계산·RDS 기록 |
+
+</details>
+
 ## 6. 예외 처리 및 스키마 검증
 
 **데이터 품질 검증(Great Expectations)** — Bronze 적재 시 taxi_type별 필수 컬럼이 다 있는지 검증합니다. Silver1 변환 로직과 완전히 같은 컬럼 매핑을 공유해, 검증 기준과 실제 변환 로직이 서로 어긋나는 걸 방지합니다. 검증 실패 시 해당 파일은 처리에서 제외됩니다.
