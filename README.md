@@ -159,10 +159,10 @@
 
 ```mermaid
 graph LR
-    zone["taxi_zone_pipeline<br/>(택시존 수집·정제)"]
+    tlcIngest["tlc_ingest_pipeline<br/>(TLC 원본 수집·정제)"]
     lion["lion_pipeline<br/>(LION 도로망 수집·정제)"]
     tollb["toll_bronze_pipeline<br/>(통행료 수집, 수동)"]
-    tlcIngest["tlc_ingest_pipeline<br/>(TLC 원본 수집·정제)"]
+    zone["taxi_zone_pipeline<br/>(택시존 수집·정제)"]
 
     zs["zone_segment_pipeline<br/>(Zone-Segment 매핑 생성)"]
     t2["segment_length_pipeline<br/>(Type2 길이 계산)"]
@@ -178,10 +178,10 @@ graph LR
     tollb -->|toll_bronze_updated| t4
     zs -->|map_zone_segment_ready| t3
     tlcIngest -->|tlc_type3_gold2_ready| t3
-    t2 -.->|dim_segment 런타임 참조| t1
+    lion -.->|dim_segment 런타임 참조| t1
 ```
 
-> `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `segment_length_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(점선으로 표시, Asset 트리거는 아님).
+> `segment_time_pipeline`은 Asset 의존이 없어 30분마다 독립적으로 실행되지만, 실행 중 `lion_pipeline`이 만든 최신 `dim_segment.parquet`을 코드 레벨로 참조합니다(점선으로 표시, Asset 트리거는 아님).
 
 **Cron 스케줄 (4개)**
 
