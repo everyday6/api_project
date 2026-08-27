@@ -329,7 +329,7 @@ graph LR
 | 검증 지점 | 코드에 정의한 스키마 | 검증 예시 | 구현 |
 | --- | --- | --- | --- |
 | **API 요청·응답** | `segment_ids` 1-500개, type은 1-4, 날짜는 `YYYY-MM-DD`, 시간은 `HH:MM`, 응답은 숫자 배열로 제한 | `type=5`, 빈 경로, `25:00` 요청은 FastAPI가 422로 거부 | [`src/serving/nav_api.py`](src/serving/nav_api.py) |
-| **TLC Bronze 원본** | Yellow·Green·FHV·FHVHV마다 서로 다른 필수 원본 컬럼을 Great Expectations로 검사 | Yellow 파일에 `tpep_dropoff_datetime`이 없으면 critical 스키마 실패로 판정 | [`src/tlc/expectations.py`](src/tlc/expectations.py), [`src/tlc/bronze_validation.py`](src/tlc/bronze_validation.py) |
+| **TLC Bronze 원본** | 택시 종류마다 서로 다른 필수 원본 컬럼을 Great Expectations로 검사 | Yellow Taxi 파일에 `tpep_dropoff_datetime`이 없으면 critical 스키마 실패로 판정 | [`src/tlc/expectations.py`](src/tlc/expectations.py), [`src/tlc/bronze_validation.py`](src/tlc/bronze_validation.py) |
 | **TLC Silver1 공통 스키마** | 네 종류의 TLC 데이터를 `timestamp 2개 + integer 3개 + double 1개`의 공통 6개 컬럼으로 변환 | FHV에 원래 없는 `passenger_count`, `trip_distance`는 지정 타입의 nullable 컬럼으로 추가하고, 필수 원본 컬럼 누락은 거부 | [`src/tlc/silver1_transform.py`](src/tlc/silver1_transform.py) |
 | **Zone-Segment 매핑** | 모든 LION `segment_id`가 정확히 하나의 `zone_id`를 가져야 하며, zone은 1~263, 매핑 방식은 `contains` 또는 `nearest`만 허용 | 입력 세그먼트가 218,373개인데 매핑이 218,372개이거나 `segment_id`가 중복되면 검증 실패 | [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py) |
 | **Type3 시공간 스키마** | Zone 결과는 `zone_id, type, date, time, value`, Segment 결과는 `segment_id, type, dow, time, value`로 고정하고 복합키와 전체 시간대 coverage를 검사 | 컬럼은 정상이더라도 특정 Zone의 14:30 값이 빠지면 `Zone × 날짜 × 48개 시간대` 예상 행 수와 달라 게시 중단 | [`src/tlc/gold2.py`](src/tlc/gold2.py) |
