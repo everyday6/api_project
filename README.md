@@ -422,15 +422,12 @@ API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같
 | 2 | Bronze 검증 실패를 어떻게 나눠서 대응할까 | 컬럼 존재 여부는 critical, 값 이상은 log-only로 구분 | [상세](docs/decisions/02-gx.md) |
 | 3 | 여러 DAG가 EMR 자원을 나눠 쓰는 방법 | DAG별로 쓸 수 있는 자원 몫을 고정 배분 | [상세](docs/decisions/03-spark-tuning.md) |
 | 4 | Type3 RDS 갱신을 어떤 방식으로 반영할까 | 파티션마다 임시 테이블에 나눠 담고, 다 담은 뒤 PK 생성 후 통째로 교체 | [상세](docs/decisions/04-rds-insert.md) |
-<<<<<<< HEAD
 | 5 | RDS 장애가 API 전체 실패로 이어지는 것을 어떻게 막을까? | 1초 타임아웃 후 메모리 캐시 → S3 스냅샷 → 기본값으로 단계적 폴백 | [상세](docs/decisions/05-decision.md) |
 | 6 | 원천의 새 버전을 언제 처리 완료로 기록할까? | 변경 감지 마커는 운영 데이터 publish가 성공한 후에만 갱신 | [상세](docs/decisions/06-decision.md) |
 | 7 | 검증된 데이터의 준비 완료를 downstream에 어떻게 전달할까? | DAG 직접 호출 대신 publish 완료 Asset을 발행하고 downstream에서 구독 | [상세](docs/decisions/07-decision.md) |
-=======
 | 5 | RDS 장애가 API 전체 실패로 이어지는 것을 어떻게 막을까? | 1초 타임아웃 후 메모리 캐시 → S3 스냅샷 → 기본값으로 단계적 폴백 | [상세](docs/decisions/05-rds-fallback.md) |
 | 6 | 원천의 새 버전을 언제 처리 완료로 기록할까? | 변경 감지 마커는 운영 데이터 publish가 성공한 후에만 갱신 | [상세](docs/decisions/06-etag-marker.md) |
 | 7 | 검증된 데이터의 준비 완료를 downstream에 어떻게 전달할까? | DAG 직접 호출 대신 publish 완료 Asset을 발행하고 downstream에서 구독 | [상세](docs/decisions/07-airflow-asset.md) |
->>>>>>> 59895df539afe8c403b4a51b31409c98c0eb152c
 | 8 | 실측값이 결측일 때 코드 상수 대신 쓸 대체값을 어떻게 만들까 | (segment_id, time) 슬롯별 avg를 증분 공식으로 갱신해 같은 행에 저장 | [상세](docs/decisions/08-type1-avg.md) |
 
 
