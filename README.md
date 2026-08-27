@@ -24,7 +24,7 @@
 3. [데이터 파이프라인과 아키텍처](#3-데이터-파이프라인과-아키텍처)
 4. [AWS 아키텍처](#4-aws-아키텍처)
 5. [Airflow DAG 설계](#5-airflow-dag-설계)
-6. [예외 처리 및 스키마 검증](#6-예외-처리-및-스키마-검증)
+6. [스키마 검증](#6-스키마-검증)
 7. [모니터링](#7-모니터링)
 8. [기술적 고민과 결정](#8-기술적-고민과-결정)
 9. [기술 스택](#9-기술-스택)
@@ -324,16 +324,15 @@ graph LR
 
 </details>
 
-## 6. 예외 처리 및 스키마 검증
+## 6. 스키마 검증
 
-일반적인 결측치 제거보다, 내비게이션 경로·택시 시계열·공간 매핑의 특성을 반영한 네 가지 절차에 집중했습니다.
-
-| 핵심 절차 | 오류 상황 예시 | 적용 전 | 적용 후 |
+| 검증 지점 | 코드에 정의한 스키마 | 검증 예시 | 구현 |
 | --- | --- | --- | --- |
-| **실제 도착시각 기반 Type1 조회·폴백** | 12:29 출발 후 첫 구간에서 2분이 걸렸거나, 경로 조회 중 RDS가 지연됨 | 모든 세그먼트를 12:00 버킷으로 조회해 실제 도착 시각과 어긋나고, RDS 실패가 세그먼트마다 누적돼 API가 타임아웃됨 | 다음 구간은 12:31 도착으로 계산해 12:30 버킷을 조회. 값은 `최신 실측 → 과거 평균 → 도로 스펙 추정` 순으로 찾고, RDS 장애 시 `메모리 캐시 → S3 스냅샷 → 기본값`으로 전환해 요청한 세그먼트 수만큼 응답 |
-| **Type3 시공간 완전성 검증** | 파일과 컬럼은 정상이지만 특정 날짜의 Zone 132, 14:30 데이터만 누락됨 | 일반 스키마 검증은 통과하지만 일부 세그먼트의 승차 수요가 비어 있는 채로 게시됨 | `Taxi Zone × 모든 날짜 × 하루 48개 시간대` 및 `Segment × 요일 7개 × 48개 시간대`의 예상 행 수·복합키를 검증. 하나라도 빠지면 RDS 게시를 중단하고 기존 정상 데이터 유지 |
-| **Zone-Segment 매핑 버전 재검증** | Type3 롤링값 계산 도중 LION 또는 Taxi Zone이 갱신돼 매핑 버전이 `v1 → v2`로 변경됨 | v1으로 계산한 값이 v2 세그먼트에 게시돼 서로 다른 공간 기준의 데이터가 섞임 | 매핑 내용의 SHA-256과 날짜 범위를 게시 직전에 다시 비교. 달라졌으면 적재를 중단하고 다음 실행에서 최신 매핑으로 재계산 |
-| **TLC 파일 오류와 시스템 장애 분리** | 한 Yellow Taxi 파일은 필수 컬럼이 사라졌고, 다른 파일은 일시적인 S3 오류로 읽지 못함 | 두 오류 모두 전체 배치를 중단하거나, 반대로 둘 다 불량 파일로 제외해 일시 장애 데이터를 놓침 | 필수 컬럼 누락 파일만 격리하고 나머지는 계속 처리. S3·Spark 오류는 다시 발생시켜 Airflow가 재시도하며, 격리 파일은 청크당 Slack 알림 한 건으로 요약 |
+| **API 요청·응답** | `segment_ids` 1~500개, type은 1~4, 날짜는 `YYYY-MM-DD`, 시간은 `HH:MM`, 응답은 숫자 배열로 제한 | `type=5`, 빈 경로, `25:00` 요청은 FastAPI가 422로 거부 | [`src/serving/nav_api.py`](src/serving/nav_api.py) |
+| **TLC Bronze 원본** | Yellow·Green·FHV·FHVHV마다 서로 다른 필수 원본 컬럼을 Great Expectations로 검사 | Yellow 파일에 `tpep_dropoff_datetime`이 없으면 critical 스키마 실패로 판정 | [`src/tlc/expectations.py`](src/tlc/expectations.py), [`src/tlc/bronze_validation.py`](src/tlc/bronze_validation.py) |
+| **TLC Silver1 공통 스키마** | 네 종류의 TLC 데이터를 `timestamp 2개 + integer 3개 + double 1개`의 공통 6개 컬럼으로 변환 | FHV에 원래 없는 `passenger_count`, `trip_distance`는 지정 타입의 nullable 컬럼으로 추가하고, 필수 원본 컬럼 누락은 거부 | [`src/tlc/silver1_transform.py`](src/tlc/silver1_transform.py) |
+| **Zone-Segment 매핑** | 모든 LION `segment_id`가 정확히 하나의 `zone_id`를 가져야 하며, zone은 1~263, 매핑 방식은 `contains` 또는 `nearest`만 허용 | 입력 세그먼트가 218,373개인데 매핑이 218,372개이거나 `segment_id`가 중복되면 검증 실패 | [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py) |
+| **Type3 시공간 스키마** | Zone 결과는 `zone_id, type, date, time, value`, Segment 결과는 `segment_id, type, dow, time, value`로 고정하고 복합키와 전체 시간대 coverage를 검사 | 컬럼은 정상이더라도 특정 Zone의 14:30 값이 빠지면 `Zone × 날짜 × 48개 시간대` 예상 행 수와 달라 게시 중단 | [`src/tlc/gold2.py`](src/tlc/gold2.py) |
 
 ## 7. 모니터링
 
