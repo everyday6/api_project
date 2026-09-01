@@ -81,7 +81,7 @@
 | 1 | **Lineage/Reproducibility** | ❌ 버전 컬럼 없음 | Gold 테이블에 `avg_formula_version` 등 계산 로직 버전 컬럼 추가 |
 | 2 | **Contract** | 🟡 README 표만 존재 | `docs/contracts.md`로 분리, null 허용/필수 여부 명시 |
 | 3 | **Observability (데이터 상태)** | ✅ 강함 — 유지·어필 | RDS 쓰기중 읽기지연을 실측으로 잡아낸 사례를 계속 근거로 사용 |
-| 4 | **응답의 신뢰도 노출** | ✅ `/segments/values`는 적용 완료(2026-09) | `SegmentValuesResponse.sources` 필드 추가 — **원칙 0-1을 지키는 핵심 조치**. `/api/navigation/values`는 아직 미적용(`docs/contracts.md` 참고) |
+| 4 | **응답의 신뢰도 노출** | ✅ `/segments/values`·`/api/navigation/values` 둘 다 적용 완료(2026-09) | `sources` 필드로 값의 출처 계층을 노출 — **원칙 0-1을 지키는 핵심 조치**. type별 tier 어휘는 `docs/contracts.md` 참고 |
 
 ### Tier 2 — Containment: 격리할 수 있는가
 

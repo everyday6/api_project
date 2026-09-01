@@ -4,7 +4,7 @@ import pytest
 
 from src.common import gold_snapshot
 from src.toll import serving
-from src.toll.serving import get_toll_value, get_toll_values
+from src.toll.serving import get_toll_value, get_toll_values, get_toll_values_with_tiers
 
 
 @pytest.fixture(autouse=True)
@@ -28,6 +28,39 @@ def test_get_toll_values_returns_values_in_order():
 
     assert result == [2.75, 17.0]
     mock_batch.assert_called_once()
+
+
+def test_get_toll_values_with_tiers_reports_rds_when_rds_up():
+    with patch(
+        "src.toll.serving.db.batch_get_items",
+        return_value={("1",): {"segment_id": "1", "value": 2.75}},
+    ):
+        values, tiers = get_toll_values_with_tiers(["1", "2"])
+
+    # RDS 호출이 성공하면, 값이 없는 segment도 "통행료 대상 아님"이지 폴백이
+    # 아니므로 전부 rds 계층이다(0.0으로 응답).
+    assert values == [2.75, 0.0]
+    assert tiers == ["rds", "rds"]
+
+
+def test_get_toll_values_with_tiers_reports_snapshot_and_hardcoded_when_rds_down():
+    with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 2.75}):
+        values, tiers = get_toll_values_with_tiers(["1", "2"])
+
+    assert values == [2.75, 0.0]
+    assert tiers == ["snapshot", "hardcoded"]
+
+
+def test_get_toll_values_is_thin_wrapper_over_with_tiers():
+    with patch(
+        "src.toll.serving.get_toll_values_with_tiers",
+        return_value=([1.0, 2.0], ["rds", "snapshot"]),
+    ) as mock_with_tiers:
+        result = get_toll_values(["a", "b"])
+
+    assert result == [1.0, 2.0]
+    mock_with_tiers.assert_called_once_with(["a", "b"])
 
 
 def test_get_toll_values_defaults_missing_segments_to_zero():

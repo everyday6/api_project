@@ -95,6 +95,38 @@ def test_db_connection_uses_short_operational_timeouts(monkeypatch):
     assert "statement_timeout=1000" in kwargs["options"]
 
 
+def test_get_type3_values_with_tiers_returns_values_and_per_segment_tiers():
+    # rds/snapshot/hardcoded 세 계층을 한 요청에서 다 겪게 만든다.
+    conn = FakeConnection({"rds-seg": 5})
+    zone_snapshot = {"42#FRI#1200": 33.0}
+    mapping_snapshot = {"snapshot-seg": 42}
+
+    def fake_read_snapshot(type_name):
+        return zone_snapshot if type_name == "type3_zone" else mapping_snapshot
+
+    with patch("src.common.gold_snapshot.read_snapshot", side_effect=fake_read_snapshot):
+        values, tiers = api.get_type3_values_with_tiers(
+            ["rds-seg", "snapshot-seg", "hardcoded-seg"],
+            datetime(2026, 8, 21, 12, 0),
+            conn=conn,
+            table_name="navigation-values",
+        )
+
+    assert values[0] == 5.0
+    assert tiers == ["rds", "snapshot", "hardcoded"]
+
+
+def test_get_type3_values_is_thin_wrapper_over_with_tiers():
+    with patch(
+        "src.serving.api.get_type3_values_with_tiers",
+        return_value=([1.0, 2.0], ["rds", "snapshot"]),
+    ) as mock_with_tiers:
+        result = api.get_type3_values(["a", "b"], datetime(2026, 8, 21, 12, 0))
+
+    assert result == [1.0, 2.0]
+    mock_with_tiers.assert_called_once()
+
+
 def test_get_type3_values_batches_and_preserves_input_order():
     segment_ids = [f"{value:07d}" for value in range(101)]
     requested = [segment_ids[100], segment_ids[0], segment_ids[100], *segment_ids[1:100]]

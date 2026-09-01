@@ -104,9 +104,12 @@ tier 어휘를 다시 보면, 4개 type이 실제로는 성격이 다른 3개 �
 
 ## `/segments/values` (type 1, 2) vs `/api/navigation/values` (type 1~4)
 
-- `/segments/values`는 `sources` 필드로 tier를 노출한다 (2026-09 기준 적용됨)
-- `/api/navigation/values`는 아직 tier를 노출하지 않는다 — **다음 과제**
-  (`RELIABILITY_PRINCIPLES.md` "재검토가 필요한 지점" 참고)
+- 둘 다 `sources` 필드로 tier를 노출한다 (2026-09 기준 적용됨).
+- 응답 필드 이름만 다르다: `/segments/values`는 `values`, `/api/navigation/values`는
+  `value`(단수, 기존 계약 유지). tier는 둘 다 `sources`.
+- `/api/navigation/values`의 tier 어휘는 `type`에 따라 다르다 (위 표):
+  type1 = `fresh`/`avg`/`hardcoded`, type2 = `rds`/`global`/`snapshot`/`hardcoded`,
+  type3·type4 = `rds`/`snapshot`/`hardcoded`. 한 응답 안에 한 세트만 나온다.
 
 ---
 

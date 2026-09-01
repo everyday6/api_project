@@ -177,7 +177,26 @@ def get_type3_values(
     conn=None,
     table_name: str | None = None,
 ) -> list[float]:
-    """RDS를 조회하고 입력 segment 순서대로 숫자 값을 반환한다.
+    """RDS를 조회하고 입력 segment 순서대로 숫자 값을 반환한다. 값만 반환하는
+    얇은 래퍼다 — 값의 출처 계층(rds/snapshot/hardcoded)까지 필요하면
+    get_type3_values_with_tiers를 쓴다. 기존 호출부/테스트 하위 호환용."""
+
+    values, _tiers = get_type3_values_with_tiers(
+        segment_ids, requested_at, conn=conn, table_name=table_name
+    )
+    return values
+
+
+def get_type3_values_with_tiers(
+    segment_ids: list[str],
+    requested_at: datetime,
+    *,
+    conn=None,
+    table_name: str | None = None,
+) -> tuple[list[float], list[str]]:
+    """get_type3_values와 동일하되 values[i]가 어느 계층(rds/snapshot/hardcoded)
+    에서 왔는지도 함께 반환한다. API 응답에 신뢰도를 노출할 때 쓴다
+    (RELIABILITY_PRINCIPLES.md 원칙 0-1).
 
     Type3 테이블은 (segment_id, dow, time)이 복합키인 flat 테이블이라,
     요청 시각 하나로 정해지는 dow/time 조건과 segment_id 목록으로 바로
@@ -236,4 +255,4 @@ def get_type3_values(
     # "Type3 fallback 계층 비율" 패널을 그린다.
     log_tier_summary(logger, "type3_fallback_tier_summary", tiers, ["rds", "snapshot", "hardcoded"])
 
-    return values
+    return values, tiers
