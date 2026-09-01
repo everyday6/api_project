@@ -165,3 +165,51 @@ def test_validate_and_decide_df_returns_true_without_alert_when_all_pass():
 
     assert result is True
     mock_notify.assert_not_called()
+
+
+def test_mark_suspect_rows_flags_out_of_range_speed():
+    df = pd.DataFrame([_good_row(id="0", speed="29.82"), _good_row(id="1", speed="-5.0")])
+
+    result = bronze_validation.mark_suspect_rows(df)
+
+    assert list(result["is_suspect"]) == [False, True]
+
+
+def test_mark_suspect_rows_flags_null_in_required_column():
+    df = pd.DataFrame([_good_row(id="0"), _good_row(id="1", speed=None)])
+
+    result = bronze_validation.mark_suspect_rows(df)
+
+    assert list(result["is_suspect"]) == [False, True]
+
+
+def test_mark_suspect_rows_flags_ancient_data_as_of():
+    df = pd.DataFrame([
+        _good_row(id="0"),
+        _good_row(id="1", data_as_of="1930-12-09T14:40:47.000"),
+    ])
+
+    result = bronze_validation.mark_suspect_rows(df)
+
+    assert list(result["is_suspect"]) == [False, True]
+
+
+def test_mark_suspect_rows_does_not_mutate_original_dtypes():
+    # bronze_validation.py 전체의 원칙과 동일 - 검증/표시용 캐스팅이
+    # 원본 df(향후 Bronze에 저장될 그 객체)에 새어나가면 안 된다.
+    df = pd.DataFrame([_good_row()])
+    before_dtype = df["speed"].dtype
+
+    result = bronze_validation.mark_suspect_rows(df)
+
+    assert df["speed"].dtype == before_dtype
+    assert "is_suspect" not in df.columns
+    assert "is_suspect" in result.columns
+
+
+def test_mark_suspect_rows_all_clean_returns_all_false():
+    df = pd.DataFrame([_good_row(id=str(i)) for i in range(3)])
+
+    result = bronze_validation.mark_suspect_rows(df)
+
+    assert list(result["is_suspect"]) == [False, False, False]

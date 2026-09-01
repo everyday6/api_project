@@ -32,7 +32,9 @@ from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
+from src.common.suspect import flag_suspect_pandas, suspect_ratio
 from src.common.utils import clean_street, save_parquet
+from src.lion.expectations import SPEED_LIMIT_MAX_MPH, SPEED_LIMIT_MIN_MPH
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="lion_silver")
 
@@ -51,6 +53,17 @@ LION_COLUMNS = [
 VALID_BOROUGH_CODES = ["1", "2", "3", "4", "5"]
 MIN_EXPECTED_ROWS = 100_000
 MAX_EXPECTED_ROWS = 300_000
+
+# mark_suspect_rows()가 표시한 의심 행(is_suspect)의 비율이 이 값을 넘으면
+# validate_dim_segment_base()가 publish를 차단한다. LION은 기준 데이터라
+# 정합성이 가용성에 우선한다(RELIABILITY_PRINCIPLES.md Tier 0-A) - 값 수준
+# 이상치가 평소보다 뭉텅이로 늘었다는 건 원천 스키마/파싱이 깨졌을
+# 신호이므로, 오염된 dim_segment를 내보내느니 이번 릴리즈를 막는다.
+#
+# NOTE: placeholder 값이다. 실제 dim_segment 스냅샷으로 baseline 의심
+# 비율을 측정한 뒤 (baseline + 여유분) 또는 그 배수로 조정해야 한다 -
+# 아직 실측 근거가 없다.
+MAX_SUSPECT_RATIO = 0.05
 
 
 def _as_path(value):
@@ -107,7 +120,36 @@ def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
         "RW_TYPE", "TRUCK_ROUTE_TYPE", "TrafDir", "FeatureTyp", "speed_limit_mph",
     ]]
 
-    return dim_segment
+    return mark_suspect_rows(dim_segment)
+
+
+def mark_suspect_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """dim_segment의 값 수준 이상치(음수 길이/차선 수, 비현실적 제한속도,
+    끊긴 노드 연결)를 행 단위로 판정해 `is_suspect` 컬럼을 추가한 복사본을
+    반환한다. src/speed/bronze_validation.py의 동명 함수와 같은 목적·같은
+    패턴이다 - 전면적인 quarantine 대신 표시만 남기는 최소 버전.
+
+    lion에는 GX log-only 실행부가 없다(src/lion/expectations.py 참고) -
+    구조적 critical 검증은 validate_dim_segment_base()의 raw assert가, 값
+    수준 이상치는 이 함수가 담당한다. 제한속도 범위 임계값만 expectations.py에서
+    상수로 공유한다(SPEED_LIMIT_MIN_MPH/MAX_MPH).
+
+    speed_limit_mph는 결측이 흔한 정상 상태라(약 32%) null 자체는 잡지
+    않고, 값이 있는데 비현실적인 범위일 때만 잡는다 - GX의
+    ExpectColumnValuesToBeBetween이 기본적으로 null을 검사에서 제외하는
+    동작과 맞춘다. 복사본 생성·bool 확정·컬럼명은 src.common.suspect로 위임한다.
+    """
+    suspect = pd.Series(False, index=df.index)
+    suspect |= df["length_ft"].notna() & (df["length_ft"] < 0)
+    suspect |= df["lanes_total"].notna() & (df["lanes_total"] < 0)
+    suspect |= df["speed_limit_mph"].notna() & (
+        (df["speed_limit_mph"] < SPEED_LIMIT_MIN_MPH)
+        | (df["speed_limit_mph"] > SPEED_LIMIT_MAX_MPH)
+    )
+    suspect |= df["node_from"].isna() | (df["node_from"].astype(str).str.strip() == "")
+    suspect |= df["node_to"].isna() | (df["node_to"].astype(str).str.strip() == "")
+
+    return flag_suspect_pandas(df, suspect)
 
 
 def _find_gdb(version_dir: Path) -> Path:
@@ -212,7 +254,16 @@ def validate_dim_segment_base(path: str) -> str:
         f"행 수가 예상 범위({MIN_EXPECTED_ROWS}~{MAX_EXPECTED_ROWS}) 밖입니다: {n}"
     )
 
-    logger.info(f"[lion_silver] dim_segment(Silver1) 검증 통과 ({n}행) -> {path}")
+    ratio = suspect_ratio(df)
+    assert ratio <= MAX_SUSPECT_RATIO, (
+        f"의심 행(is_suspect) 비율이 임계치를 초과했습니다: "
+        f"{ratio:.1%} > {MAX_SUSPECT_RATIO:.1%} "
+        f"(mark_suspect_rows가 표시한 값 수준 이상치가 평소보다 급증 - 원천 데이터 확인 필요)"
+    )
+
+    logger.info(
+        f"[lion_silver] dim_segment(Silver1) 검증 통과 ({n}행, 의심 비율 {ratio:.1%}) -> {path}"
+    )
     return path
 
 

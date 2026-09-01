@@ -20,6 +20,19 @@ _NULL_TOLERANCE = 0.90
 # 이 데이터셋 생성일자(Socrata 메타데이터 createdAt=2017-04-17) 기준.
 _DATA_AS_OF_MIN = datetime(2017, 1, 1)
 
+# speed(mph) 허용 범위. log_only_expectations()와
+# src/speed/bronze_validation.py의 mark_suspect_rows()가 같은 값을 봐야
+# 해서(한쪽만 고치면 조용히 어긋난다) 여기 한 곳에 둔다.
+_SPEED_MIN_MPH = 0
+_SPEED_MAX_MPH = 150
+
+
+def _data_as_of_max() -> datetime:
+    """data_as_of 허용 상한. '미래 데이터'를 잡되 타임존/시계 오차 여유로
+    +1일. 호출 시각 기준이라 상수가 아니라 함수다 - 위 _SPEED_* 상수와
+    같은 이유로 log_only_expectations()/mark_suspect_rows()가 공유한다."""
+    return datetime.now() + timedelta(days=1)
+
 # 실제 속도 피드는 고정 125개 link뿐이라 collect_speed_data()가 검증하는
 # df는 여기에 synthetic 보강분(src/speed/synthetic.py)까지 합친 것이다 -
 # 정상이면 LION 세그먼트 총 개수(약 10만 개, src/lion/gold2.py의
@@ -54,11 +67,13 @@ def log_only_expectations() -> list:
             gx.expectations.ExpectColumnValuesToNotBeNull(column=column, mostly=_NULL_TOLERANCE)
             for column in _REQUIRED_COLUMNS
         ],
-        gx.expectations.ExpectColumnValuesToBeBetween(column="speed", min_value=0, max_value=150),
+        gx.expectations.ExpectColumnValuesToBeBetween(
+            column="speed", min_value=_SPEED_MIN_MPH, max_value=_SPEED_MAX_MPH,
+        ),
         gx.expectations.ExpectColumnValuesToBeBetween(
             column="data_as_of",
             min_value=_DATA_AS_OF_MIN,
-            max_value=datetime.now() + timedelta(days=1),
+            max_value=_data_as_of_max(),
         ),
         gx.expectations.ExpectColumnUniqueValueCountToBeBetween(
             column="link_id", min_value=_MIN_UNIQUE_SEGMENT_COUNT, max_value=None

@@ -28,7 +28,7 @@ from src.lion.bronze import BRONZE_ROOT as LION_BRONZE_ROOT
 from src.lion.silver1 import DIM_SEGMENT_BASE_PATH as DIM_SEGMENT_PATH
 from src.silver2.segment_speed_match import match_links_to_segments
 from src.speed import synthetic
-from src.speed.bronze_validation import _validate_and_decide_df
+from src.speed.bronze_validation import _validate_and_decide_df, mark_suspect_rows
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_bronze")
 
@@ -200,6 +200,11 @@ def collect_speed_data(bronze_root=BRONZE_ROOT) -> str:
 
     if not _validate_and_decide_df(df, f"batch_end={max_data_as_of}, rows={len(df)}"):
         return ""
+
+    # 검증에서 log-only로 걸린 행이라도 저장 자체는 계속한다(가용성
+    # 우선) - 대신 그 행에 표시를 남겨, Silver 이후 단계가 신뢰도 낮은
+    # 값을 구분해서 다룰 수 있게 한다.
+    df = mark_suspect_rows(df)
 
     out_path = save_parquet(
         df, bronze_root, f"batch_end={max_data_as_of.replace(':', '')}.parquet"
