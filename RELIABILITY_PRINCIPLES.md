@@ -89,22 +89,24 @@
 
 | # | 원칙 | 지금 상태 | 최소 조치 |
 | --- | --- | --- | --- |
-| 5 | **Quarantine** | 🟡 **도메인마다 다름** (아래 "GX 적용 현황" 참고) | `speed`/`tlc`는 GX+`is_suspect`, `lion`은 assert+`is_suspect`+비율 게이트로 적용 완료, 나머지 3개 도메인은 검증 자체가 없음 |
+| 5 | **Quarantine** | 🟡 **도메인마다 다름** (아래 "GX 적용 현황" 참고) | `speed`/`tlc`는 GX+`is_suspect`, `lion`/`silver2`(zone_segment)는 assert+`is_suspect`+비율 게이트로 적용 완료. `toll`만 검증 전무 |
 | 6 | **Idempotency** | ✅ 강함 | `06-etag-marker`, `04-rds-insert` 유지 |
 | 7 | **Immutable Bronze** | 🟡 미확인 | Bronze 계층에 실제로 UPDATE/DELETE가 없는지 코드 감사 |
 
 #### GX(품질 검증) 적용 현황 — 2026-09 코드 감사 결과
 
 전체 8개 도메인(`lion`, `nav_length`, `nav_time`, `taxi_zone`, `toll`,
-`silver2`, `speed`, `tlc`) 중 GX(또는 동등한 행 단위 검증)가 있는 곳은
-`speed`, `tlc`, `lion` 3곳이다.
+`silver2`, `speed`, `tlc`) 중 GX(또는 동등한 행/배치 단위 검증)가 있는 곳은
+`speed`, `tlc`, `lion`, `silver2`, `taxi_zone` 5곳이다.
 
 | 도메인 | 검증 실행 | 실패 시 로그 | **검증 결과가 저장 데이터에 남는가** |
 | --- | --- | --- | --- |
 | `speed` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 (2026-09 적용) |
 | `tlc` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 (2026-09 적용 — `silver1_transform.py`) |
 | `lion` | 🟡 critical만 raw assert, log-only는 GX 없음(의도적 — 아래 참고) | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **비율 임계치 게이트** (2026-09 적용 — `silver1.py`) |
-| `taxi_zone`/`toll`/`silver2` | ❌ 없음 | ❌ | ❌ |
+| `silver2` (zone_segment) | 🟡 critical은 raw assert(coverage/unique/null/zone_id 범위), log-only는 `nearest` 매핑 표시 | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **`nearest` 비율 게이트** (2026-09 적용 — `zone_segment.py`) |
+| `taxi_zone` | 🟡 critical만 raw assert(shapefile feature 수 250~280) | ✅ (critical만) | N/A — Silver1이 shapefile 통째 복사라 표시할 행 자체가 없음 |
+| `toll` (silver2) | ❌ 없음 | ❌ | ❌ — `build_lion_facility_mapping`/`build_lion_cbd_mapping`이 검증 없이 저장 |
 
 `speed`/`tlc`의 문제는 해소됐다 — 각각 `bronze_validation.py`/
 `silver1_transform.py`에 `mark_suspect_rows()`를 추가해 파이프라인이 저장
@@ -130,15 +132,23 @@ GX 객체는 지우고, 다음 판단으로 대체했다:
 - `SPEED_LIMIT_MIN_MPH`/`MAX_MPH` 같은 임계값 상수만 `expectations.py`에
   남겨 `mark_suspect_rows()`와 (향후 필요하면) 다른 검증이 공유한다.
 
-`speed`/`tlc`/`lion` 3곳의 `mark_suspect_rows()`가 반복 구현해 임계값이
-따로 관리되며 어긋날 위험은, 공통 기계 부분(복사본 생성·NA→False 확정·
-`is_suspect` 컬럼명·비율 계산)을 `src/common/suspect.py`로 모으고, 값
-범위 등 도메인별 임계값 상수는 각 도메인 `expectations.py`(또는 tlc의 경우
-`silver1_transform.py`)에서 판정 함수가 그대로 import해 쓰는 방식으로
-줄였다.
+`silver2`(zone_segment)도 같은 판단이다 — 이미 `validate_map_zone_segment()`가
+raw assert로 크리티컬 게이트를 하고 있어서, 여기에 `nearest`(중점이 어떤 zone에도
+안 들어가 최근접으로 스냅된 저신뢰 매핑) 행을 `is_suspect`로 표시하고, 그 비율이
+`MAX_SUSPECT_RATIO`를 넘으면 publish를 차단하는 것만 얹었다. `lion`과 같은
+`src/common/suspect.py` 헬퍼를 그대로 쓴다.
 
-남은 문제는 **도메인 커버리지**다 — `taxi_zone`/`toll`/`silver2` 3개
-도메인은 여전히 GX 검증 자체가 없다.
+각 도메인의 `mark_suspect_rows()`가 반복 구현돼 임계값이 따로 관리되며 어긋날
+위험은, 공통 기계 부분(복사본 생성·NA→False 확정·`is_suspect` 컬럼명·비율
+계산)을 `src/common/suspect.py`로 모으고, 값 범위 등 도메인별 임계값 상수는
+각 도메인 `expectations.py`(tlc는 `silver1_transform.py`, silver2는
+`zone_segment.py`)에서 판정 함수가 그대로 참조하는 방식으로 줄였다.
+
+남은 공백은 **`toll` 하나**다 — `build_lion_facility_mapping`/
+`build_lion_cbd_mapping`이 검증 없이 저장한다. 다만 toll 매핑은 (segment_id,
+facility_key)의 문자열/공간조인 결과라 행 단위 이상치 신호가 약하므로,
+`is_suspect`보다 **크리티컬 게이트**(비어있음/null/facility_key 유효성/행 수
+범위)를 먼저 붙이는 게 맞다.
 
 ### Tier 3 — Resilience: 버틸 수 있는가 (여기서부터 엔지니어링 판단력을 적극 어필)
 
@@ -191,17 +201,19 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 
 - ~~`tlc` 도메인의 GX log-only 검증 결과가 로그에만 남고 실제 Silver
   데이터에는 반영되지 않는다~~ → 2026-09 `mark_suspect_rows`로 해소
-- GX 검증이 `speed`/`tlc` 2개 도메인에만 있고(`lion`은 critical assert +
-  비율 게이트로 대체) `taxi_zone`/`toll`/`silver2`에는 아예 없다 —
-  커버리지 확장이 다음 과제
+- 행/배치 단위 검증이 `speed`/`tlc`/`lion`/`silver2`(zone_segment)/
+  `taxi_zone` 5개 도메인에 있고, `toll`(silver2)만 검증이 전무하다 —
+  `toll`에 크리티컬 게이트 추가가 다음 과제 (위 GX 적용 현황 참고)
 - ~~log-only 이상치의 비율이 평소보다 급격히 늘어났을 때도 지금은
   critical로 승격되지 않는다~~ → `lion`은 2026-09 `MAX_SUSPECT_RATIO`
   게이트로 해소. `speed`/`tlc`는 여전히 log-only 실패가 Slack 알림만
   보내고 비율과 무관하게 critical로 승격되지 않는다 — 다음 과제
-- `lion`의 `MAX_SUSPECT_RATIO`(현재 0.05)는 **placeholder다** — 실제
-  dim_segment 스냅샷으로 baseline 의심 비율을 측정할 프로덕션 접근 권한이
-  없어 실측 없이 박아둔 값이다. 접근 권한이 생기는 대로 baseline을 재고
-  조정해야 한다(코드 주석에도 명시)
+- `lion`(`MAX_SUSPECT_RATIO`=0.05)과 `silver2`(`MAX_SUSPECT_RATIO`=0.10,
+  `nearest` 비율)의 임계값은 둘 다 **placeholder다** — 실제 스냅샷으로
+  baseline을 측정할 프로덕션 접근 권한이 없어 실측 없이 박아둔 값이다.
+  접근 권한이 생기는 대로 재고 조정해야 한다(코드 주석에도 명시).
+  `silver2`는 추가로 `nearest`여도 `distance_ft`가 작으면(zone 경계 바로
+  옆) 사실상 정상이므로 거리 임계값을 함께 보는 정교화가 남아 있다
 - Type3(수요)의 tier 어휘가 최신성 축을 노출하지 않는다 — Type1처럼
   `fresh`/`avg` 구분을 추가할지, 아니면 정말 노출할 필요가 없는지 판단이
   필요하다(`docs/contracts.md` 참고)

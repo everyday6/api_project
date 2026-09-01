@@ -17,6 +17,7 @@ from shapely.strtree import STRtree
 
 from src.common.config import SILVER1_DIR, SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
+from src.common.suspect import flag_suspect_pandas, suspect_ratio
 from src.common.utils import save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
@@ -33,6 +34,18 @@ MAP_ZONE_SEGMENT_STAGING_ROOT = SILVER2_DIR / "_staging" / "map_zone_segment"
 # 그대로면 RDS Type 3 값이 조용히 갱신되지 않는다.
 MAP_ZONE_SEGMENT_VERSION_PATH = SILVER2_DIR / "map_zone_segment_version.txt"
 RUN_ID_PATTERN = re.compile(r"^[0-9a-f]{32}$")
+
+# _map_segments_to_zones가 "nearest"로 매핑한 행 = segment 중점이 어떤 zone
+# 폴리곤에도 안 들어가 최근접 zone으로 스냅된 저신뢰 매핑이다(정상 매핑은
+# "contains"). 이 비율이 이 값을 넘으면 validate_map_zone_segment가 publish를
+# 차단한다 - map_zone_segment는 기준 데이터라 정합성이 가용성에 우선한다
+# (RELIABILITY_PRINCIPLES.md Tier 0-A). nearest가 뭉텅이로 늘었다는 건 Taxi
+# Zone shapefile이나 LION geometry가 깨졌다는 신호다. lion(dim_segment)의
+# MAX_SUSPECT_RATIO와 같은 목적·같은 패턴이다.
+#
+# NOTE: placeholder. 실제 map_zone_segment 스냅샷으로 baseline nearest 비율을
+# 측정한 뒤 (baseline + 여유분)으로 조정해야 한다 - 아직 실측 근거가 없다.
+MAX_SUSPECT_RATIO = 0.10
 
 
 def _staging_run_path(run_id: str, staging_root=MAP_ZONE_SEGMENT_STAGING_ROOT):
@@ -194,6 +207,22 @@ def _map_segments_to_zones(
     ])
 
 
+def mark_suspect_rows(mapping: pd.DataFrame) -> pd.DataFrame:
+    """`mapping_method == "nearest"`인 행(segment 중점이 어떤 zone에도 안 들어가
+    최근접 zone으로 스냅된 저신뢰 매핑)을 `is_suspect`로 표시한 복사본을 반환한다.
+
+    src/lion/silver1.py의 동명 함수와 같은 목적·같은 패턴이다 - 크리티컬 검증
+    (validate_map_zone_segment의 coverage/unique/null/범위 assert)은 그대로 두고,
+    "값은 유효하지만 신뢰도가 낮은" 행만 표시한다. 복사본 생성·bool 확정·컬럼명은
+    src.common.suspect에 위임한다.
+
+    거리 임계값(nearest여도 zone 경계 바로 옆이면 사실상 정상 - `distance_ft`로
+    판단)은 아직 안 쓴다. RELIABILITY_PRINCIPLES.md 열린 질문 참고.
+    """
+    suspect = mapping["mapping_method"] == "nearest"
+    return flag_suspect_pandas(mapping, suspect)
+
+
 def build_map_zone_segment_staged(
     lion_segment_path=LION_SEGMENT_PATH,
     zone_shapefile_path=TAXI_ZONE_SHAPEFILE,
@@ -205,11 +234,15 @@ def build_map_zone_segment_staged(
     zones = _load_zones(zone_shapefile_path)
     mapping = _map_segments_to_zones(segments, zones)
 
+    # 버전 해시는 매핑 "내용"(segment→zone)에 대해서만 계산한다 - is_suspect는
+    # mapping_method에서 파생되는 표시라 해시 입력에 넣어도 새 정보가 없다.
+    mapping_version = _content_hash(mapping)
+    mapping = mark_suspect_rows(mapping)
+
     run_id = uuid4().hex
     run_path = _staging_run_path(run_id, staging_root)
     stage_path = run_path / "map_zone_segment.parquet"
     save_parquet(mapping, stage_path.parent, stage_path.name)
-    mapping_version = _content_hash(mapping)
     logger.info(
         "segment-zone staging 저장 완료: %s행(nearest=%s행) version=%s -> %s",
         len(mapping),
@@ -241,7 +274,17 @@ def validate_map_zone_segment(path, lion_segment_path=LION_SEGMENT_PATH) -> str:
     if not mapping["mapping_method"].isin(["contains", "nearest"]).all():
         raise ValueError("알 수 없는 mapping_method 발견")
 
-    logger.info("segment-zone Silver2 검증 통과: %s행", len(mapping))
+    ratio = suspect_ratio(mapping)
+    if ratio > MAX_SUSPECT_RATIO:
+        raise ValueError(
+            f"nearest(저신뢰) 매핑 비율이 임계치를 초과했습니다: "
+            f"{ratio:.1%} > {MAX_SUSPECT_RATIO:.1%} "
+            f"(Taxi Zone shapefile / LION geometry 확인 필요)"
+        )
+
+    logger.info(
+        "segment-zone Silver2 검증 통과: %s행 (nearest %.1f%%)", len(mapping), ratio * 100
+    )
     return str(path)
 
 
