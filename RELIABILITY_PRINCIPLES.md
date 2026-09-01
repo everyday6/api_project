@@ -101,7 +101,7 @@
 
 | 도메인 | 검증 실행 | 실패 시 로그 | **검증 결과가 저장 데이터에 남는가** |
 | --- | --- | --- | --- |
-| `speed` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 (2026-09 적용) |
+| `speed` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 + **비율 급증 시 critical 승격**(`suspect_ratio_ok`) (2026-09 적용) |
 | `tlc` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 (2026-09 적용 — `silver1_transform.py`) |
 | `lion` | 🟡 critical만 raw assert, log-only는 GX 없음(의도적 — 아래 참고) | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **비율 임계치 게이트** (2026-09 적용 — `silver1.py`) |
 | `silver2` (zone_segment) | 🟡 critical은 raw assert(coverage/unique/null/zone_id 범위), log-only는 `nearest` 매핑 표시 | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **`nearest` 비율 게이트** (2026-09 적용 — `zone_segment.py`) |
@@ -213,15 +213,18 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
   건 `is_suspect` 커버리지 확대(현재 speed/tlc/lion/silver2)와 임계값
   정교화지, "검증이 아예 없는" 도메인은 없다
 - ~~log-only 이상치의 비율이 평소보다 급격히 늘어났을 때도 지금은
-  critical로 승격되지 않는다~~ → `lion`은 2026-09 `MAX_SUSPECT_RATIO`
-  게이트로 해소. `speed`/`tlc`는 여전히 log-only 실패가 Slack 알림만
-  보내고 비율과 무관하게 critical로 승격되지 않는다 — 다음 과제
-- `lion`(`MAX_SUSPECT_RATIO`=0.05)과 `silver2`(`MAX_SUSPECT_RATIO`=0.10,
-  `nearest` 비율)의 임계값은 둘 다 **placeholder다** — 실제 스냅샷으로
-  baseline을 측정할 프로덕션 접근 권한이 없어 실측 없이 박아둔 값이다.
-  접근 권한이 생기는 대로 재고 조정해야 한다(코드 주석에도 명시).
-  `silver2`는 추가로 `nearest`여도 `distance_ft`가 작으면(zone 경계 바로
-  옆) 사실상 정상이므로 거리 임계값을 함께 보는 정교화가 남아 있다
+  critical로 승격되지 않는다~~ → `lion`/`silver2`는 `MAX_SUSPECT_RATIO`
+  게이트, `speed`는 2026-09 `suspect_ratio_ok()`로 해소(비율 초과 시
+  log-only를 critical로 승격 → 이번 사이클 저장 스킵 + Slack). `tlc`만
+  남았다(EMR Spark 잡이라 `is_suspect` 비율을 집계해 청크를 제외하는
+  경로를 `spark_jobs/tlc_pipeline_job.py`에 추가해야 함) — 다음 과제
+- `lion`(`MAX_SUSPECT_RATIO`=0.05)·`silver2`(=0.10, `nearest` 비율)·
+  `speed`(=0.20, 고빈도라 넉넉하게)의 임계값은 전부 **placeholder다** —
+  실제 스냅샷/배치로 baseline을 측정할 프로덕션 접근 권한이 없어 실측
+  없이 박아둔 값이다. 접근 권한이 생기는 대로 재고 조정해야 한다(코드
+  주석에도 명시). `silver2`는 추가로 `nearest`여도 `distance_ft`가 작으면
+  (zone 경계 바로 옆) 사실상 정상이므로 거리 임계값을 함께 보는 정교화가
+  남아 있다
 - Type3(수요)의 tier 어휘가 최신성 축을 노출하지 않는다 — Type1처럼
   `fresh`/`avg` 구분을 추가할지, 아니면 정말 노출할 필요가 없는지 판단이
   필요하다(`docs/contracts.md` 참고)

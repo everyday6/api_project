@@ -18,12 +18,13 @@ import pandas as pd
 from src.common.alerts import notify_slack_message
 from src.common.gx import validate_pandas_dataframe
 from src.common.logger import get_logger
-from src.common.suspect import flag_suspect_pandas
+from src.common.suspect import flag_suspect_pandas, suspect_ratio
 from src.speed.expectations import (
     _DATA_AS_OF_MIN,
     _REQUIRED_COLUMNS,
     _SPEED_MAX_MPH,
     _SPEED_MIN_MPH,
+    MAX_SUSPECT_RATIO,
     _data_as_of_max,
     critical_expectations,
     log_only_expectations,
@@ -116,6 +117,35 @@ def mark_suspect_rows(df: pd.DataFrame) -> pd.DataFrame:
     suspect |= ~validation_df["data_as_of"].between(_DATA_AS_OF_MIN, _data_as_of_max())
 
     return flag_suspect_pandas(df, suspect)
+
+
+def suspect_ratio_ok(df: pd.DataFrame, context: str) -> bool:
+    """mark_suspect_rows()로 표시된 `is_suspect` 비율이 평소 수준이면 True.
+    임계치(MAX_SUSPECT_RATIO)를 넘으면 log-only 이상치를 critical로 승격해
+    False + Slack을 낸다 - 개별 센서의 산발적 이상은 넘기되, 값이 뭉텅이로
+    이상하면(스키마 드리프트, 피드 포맷 변경 등) 오염된 배치를 저장하지
+    않는다(RELIABILITY_PRINCIPLES.md 열린 질문 - "비율 급증 시 critical 승격").
+
+    collect_speed_data()가 mark_suspect_rows() 직후 호출한다 - 그 시점엔
+    critical 검증(필수 컬럼 존재)이 이미 통과해 `is_suspect` 컬럼이 있는 게
+    보장된다.
+    """
+    ratio = suspect_ratio(df)
+    if ratio > MAX_SUSPECT_RATIO:
+        logger.error(
+            f"speed Bronze 의심 행 비율 초과: {ratio:.1%} > {MAX_SUSPECT_RATIO:.1%}"
+        )
+        notify_slack_message(
+            f":red_circle: speed Bronze 의심 행 비율 {ratio:.1%} > {MAX_SUSPECT_RATIO:.1%} "
+            f"- log-only 이상치가 평소보다 급증, 저장하지 않고 이번 사이클 스킵\n"
+            f"*배치*: `{context}`"
+        )
+        return False
+
+    logger.info(
+        f"speed Bronze 의심 행 비율 {ratio:.1%} (임계 {MAX_SUSPECT_RATIO:.1%} 이내)"
+    )
+    return True
 
 
 def _validate_and_decide_df(df: pd.DataFrame, context: str) -> bool:
