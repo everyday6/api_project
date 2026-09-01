@@ -19,7 +19,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.logger import get_logger
 from src.serving.api import get_type3_values
-from src.serving.nav_lookup import resolve_segment_values
+from src.serving.nav_lookup import resolve_segment_values, resolve_segment_values_with_tiers
 from src.toll.serving import get_toll_values
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
@@ -77,6 +77,14 @@ class SegmentValuesRequest(BaseModel):
 
 class SegmentValuesResponse(BaseModel):
     values: list[int]
+    # values[i]가 어느 계층에서 왔는지. 클라이언트가 신뢰도를 직접 판단할 수
+    # 있게 노출한다(RELIABILITY_PRINCIPLES.md 원칙 0-1). 가능한 값은
+    # request.type에 따라 서로 다른 어휘를 쓴다 — 한 응답 안에 두 세트가
+    # 섞이지 않는다(request.type이 응답 전체에 하나만 적용되므로):
+    #   type=1(소요시간): fresh(오늘 실측) / avg(과거 평균) / hardcoded(코드 상수)
+    #   type=2(길이):     rds(정상 조회) / global(RDS는 살아있으나 값 없음)
+    #                      / snapshot(RDS 장애, S3 스냅샷) / hardcoded(코드 상수)
+    sources: list[str]
 
 
 class NavigationValuesRequest(BaseModel):
@@ -125,8 +133,10 @@ async def log_unexpected_exception(request: Request, exc: Exception):
 
 @app.post("/segments/values", response_model=SegmentValuesResponse)
 def get_segment_values(request: SegmentValuesRequest) -> SegmentValuesResponse:
-    values = resolve_segment_values(request.segment_ids, request.type, request.time)
-    return SegmentValuesResponse(values=values)
+    values, sources = resolve_segment_values_with_tiers(
+        request.segment_ids, request.type, request.time
+    )
+    return SegmentValuesResponse(values=values, sources=sources)
 
 
 @app.post("/api/navigation/values", response_model=NavigationValuesResponse)
