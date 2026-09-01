@@ -36,8 +36,19 @@ def get_toll_value(segment_id: str) -> float:
 
 
 def get_toll_values(segment_ids: list[str]) -> list[float]:
-    """서빙 조회 함수(배치). segment_ids 순서/중복을 그대로 유지해서
-    반환한다 - 중복 제거 후 한 번에 조회하고 원래 순서로 다시 매핑한다.
+    """서빙 조회 함수(배치). 값만 반환하는 얇은 래퍼다 — 값의 출처 계층
+    (rds/snapshot/hardcoded)까지 필요하면 get_toll_values_with_tiers를 쓴다.
+    기존 호출부(gold.py, 테스트 등) 하위 호환용으로 남겨둔다."""
+
+    values, _tiers = get_toll_values_with_tiers(segment_ids)
+    return values
+
+
+def get_toll_values_with_tiers(segment_ids: list[str]) -> tuple[list[float], list[str]]:
+    """서빙 조회 함수(배치). segment_ids 순서/중복을 그대로 유지해서 값과
+    각 값의 출처 계층(rds/snapshot/hardcoded)을 함께 반환한다 - 중복 제거 후
+    한 번에 조회하고 원래 순서로 다시 매핑한다. API 응답에 신뢰도를 노출할
+    때 쓴다(RELIABILITY_PRINCIPLES.md 원칙 0-1).
 
     RDS 호출 자체가 실패하면(커넥션/네트워크 등) S3 스냅샷으로 넘어간다.
     RDS가 정상 응답했는데 특정 segment가 없는 건 "진짜로 통행료 대상이
@@ -74,11 +85,12 @@ def get_toll_values(segment_ids: list[str]) -> list[float]:
 
     # 요청당 한 번만 남긴다 - Grafana의 "Type4 fallback 계층 비율" 패널이
     # 이 로그를 집계한다.
+    tiers = [tier[segment_id] for segment_id in segment_ids]
     log_tier_summary(
         logger,
         "type4_fallback_tier_summary",
-        [tier[segment_id] for segment_id in segment_ids],
+        tiers,
         ["rds", "snapshot", "hardcoded"],
     )
 
-    return [values.get(segment_id, 0.0) for segment_id in segment_ids]
+    return [values.get(segment_id, 0.0) for segment_id in segment_ids], tiers

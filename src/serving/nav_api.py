@@ -18,9 +18,9 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel, ConfigDict, Field
 
 from src.common.logger import get_logger
-from src.serving.api import get_type3_values
-from src.serving.nav_lookup import resolve_segment_values, resolve_segment_values_with_tiers
-from src.toll.serving import get_toll_values
+from src.serving.api import get_type3_values_with_tiers
+from src.serving.nav_lookup import resolve_segment_values_with_tiers
+from src.toll.serving import get_toll_values_with_tiers
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_api")
 
@@ -107,17 +107,26 @@ class NavigationValuesRequest(BaseModel):
 
 class NavigationValuesResponse(BaseModel):
     value: list[float]
+    # value[i]가 어느 계층에서 왔는지. request.type에 따라 어휘가 다르다
+    # (docs/contracts.md 참고) — 한 응답 안에 두 세트가 섞이지 않는다:
+    #   type=1(소요시간): fresh / avg / hardcoded
+    #   type=2(길이):     rds / global / snapshot / hardcoded
+    #   type=3(수요):     rds / snapshot / hardcoded
+    #   type=4(통행료):   rds / snapshot / hardcoded
+    sources: list[str]
 
 
-def _resolve_navigation_values(
+def _resolve_navigation_values_with_tiers(
     segment_ids: list[str], type_: int, date: str, time: str
-) -> list[float]:
+) -> tuple[list[float], list[str]]:
     if type_ == 3:
         requested_at = datetime.strptime(f"{date} {time}", "%Y-%m-%d %H:%M")
-        return get_type3_values(segment_ids, requested_at)
-    if type_ == 4:
-        return get_toll_values(segment_ids)
-    return [float(v) for v in resolve_segment_values(segment_ids, type_, time)]
+        values, tiers = get_type3_values_with_tiers(segment_ids, requested_at)
+    elif type_ == 4:
+        values, tiers = get_toll_values_with_tiers(segment_ids)
+    else:
+        values, tiers = resolve_segment_values_with_tiers(segment_ids, type_, time)
+    return [float(v) for v in values], tiers
 
 
 @app.exception_handler(Exception)
@@ -141,7 +150,7 @@ def get_segment_values(request: SegmentValuesRequest) -> SegmentValuesResponse:
 
 @app.post("/api/navigation/values", response_model=NavigationValuesResponse)
 def get_navigation_values(request: NavigationValuesRequest) -> NavigationValuesResponse:
-    values = _resolve_navigation_values(
+    values, sources = _resolve_navigation_values_with_tiers(
         request.segment_ids, request.type, request.date, request.time
     )
-    return NavigationValuesResponse(value=values)
+    return NavigationValuesResponse(value=values, sources=sources)

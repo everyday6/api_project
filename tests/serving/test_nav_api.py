@@ -66,52 +66,64 @@ def test_health_returns_ok():
 
 
 def test_navigation_values_type1_dispatches_to_resolve_segment_values():
-    with patch("src.serving.nav_api.resolve_segment_values", return_value=[30, 50]) as mock_resolve:
+    with patch(
+        "src.serving.nav_api.resolve_segment_values_with_tiers",
+        return_value=([30, 50], ["fresh", "avg"]),
+    ) as mock_resolve:
         response = client.post(
             "/api/navigation/values",
             json={"segment_ids": ["1", "2"], "type": 1, "date": "2026-08-23", "time": "12:00"},
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [30.0, 50.0]}
+    assert response.json() == {"value": [30.0, 50.0], "sources": ["fresh", "avg"]}
     mock_resolve.assert_called_once_with(["1", "2"], 1, "12:00")
 
 
 def test_navigation_values_type2_dispatches_to_resolve_segment_values():
-    with patch("src.serving.nav_api.resolve_segment_values", return_value=[100]) as mock_resolve:
+    with patch(
+        "src.serving.nav_api.resolve_segment_values_with_tiers",
+        return_value=([100], ["rds"]),
+    ) as mock_resolve:
         response = client.post(
             "/api/navigation/values",
             json={"segment_ids": ["1"], "type": 2, "date": "2026-08-23", "time": "12:00"},
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [100.0]}
+    assert response.json() == {"value": [100.0], "sources": ["rds"]}
     mock_resolve.assert_called_once_with(["1"], 2, "12:00")
 
 
 def test_navigation_values_type3_combines_date_and_time_into_datetime():
     from datetime import datetime
 
-    with patch("src.serving.nav_api.get_type3_values", return_value=[12.5, 7.0]) as mock_type3:
+    with patch(
+        "src.serving.nav_api.get_type3_values_with_tiers",
+        return_value=([12.5, 7.0], ["rds", "snapshot"]),
+    ) as mock_type3:
         response = client.post(
             "/api/navigation/values",
             json={"segment_ids": ["1", "2"], "type": 3, "date": "2026-08-23", "time": "14:30"},
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [12.5, 7.0]}
+    assert response.json() == {"value": [12.5, 7.0], "sources": ["rds", "snapshot"]}
     mock_type3.assert_called_once_with(["1", "2"], datetime(2026, 8, 23, 14, 30))
 
 
 def test_navigation_values_type4_dispatches_to_get_toll_values_as_batch():
-    with patch("src.serving.nav_api.get_toll_values", return_value=[2.75, 0.0]) as mock_toll:
+    with patch(
+        "src.serving.nav_api.get_toll_values_with_tiers",
+        return_value=([2.75, 0.0], ["rds", "hardcoded"]),
+    ) as mock_toll:
         response = client.post(
             "/api/navigation/values",
             json={"segment_ids": ["1", "2"], "type": 4, "date": "2026-08-23", "time": "12:00"},
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [2.75, 0.0]}
+    assert response.json() == {"value": [2.75, 0.0], "sources": ["rds", "hardcoded"]}
     mock_toll.assert_called_once_with(["1", "2"])
 
 
@@ -164,7 +176,10 @@ def test_cors_preflight_request_succeeds():
 
 
 def test_cors_actual_response_includes_allow_origin_header():
-    with patch("src.serving.nav_api.resolve_segment_values", return_value=[30]):
+    with patch(
+        "src.serving.nav_api.resolve_segment_values_with_tiers",
+        return_value=([30], ["fresh"]),
+    ):
         response = client.post(
             "/api/navigation/values",
             json={"segment_ids": ["1"], "type": 1, "date": "2026-08-23", "time": "12:00"},
