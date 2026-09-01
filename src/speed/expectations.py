@@ -33,6 +33,20 @@ def _data_as_of_max() -> datetime:
     같은 이유로 log_only_expectations()/mark_suspect_rows()가 공유한다."""
     return datetime.now() + timedelta(days=1)
 
+
+# mark_suspect_rows()가 표시한 is_suspect 비율이 이 값을 넘으면
+# _validate_and_decide_df가 log-only 이상치를 critical로 승격해 이번
+# 사이클을 저장하지 않고 스킵한다(suspect_ratio_ok). 개별 센서의 산발적
+# 이상은 log-only로 넘기되, 값이 뭉텅이로 이상하면(스키마 드리프트, 피드
+# 포맷 변경 등) 오염된 배치를 Bronze에 남기지 않는다.
+#
+# speed는 30분마다 도는 고빈도 파이프라인이라 노이즈에 사이클을 스킵하면
+# 안 되므로 lion(0.05)/silver2(0.10)보다 넉넉하게 잡는다.
+#
+# NOTE: placeholder. 실제 배치들의 baseline suspect 비율을 측정한 뒤
+# (baseline + 여유분)으로 조정해야 한다 - 아직 실측 근거가 없다.
+MAX_SUSPECT_RATIO = 0.20
+
 # 실제 속도 피드는 고정 125개 link뿐이라 collect_speed_data()가 검증하는
 # df는 여기에 synthetic 보강분(src/speed/synthetic.py)까지 합친 것이다 -
 # 정상이면 LION 세그먼트 총 개수(약 10만 개, src/lion/gold2.py의

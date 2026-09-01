@@ -213,3 +213,26 @@ def test_mark_suspect_rows_all_clean_returns_all_false():
     result = bronze_validation.mark_suspect_rows(df)
 
     assert list(result["is_suspect"]) == [False, False, False]
+
+
+def test_suspect_ratio_ok_true_and_silent_when_within_threshold():
+    df = pd.DataFrame({"is_suspect": [False] * 90 + [True] * 10})  # 10%
+
+    with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+        result = bronze_validation.suspect_ratio_ok(df, "batch_end=2026-08-26T00:00:00")
+
+    assert result is True
+    mock_notify.assert_not_called()
+
+
+def test_suspect_ratio_ok_false_and_alerts_when_ratio_exceeds_threshold():
+    df = pd.DataFrame({"is_suspect": [False] * 60 + [True] * 40})  # 40% > 20%
+
+    with patch.object(bronze_validation, "notify_slack_message") as mock_notify:
+        result = bronze_validation.suspect_ratio_ok(df, "batch_end=2026-08-26T00:00:00")
+
+    assert result is False
+    mock_notify.assert_called_once()
+    message = mock_notify.call_args.args[0]
+    assert "batch_end=2026-08-26T00:00:00" in message
+    assert "40" in message  # 비율이 메시지에 담겨야 Airflow 로그를 안 뒤진다
