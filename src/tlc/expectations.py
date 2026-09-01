@@ -7,7 +7,7 @@ silver1_transform.py와 어긋날 위험이 있다.
 
 import great_expectations as gx
 
-from src.tlc.silver1_transform import COLUMN_MAPPING
+from src.tlc.silver1_transform import COLUMN_MAPPING, LOCATION_ID_MAX, LOCATION_ID_MIN
 
 
 def _raw_columns(taxi_type: str) -> dict:
@@ -58,10 +58,12 @@ def log_only_expectations(taxi_type: str) -> list:
         gx.expectations.ExpectColumnValuesToNotBeNull(column=columns["pickup_location_id"]),
         gx.expectations.ExpectColumnValuesToNotBeNull(column=columns["dropoff_location_id"]),
         gx.expectations.ExpectColumnValuesToBeBetween(
-            column=columns["pickup_location_id"], min_value=1, max_value=265,
+            column=columns["pickup_location_id"],
+            min_value=LOCATION_ID_MIN, max_value=LOCATION_ID_MAX,
         ),
         gx.expectations.ExpectColumnValuesToBeBetween(
-            column=columns["dropoff_location_id"], min_value=1, max_value=265,
+            column=columns["dropoff_location_id"],
+            min_value=LOCATION_ID_MIN, max_value=LOCATION_ID_MAX,
         ),
     ]
 
