@@ -2,10 +2,18 @@ from pathlib import Path
 from unittest.mock import patch
 
 import geopandas as gpd
+import pandas as pd
+import pytest
 import yaml
 from shapely.geometry import LineString, Polygon
 
-from src.toll.silver2 import load_lion_segments, match_lion_cbd, match_lion_facilities
+from src.toll.silver2 import (
+    load_lion_segments,
+    match_lion_cbd,
+    match_lion_facilities,
+    validate_lion_cbd_mapping,
+    validate_lion_facility_mapping,
+)
 
 
 def test_match_lion_facilities_matches_by_street_substring(tmp_path):
@@ -114,3 +122,71 @@ def test_load_lion_segments_drops_duplicate_segment_ids():
         result = load_lion_segments(Path("dummy.gdb"))
 
     assert sorted(result["segment_id"]) == ["S1", "S2"]
+
+
+_FACILITY_KEYS = {"lincoln_tunnel", "queens_midtown_tunnel"}
+
+
+def _facility_mapping(rows) -> pd.DataFrame:
+    return pd.DataFrame(rows, columns=["segment_id", "facility_key"])
+
+
+def test_validate_lion_facility_mapping_passes_clean():
+    mapping = _facility_mapping([
+        {"segment_id": "S1", "facility_key": "lincoln_tunnel"},
+        {"segment_id": "S2", "facility_key": "queens_midtown_tunnel"},
+    ])
+
+    validate_lion_facility_mapping(mapping, _FACILITY_KEYS)  # 예외 없음
+
+
+def test_validate_lion_facility_mapping_rejects_empty():
+    with pytest.raises(ValueError, match="비어 있습니다"):
+        validate_lion_facility_mapping(_facility_mapping([]), _FACILITY_KEYS)
+
+
+def test_validate_lion_facility_mapping_rejects_blank_segment_id():
+    mapping = _facility_mapping([{"segment_id": "  ", "facility_key": "lincoln_tunnel"}])
+
+    with pytest.raises(ValueError, match="segment_id가 비어 있는"):
+        validate_lion_facility_mapping(mapping, _FACILITY_KEYS)
+
+
+def test_validate_lion_facility_mapping_rejects_duplicate_pair():
+    mapping = _facility_mapping([
+        {"segment_id": "S1", "facility_key": "lincoln_tunnel"},
+        {"segment_id": "S1", "facility_key": "lincoln_tunnel"},
+    ])
+
+    with pytest.raises(ValueError, match="중복"):
+        validate_lion_facility_mapping(mapping, _FACILITY_KEYS)
+
+
+def test_validate_lion_facility_mapping_rejects_unknown_facility_key():
+    mapping = _facility_mapping([{"segment_id": "S1", "facility_key": "not_in_yaml"}])
+
+    with pytest.raises(ValueError, match="없는 facility_key"):
+        validate_lion_facility_mapping(mapping, _FACILITY_KEYS)
+
+
+def _cbd_mapping(segment_ids) -> pd.DataFrame:
+    return pd.DataFrame({"segment_id": segment_ids})
+
+
+def test_validate_lion_cbd_mapping_passes_clean():
+    validate_lion_cbd_mapping(_cbd_mapping(["S1", "S2", "S3"]))  # 예외 없음
+
+
+def test_validate_lion_cbd_mapping_rejects_empty_as_crs_mismatch_signal():
+    with pytest.raises(ValueError, match="비어 있습니다"):
+        validate_lion_cbd_mapping(_cbd_mapping([]))
+
+
+def test_validate_lion_cbd_mapping_rejects_blank_segment_id():
+    with pytest.raises(ValueError, match="segment_id가 비어 있는"):
+        validate_lion_cbd_mapping(_cbd_mapping(["S1", ""]))
+
+
+def test_validate_lion_cbd_mapping_rejects_duplicate_segment_id():
+    with pytest.raises(ValueError, match="중복"):
+        validate_lion_cbd_mapping(_cbd_mapping(["S1", "S1"]))
