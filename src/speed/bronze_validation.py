@@ -18,7 +18,16 @@ import pandas as pd
 from src.common.alerts import notify_slack_message
 from src.common.gx import validate_pandas_dataframe
 from src.common.logger import get_logger
-from src.speed.expectations import critical_expectations, log_only_expectations
+from src.common.suspect import flag_suspect_pandas
+from src.speed.expectations import (
+    _DATA_AS_OF_MIN,
+    _REQUIRED_COLUMNS,
+    _SPEED_MAX_MPH,
+    _SPEED_MIN_MPH,
+    _data_as_of_max,
+    critical_expectations,
+    log_only_expectations,
+)
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="speed_bronze_validation")
 
@@ -78,6 +87,35 @@ def validate_bronze_file(bronze_path: str) -> list[dict]:
     validate_bronze_df에 위임한다."""
 
     return validate_bronze_df(pd.read_parquet(bronze_path))
+
+
+def mark_suspect_rows(df: pd.DataFrame) -> pd.DataFrame:
+    """log_only_expectations()가 검사하는 조건 중 행 단위로 판정 가능한
+    것만 재적용해 `is_suspect` 컬럼을 추가한 복사본을 반환한다.
+
+    validate_bronze_df()는 배치 전체 단위로 "이 검증이 실패했는가"만
+    판단하고(Slack 알림용), 어떤 행이 원인인지는 남기지 않는다. 이 함수는
+    그 행을 원본 df에 표시해, 저장된 데이터를 읽는 쪽이 신뢰도 낮은 행을
+    구분할 수 있게 한다 — 전면적인 quarantine(격리) 대신 쓰는 최소
+    버전이다(RELIABILITY_PRINCIPLES.md 원칙 0-1 — 신뢰도가 낮은 값도
+    "낮다는 사실이 보이면" 허용된다).
+
+    ExpectTableRowCountToBeBetween·ExpectColumnUniqueValueCountToBeBetween
+    처럼 배치 전체를 보는 검증은 특정 행을 지목할 수 없어 대상이 아니다.
+    범위·필수 컬럼·허용 날짜 상한을 전부 expectations.py의 상수/함수에서
+    그대로 가져다 써서(_REQUIRED_COLUMNS/_SPEED_*/_DATA_AS_OF_MIN/
+    _data_as_of_max), log_only_expectations()와 기준이 어긋나는 일을 막는다.
+    복사본 생성·bool 확정·컬럼명은 src.common.suspect로 위임한다.
+    """
+    validation_df = _cast_for_validation(df)
+
+    suspect = pd.Series(False, index=df.index)
+    for column in _REQUIRED_COLUMNS:
+        suspect |= validation_df[column].isna()
+    suspect |= ~validation_df["speed"].between(_SPEED_MIN_MPH, _SPEED_MAX_MPH)
+    suspect |= ~validation_df["data_as_of"].between(_DATA_AS_OF_MIN, _data_as_of_max())
+
+    return flag_suspect_pandas(df, suspect)
 
 
 def _validate_and_decide_df(df: pd.DataFrame, context: str) -> bool:
