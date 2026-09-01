@@ -89,15 +89,15 @@
 
 | # | 원칙 | 지금 상태 | 최소 조치 |
 | --- | --- | --- | --- |
-| 5 | **Quarantine** | 🟡 **도메인마다 다름** (아래 "GX 적용 현황" 참고) | `speed`/`tlc`는 GX+`is_suspect`, `lion`/`silver2`(zone_segment)는 assert+`is_suspect`+비율 게이트로 적용 완료. `toll`만 검증 전무 |
+| 5 | **Quarantine** | 🟡 **도메인마다 다름** (아래 "GX 적용 현황" 참고) | 6개 데이터 생산 도메인 전부 저장 전 크리티컬 게이트 확보. `speed`/`tlc`/`lion`/`silver2`는 `is_suspect` 표시까지, `taxi_zone`/`toll`은 크리티컬 게이트만 |
 | 6 | **Idempotency** | ✅ 강함 | `06-etag-marker`, `04-rds-insert` 유지 |
 | 7 | **Immutable Bronze** | 🟡 미확인 | Bronze 계층에 실제로 UPDATE/DELETE가 없는지 코드 감사 |
 
 #### GX(품질 검증) 적용 현황 — 2026-09 코드 감사 결과
 
 전체 8개 도메인(`lion`, `nav_length`, `nav_time`, `taxi_zone`, `toll`,
-`silver2`, `speed`, `tlc`) 중 GX(또는 동등한 행/배치 단위 검증)가 있는 곳은
-`speed`, `tlc`, `lion`, `silver2`, `taxi_zone` 5곳이다.
+`silver2`, `speed`, `tlc`) 중 `nav_length`/`nav_time`을 뺀 6개 데이터
+생산 도메인은 모두 최소한 크리티컬 게이트(저장 전 검증)를 갖췄다.
 
 | 도메인 | 검증 실행 | 실패 시 로그 | **검증 결과가 저장 데이터에 남는가** |
 | --- | --- | --- | --- |
@@ -106,7 +106,7 @@
 | `lion` | 🟡 critical만 raw assert, log-only는 GX 없음(의도적 — 아래 참고) | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **비율 임계치 게이트** (2026-09 적용 — `silver1.py`) |
 | `silver2` (zone_segment) | 🟡 critical은 raw assert(coverage/unique/null/zone_id 범위), log-only는 `nearest` 매핑 표시 | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **`nearest` 비율 게이트** (2026-09 적용 — `zone_segment.py`) |
 | `taxi_zone` | 🟡 critical만 raw assert(shapefile feature 수 250~280) | ✅ (critical만) | N/A — Silver1이 shapefile 통째 복사라 표시할 행 자체가 없음 |
-| `toll` (silver2) | ❌ 없음 | ❌ | ❌ — `build_lion_facility_mapping`/`build_lion_cbd_mapping`이 검증 없이 저장 |
+| `toll` (silver2) | 🟡 critical만 raw check(빈 결과/segment_id null/중복/미지의 facility_key) | ✅ (critical만) | N/A — (segment_id, facility_key)뿐이라 행 단위 이상치 신호가 약해 `is_suspect` 대상 아님 (2026-09 적용 — `silver2.py`) |
 
 `speed`/`tlc`의 문제는 해소됐다 — 각각 `bronze_validation.py`/
 `silver1_transform.py`에 `mark_suspect_rows()`를 추가해 파이프라인이 저장
@@ -144,11 +144,18 @@ raw assert로 크리티컬 게이트를 하고 있어서, 여기에 `nearest`(�
 각 도메인 `expectations.py`(tlc는 `silver1_transform.py`, silver2는
 `zone_segment.py`)에서 판정 함수가 그대로 참조하는 방식으로 줄였다.
 
-남은 공백은 **`toll` 하나**다 — `build_lion_facility_mapping`/
-`build_lion_cbd_mapping`이 검증 없이 저장한다. 다만 toll 매핑은 (segment_id,
-facility_key)의 문자열/공간조인 결과라 행 단위 이상치 신호가 약하므로,
-`is_suspect`보다 **크리티컬 게이트**(비어있음/null/facility_key 유효성/행 수
-범위)를 먼저 붙이는 게 맞다.
+`toll`(silver2)은 마지막까지 검증이 전무했는데, `is_suspect`가 아니라
+**크리티컬 게이트**를 붙였다 — 매핑 결과가 (segment_id, facility_key) /
+(segment_id)뿐이라 행 단위 "이상치" 신호가 약한 대신, 빈 결과·segment_id
+결측·중복·`toll_facilities.yaml`에 없는 `facility_key` 넷 중 하나라도 있으면
+Gold 요금 계산이 조용히 틀리므로 저장 전에 막는다. 특히 빈 결과 검사는
+`match_lion_cbd` 주석이 경고하는 "좌표계 불일치 시 `gpd.sjoin`이 경고만
+내고 조용히 0건 반환" 함정을 잡는다.
+
+이로써 6개 데이터 생산 도메인(`speed`/`tlc`/`lion`/`silver2`/`taxi_zone`/
+`toll`)이 모두 최소한 저장 전 크리티컬 게이트를 갖췄다. 남은 정교화는
+아래 "열린 질문"에 정리했다(임계값 baseline 실측, `nearest` 거리 임계,
+Type3 최신성 축 등).
 
 ### Tier 3 — Resilience: 버틸 수 있는가 (여기서부터 엔지니어링 판단력을 적극 어필)
 
@@ -201,9 +208,10 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 
 - ~~`tlc` 도메인의 GX log-only 검증 결과가 로그에만 남고 실제 Silver
   데이터에는 반영되지 않는다~~ → 2026-09 `mark_suspect_rows`로 해소
-- 행/배치 단위 검증이 `speed`/`tlc`/`lion`/`silver2`(zone_segment)/
-  `taxi_zone` 5개 도메인에 있고, `toll`(silver2)만 검증이 전무하다 —
-  `toll`에 크리티컬 게이트 추가가 다음 과제 (위 GX 적용 현황 참고)
+- ~~행/배치 단위 검증이 일부 도메인에만 있다~~ → 2026-09 기준 6개 데이터
+  생산 도메인 전부 저장 전 크리티컬 게이트를 갖췄다(위 GX 적용 현황). 남은
+  건 `is_suspect` 커버리지 확대(현재 speed/tlc/lion/silver2)와 임계값
+  정교화지, "검증이 아예 없는" 도메인은 없다
 - ~~log-only 이상치의 비율이 평소보다 급격히 늘어났을 때도 지금은
   critical로 승격되지 않는다~~ → `lion`은 2026-09 `MAX_SUSPECT_RATIO`
   게이트로 해소. `speed`/`tlc`는 여전히 log-only 실패가 Slack 알림만

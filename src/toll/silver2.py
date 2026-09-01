@@ -70,6 +70,31 @@ def match_lion_facilities(segments: gpd.GeoDataFrame, facilities_path: Path) -> 
     return pd.DataFrame(rows, columns=["segment_id", "facility_key"])
 
 
+def validate_lion_facility_mapping(mapping: pd.DataFrame, facility_keys: set[str]) -> None:
+    """lion_facility 매핑을 저장하기 전 크리티컬 검증. 실패하면 ValueError를
+    던져 Airflow task를 실패시킨다(저장 안 함 -> 기존 parquet 유지, 정합성
+    우선 - RELIABILITY_PRINCIPLES.md Tier 0-A).
+
+    toll 매핑은 (segment_id, facility_key)뿐이라 행 단위 "이상치" 신호가
+    약하다(is_suspect 대상 아님) - 대신 아래 4가지가 깨지면 Gold 요금 계산이
+    조용히 틀리므로 여기서 막는다.
+    """
+    if mapping.empty:
+        raise ValueError(
+            "lion_facility 매핑 결과가 비어 있습니다 - toll_facilities.yaml 패턴이나 "
+            "LION GDB street 컬럼을 확인하세요"
+        )
+    if mapping["segment_id"].isna().any() or (mapping["segment_id"].astype(str).str.strip() == "").any():
+        raise ValueError("lion_facility 매핑에 segment_id가 비어 있는 행이 있습니다")
+    if mapping.duplicated(subset=["segment_id", "facility_key"]).any():
+        raise ValueError("lion_facility 매핑에 (segment_id, facility_key) 중복이 있습니다")
+    unknown = set(mapping["facility_key"]) - facility_keys
+    if unknown:
+        raise ValueError(
+            f"lion_facility 매핑에 toll_facilities.yaml에 없는 facility_key가 있습니다: {sorted(unknown)}"
+        )
+
+
 def build_lion_facility_mapping(
     gdb_path: Path,
     facilities_path: Path = BRONZE_ROOT / "toll_facilities.yaml",
@@ -81,6 +106,9 @@ def build_lion_facility_mapping(
 
     logger.info(f"[toll_silver2] {len(segments)}개 segment 대상 시설명 매칭 시작")
     result = match_lion_facilities(segments, facilities_path)
+
+    facility_keys = set(yaml.safe_load(Path(facilities_path).read_text()))
+    validate_lion_facility_mapping(result, facility_keys)
 
     save_parquet(result, out_path.parent, out_path.name)
 
@@ -110,6 +138,26 @@ def match_lion_cbd(segments: gpd.GeoDataFrame, zone_polygon: gpd.GeoDataFrame) -
     return joined[["segment_id"]].drop_duplicates().reset_index(drop=True)
 
 
+def validate_lion_cbd_mapping(mapping: pd.DataFrame) -> None:
+    """lion_cbd 매핑을 저장하기 전 크리티컬 검증. 실패하면 ValueError를 던진다
+    (저장 안 함, 정합성 우선 - RELIABILITY_PRINCIPLES.md Tier 0-A).
+
+    빈 결과 검사가 핵심이다 - CBD zone(맨해튼 60번가 이남)에는 수백 개
+    segment가 들어가므로 0건은 정상일 수 없고, match_lion_cbd 주석이
+    경고하듯 좌표계 불일치 시 gpd.sjoin이 경고만 내고 조용히 0건을 반환하는
+    함정을 여기서 막는다.
+    """
+    if mapping.empty:
+        raise ValueError(
+            "lion_cbd 매핑 결과가 비어 있습니다 - CBD Geofence와 LION segment의 "
+            "좌표계(CRS) 불일치일 가능성이 높습니다(match_lion_cbd 주석 참고)"
+        )
+    if mapping["segment_id"].isna().any() or (mapping["segment_id"].astype(str).str.strip() == "").any():
+        raise ValueError("lion_cbd 매핑에 segment_id가 비어 있는 행이 있습니다")
+    if mapping["segment_id"].duplicated().any():
+        raise ValueError("lion_cbd 매핑에 segment_id 중복이 있습니다")
+
+
 def build_lion_cbd_mapping(
     gdb_path: Path,
     cbd_geofence_path: Path = BRONZE_ROOT / "cbd_geofence.geojson",
@@ -122,6 +170,8 @@ def build_lion_cbd_mapping(
 
     logger.info(f"[toll_silver2] {len(segments)}개 segment 대상 CBD 공간조인 시작")
     result = match_lion_cbd(segments, zone_polygon)
+
+    validate_lion_cbd_mapping(result)
 
     save_parquet(result, out_path.parent, out_path.name)
 
