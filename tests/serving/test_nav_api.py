@@ -8,14 +8,17 @@ client = TestClient(app)
 
 
 def test_get_segment_values_returns_values_in_order():
-    with patch("src.serving.nav_api.resolve_segment_values", return_value=[30, 50]) as mock_resolve:
+    with patch(
+        "src.serving.nav_api.resolve_segment_values_with_tiers",
+        return_value=([30, 50], ["fresh", "avg"]),
+    ) as mock_resolve:
         response = client.post(
             "/segments/values",
             json={"segment_ids": ["1", "2"], "type": 1, "time": "12:00"},
         )
 
     assert response.status_code == 200
-    assert response.json() == {"values": [30, 50]}
+    assert response.json() == {"values": [30, 50], "sources": ["fresh", "avg"]}
     mock_resolve.assert_called_once_with(["1", "2"], 1, "12:00")
 
 

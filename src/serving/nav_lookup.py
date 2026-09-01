@@ -303,7 +303,21 @@ def _resolve_from_fallback(segment_id: str, time_slot: str) -> tuple[int, str]:
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
     """요청받은 segment_ids 순서(중복 포함)대로 값을 반환한다. 항상 길이가
     같은 리스트를 반환한다 — 절대 예외를 던지지 않는다(이 함수가 최후의
-    방어선이다 — 상위에 입력 검증 레이어가 없어도 안전해야 한다)."""
+    방어선이다 — 상위에 입력 검증 레이어가 없어도 안전해야 한다).
+
+    tier(값의 출처)까지 필요하면 resolve_segment_values_with_tiers를 쓴다.
+    이 함수는 기존 호출부와의 호환을 위해 값만 반환하는 얇은 래퍼다."""
+    values, _tiers = resolve_segment_values_with_tiers(segment_ids, type_, time_str)
+    return values
+
+
+def resolve_segment_values_with_tiers(
+    segment_ids: list[str], type_: int, time_str: str
+) -> tuple[list[int], list[str]]:
+    """resolve_segment_values와 동일하되, values[i]가 어느 계층(fresh/avg/
+    rds/global/snapshot/hardcoded)에서 왔는지도 함께 반환한다. API 응답에
+    신뢰도를 노출할 때 쓴다(RELIABILITY_PRINCIPLES.md 원칙 0-1 참고) — 이
+    함수 역시 절대 예외를 던지지 않는다."""
     try:
         return _resolve_segment_values_inner(segment_ids, type_, time_str)
     except Exception:
@@ -312,10 +326,12 @@ def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) ->
             f"type={type_} time={time_str}"
         )
         fallback_value = _HARDCODED_DEFAULTS.get(type_, _HARDCODED_DEFAULTS[1])
-        return [fallback_value] * len(segment_ids)
+        return [fallback_value] * len(segment_ids), ["hardcoded"] * len(segment_ids)
 
 
-def _resolve_segment_values_inner(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
+def _resolve_segment_values_inner(
+    segment_ids: list[str], type_: int, time_str: str
+) -> tuple[list[int], list[str]]:
     table_name = table_for_type(type_)
 
     if type_ == 1:
@@ -343,7 +359,9 @@ def _lookup_global_default(table_name: str) -> int:
     return _HARDCODED_DEFAULTS[2]
 
 
-def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]:
+def _resolve_length_values(
+    segment_ids: list[str], table_name: str
+) -> tuple[list[int], list[str]]:
     """Type2(길이)는 시간과 무관해 세그먼트당 값이 하나뿐이다 - 중복
     segment_id는 한 번만 조회해서 재사용해도 안전하다.
 
@@ -399,17 +417,20 @@ def _resolve_length_values(segment_ids: list[str], table_name: str) -> list[int]
     # global=RDS는 살아있지만 이 세그먼트 값이 없어 GLOBAL 기본값 사용,
     # snapshot=RDS 자체가 죽어 S3 스냅샷의 세그먼트별 값 사용,
     # hardcoded=스냅샷에도 없어 코드 상수 사용.
+    result_tiers = [tier.get(sid, "hardcoded") for sid in segment_ids]
     log_tier_summary(
         logger,
         "type2_fallback_tier_summary",
-        [tier.get(sid, "hardcoded") for sid in segment_ids],
+        result_tiers,
         ["rds", "global", "snapshot", "hardcoded"],
     )
 
-    return [resolved[sid] for sid in segment_ids]
+    return [resolved[sid] for sid in segment_ids], result_tiers
 
 
-def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str) -> list[int]:
+def _resolve_time_values(
+    segment_ids: list[str], table_name: str, time_str: str
+) -> tuple[list[int], list[str]]:
     """Type1(소요시간)은 segment_ids를 경로 순서로 간주한다. 세그먼트 k의
     조회 시각은 "요청 시각 + 세그먼트 1..k-1의 소요시간 합"이다 - 그
     세그먼트에 실제로 도착하는 시점의 슬롯을 봐야 하기 때문이다. 이 누적
@@ -463,4 +484,4 @@ def _resolve_time_values(segment_ids: list[str], table_name: str, time_str: str)
         elapsed_seconds += value
 
     log_tier_summary(logger, "fallback_tier_summary", tiers, ["fresh", "avg", "hardcoded"], extra="type=1")
-    return values
+    return values, tiers
