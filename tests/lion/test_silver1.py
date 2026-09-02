@@ -3,7 +3,12 @@ import pytest
 from airflow.exceptions import AirflowSkipException
 
 from src.lion import silver1
-from src.lion.silver1 import _clean_lion_dataframe, build_dim_segment_staged, validate_dim_segment_base
+from src.lion.silver1 import (
+    _clean_lion_dataframe,
+    _profile_duplicates,
+    build_dim_segment_staged,
+    validate_dim_segment_base,
+)
 
 
 def _raw_row(**overrides):
@@ -133,6 +138,61 @@ def test_validate_dim_segment_base_blocks_when_suspect_ratio_exceeds_threshold(t
 
     with pytest.raises(AssertionError, match="의심 행"):
         validate_dim_segment_base(str(path))
+
+
+def test_profile_duplicates_counts_exact_vs_conflict():
+    df = pd.DataFrame([
+        _raw_row(SegmentID="a"),
+        _raw_row(SegmentID="a"),                       # a: 완전 동일 -> exact
+        _raw_row(SegmentID="b"),
+        _raw_row(SegmentID="b", SHAPE="LINESTRING (9 9, 8 8)"),  # b: geometry 갈림 -> conflict
+        _raw_row(SegmentID="c"),                       # c: 중복 아님
+    ])
+
+    profile = _profile_duplicates(df)
+
+    assert profile["unique_keys"] == 3
+    assert profile["duplicate_keys"] == 2
+    assert profile["exact_duplicate_keys"] == 1
+    assert profile["conflict_duplicate_keys"] == 1
+    assert profile["conflict_ratio"] == pytest.approx(1 / 3)
+
+
+def test_clean_lion_dataframe_dedup_is_deterministic_regardless_of_row_order():
+    rows = [
+        _raw_row(SegmentID="1", NodeIDFrom="10"),
+        _raw_row(SegmentID="1", NodeIDFrom="10"),  # exact 중복 (게이트 통과)
+        _raw_row(SegmentID="2", NodeIDFrom="20"),
+    ]
+
+    forward = _clean_lion_dataframe(pd.DataFrame(rows))
+    reverse = _clean_lion_dataframe(pd.DataFrame(list(reversed(rows))))
+
+    pd.testing.assert_frame_equal(
+        forward.sort_values("segment_id").reset_index(drop=True),
+        reverse.sort_values("segment_id").reset_index(drop=True),
+    )
+
+
+def test_clean_lion_dataframe_blocks_when_conflict_ratio_exceeds_threshold(monkeypatch):
+    monkeypatch.setattr(silver1, "MAX_DUPLICATE_CONFLICT_RATIO", 0.01)
+    df = pd.DataFrame([
+        _raw_row(SegmentID="a", SHAPE_Length="100"),
+        _raw_row(SegmentID="a", SHAPE_Length="999"),  # 같은 id, 길이 갈림 -> conflict
+        _raw_row(SegmentID="b"),
+    ])
+
+    with pytest.raises(ValueError, match="충돌 중복"):
+        _clean_lion_dataframe(df)
+
+
+def test_clean_lion_dataframe_allows_exact_duplicates(monkeypatch):
+    monkeypatch.setattr(silver1, "MAX_DUPLICATE_CONFLICT_RATIO", 0.0)
+    df = pd.DataFrame([_raw_row(SegmentID="a"), _raw_row(SegmentID="a")])
+
+    result = _clean_lion_dataframe(df)
+
+    assert len(result) == 1
 
 
 def test_build_dim_segment_staged_skips_when_bronze_unchanged(tmp_path):
