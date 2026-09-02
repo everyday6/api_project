@@ -68,14 +68,17 @@ def test_validate_bronze_excludes_file_missing_critical_column(tmp_path, spark):
 
 
 def test_validate_bronze_passes_but_logs_when_location_out_of_range(tmp_path, spark):
-    path = _write_bronze_fixture(tmp_path, "out_of_range.parquet", [{
+    clean = {
         "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
         "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
-        "PULocationID": 999,  # 유효 범위(1~265) 밖
+        "PULocationID": 10,
         "DOLocationID": 20,
         "passenger_count": 1,
         "trip_distance": 5.0,
-    }])
+    }
+    # 1/10만 범위 밖 - log-only로는 걸리되 비율 게이트(MAX_SUSPECT_RATIO)는 안 넘는다.
+    rows = [clean] * 9 + [{**clean, "PULocationID": 999}]
+    path = _write_bronze_fixture(tmp_path, "out_of_range.parquet", rows)
 
     result = _validate_bronze(spark, {"bronze_chunk": [
         {"filename": "out_of_range.parquet", "taxi_type": "yellow", "bronze_path": path},
@@ -84,6 +87,29 @@ def test_validate_bronze_passes_but_logs_when_location_out_of_range(tmp_path, sp
     # log-only 실패는 파일을 제외하지 않는다 - 통과 목록에 그대로 남아야 한다.
     assert [item["filename"] for item in result["passed"]] == ["out_of_range.parquet"]
     assert result["excluded"] == []
+
+
+def test_validate_bronze_excludes_file_when_suspect_ratio_too_high(tmp_path, spark):
+    # 80% 행의 PULocationID가 범위 밖 -> is_suspect 비율이 MAX_SUSPECT_RATIO를
+    # 넘어, log-only 이상이지만 critical처럼 파일을 제외한다.
+    clean = {
+        "tpep_pickup_datetime": datetime(2024, 1, 1, 8, 0),
+        "tpep_dropoff_datetime": datetime(2024, 1, 1, 8, 30),
+        "PULocationID": 10,
+        "DOLocationID": 20,
+        "passenger_count": 1,
+        "trip_distance": 5.0,
+    }
+    rows = [clean] * 2 + [{**clean, "PULocationID": 999}] * 8
+    path = _write_bronze_fixture(tmp_path, "noisy.parquet", rows)
+
+    result = _validate_bronze(spark, {"bronze_chunk": [
+        {"filename": "noisy.parquet", "taxi_type": "yellow", "bronze_path": path},
+    ]})
+
+    assert result["passed"] == []
+    assert [item["filename"] for item in result["excluded"]] == ["noisy.parquet"]
+    assert "의심 행 비율" in result["excluded"][0]["reason"]
 
 
 def test_validate_bronze_fhv_skips_passenger_count_check(tmp_path, spark):

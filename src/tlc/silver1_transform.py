@@ -7,7 +7,7 @@ Yellow, Green, FHV, FHVHV 원본의 서로 다른 컬럼명을 공통 스키마�
 """
 
 from pyspark.sql import DataFrame
-from pyspark.sql.functions import col, count, lit, when
+from pyspark.sql.functions import avg, col, count, lit, when
 from pyspark.sql.types import (
     DoubleType,
     IntegerType,
@@ -43,6 +43,17 @@ SILVER_OUTPUT_COLUMNS = SILVER_COLUMNS + [IS_SUSPECT_COLUMN]
 # (COLUMN_MAPPING과 같은 이유로, silver1_transform.py를 단일 진실 공급원으로 둔다).
 LOCATION_ID_MIN = 1
 LOCATION_ID_MAX = 265
+
+# spark_jobs/tlc_pipeline_job.py의 _validate_bronze가 suspect_fraction()으로
+# 파일별 is_suspect 비율을 재고, 이 값을 넘으면 그 파일을 critical처럼 제외한다
+# (RELIABILITY_PRINCIPLES.md 열린 질문 - "비율 급증 시 critical 승격").
+# 개별 행의 이상은 log-only(is_suspect 표시)로 넘기되, 한 파일에서 값이
+# 뭉텅이로 이상하면(스키마 드리프트, 원천 포맷 변경 등) Silver로 안 넘긴다.
+# 월 단위 파일이라 speed(30분 배치, 0.20)보다는 조이되, 원천 노이즈(FHV 결측
+# 등)를 고려해 lion(0.05)/silver2(0.10)보다는 넉넉하게.
+#
+# NOTE: placeholder. 실제 월별 파일들의 baseline suspect 비율 측정 후 조정 필요.
+MAX_SUSPECT_RATIO = 0.15
 
 
 COLUMN_MAPPING = {
@@ -192,12 +203,37 @@ def check_null(df: DataFrame) -> DataFrame:
     return df
 
 
-def transform(df: DataFrame, taxi_type: str) -> DataFrame:
-    """TLC 원본 DataFrame을 필터링 없이 Silver1 공통 스키마로 바꾼다."""
+def _standardize_and_flag(df: DataFrame, taxi_type: str) -> DataFrame:
+    """rename → add_missing → cast → mark_suspect_rows까지. transform()과
+    suspect_fraction()이 공유해, is_suspect를 붙이는 로직이 두 군데서
+    갈라지지 않게 한다."""
 
     renamed = rename_columns(df, taxi_type)
     completed = add_missing_columns(renamed)
     casted = cast_columns(completed)
-    flagged = mark_suspect_rows(casted, taxi_type)
+    return mark_suspect_rows(casted, taxi_type)
+
+
+def transform(df: DataFrame, taxi_type: str) -> DataFrame:
+    """TLC 원본 DataFrame을 필터링 없이 Silver1 공통 스키마로 바꾼다."""
+
+    flagged = _standardize_and_flag(df, taxi_type)
     selected = select_columns(flagged)
     return check_null(selected)
+
+
+def suspect_fraction(df: DataFrame, taxi_type: str) -> float:
+    """raw Bronze df에서 transform()이 붙일 is_suspect 비율(0.0~1.0)을 계산한다.
+
+    _validate_bronze가 저장 전에 이 비율을 보고 임계치(MAX_SUSPECT_RATIO)를
+    넘는 파일을 critical처럼 제외한다. speed의 suspect_ratio_ok()와 같은
+    목적이다(RELIABILITY_PRINCIPLES.md 열린 질문 - "비율 급증 시 critical 승격").
+
+    critical 검증(필수 원본 컬럼 존재)이 이미 통과한 뒤에만 호출해야 한다 -
+    그래야 rename_columns()가 ValueError를 던지지 않는다.
+    """
+    flagged = _standardize_and_flag(df, taxi_type)
+    row = flagged.agg(
+        avg(col(IS_SUSPECT_COLUMN).cast("double")).alias("frac")
+    ).first()
+    return float(row["frac"]) if row is not None and row["frac"] is not None else 0.0

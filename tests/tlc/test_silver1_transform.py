@@ -4,7 +4,7 @@ import pytest
 from pyspark.sql import SparkSession
 from pyspark.sql.types import DoubleType, IntegerType, TimestampType
 
-from src.tlc.silver1_transform import SILVER_OUTPUT_COLUMNS, transform
+from src.tlc.silver1_transform import SILVER_OUTPUT_COLUMNS, suspect_fraction, transform
 
 
 @pytest.fixture(scope="module")
@@ -164,3 +164,35 @@ def test_transform_fhv_missing_optional_columns_is_not_suspect(spark):
     assert row.passenger_count is None
     assert row.trip_distance is None
     assert row.is_suspect is False
+
+
+def test_suspect_fraction_returns_flagged_ratio(spark):
+    source = spark.createDataFrame([
+        {
+            "tpep_pickup_datetime": datetime(2026, 8, 21, 12, 0),
+            "tpep_dropoff_datetime": datetime(2026, 8, 21, 12, 20),
+            "PULocationID": pu,  # 4개 중 1개만 유효 범위(1~265) 밖
+            "DOLocationID": 20,
+            "passenger_count": 1,
+            "trip_distance": 1.0,
+        }
+        for pu in [10, 20, 30, 999]
+    ])
+
+    assert suspect_fraction(source, "yellow") == pytest.approx(0.25)
+
+
+def test_suspect_fraction_is_zero_for_all_clean(spark):
+    source = spark.createDataFrame([
+        {
+            "tpep_pickup_datetime": datetime(2026, 8, 21, 12, 0),
+            "tpep_dropoff_datetime": datetime(2026, 8, 21, 12, 20),
+            "PULocationID": 10,
+            "DOLocationID": 20,
+            "passenger_count": 1,
+            "trip_distance": 1.0,
+        }
+        for _ in range(3)
+    ])
+
+    assert suspect_fraction(source, "yellow") == 0.0

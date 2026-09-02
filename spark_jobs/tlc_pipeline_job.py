@@ -33,7 +33,7 @@ from src.tlc.gold2 import (
     validate_segment_values,
     write_type3_rolling_to_rds,
 )
-from src.tlc.silver1_transform import transform
+from src.tlc.silver1_transform import MAX_SUSPECT_RATIO, suspect_fraction, transform
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="tlc_emr_job")
@@ -79,6 +79,19 @@ def _validate_bronze(spark: SparkSession, payload: dict) -> dict:
                     result["kwargs"],
                     result["result"],
                 )
+
+        # log-only 이상이 개별 행이 아니라 파일 전체에 뭉텅이로 있으면(스키마
+        # 드리프트, 원천 포맷 변경 등) critical로 승격해 파일을 제외한다.
+        suspect_frac = suspect_fraction(df, taxi_type)
+        if suspect_frac > MAX_SUSPECT_RATIO:
+            reason = (
+                f"의심 행 비율 초과: {suspect_frac:.1%} > {MAX_SUSPECT_RATIO:.1%} "
+                f"(taxi_type={taxi_type})"
+            )
+            logger.error("의심 행 비율 초과로 제외 - %s: %s", filename, reason)
+            excluded.append({"filename": filename, "reason": reason})
+            continue
+
         passed.append(item)
 
     return {"passed": passed, "excluded": excluded}

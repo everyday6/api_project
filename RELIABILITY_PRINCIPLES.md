@@ -102,7 +102,7 @@
 | 도메인 | 검증 실행 | 실패 시 로그 | **검증 결과가 저장 데이터에 남는가** |
 | --- | --- | --- | --- |
 | `speed` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 + **비율 급증 시 critical 승격**(`suspect_ratio_ok`) (2026-09 적용) |
-| `tlc` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 (2026-09 적용 — `silver1_transform.py`) |
+| `tlc` | ✅ GX(critical+log-only) | ✅ | ✅ `is_suspect` 컬럼 + **비율 초과 시 파일 제외**(`suspect_fraction` in `_validate_bronze`) (2026-09 적용 — `silver1_transform.py`) |
 | `lion` | 🟡 critical만 raw assert, log-only는 GX 없음(의도적 — 아래 참고) | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **비율 임계치 게이트** (2026-09 적용 — `silver1.py`) |
 | `silver2` (zone_segment) | 🟡 critical은 raw assert(coverage/unique/null/zone_id 범위), log-only는 `nearest` 매핑 표시 | ✅ (critical만) | ✅ `is_suspect` 컬럼 + **`nearest` 비율 게이트** (2026-09 적용 — `zone_segment.py`) |
 | `taxi_zone` | 🟡 critical만 raw assert(shapefile feature 수 250~280) | ✅ (critical만) | N/A — Silver1이 shapefile 통째 복사라 표시할 행 자체가 없음 |
@@ -213,13 +213,14 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
   건 `is_suspect` 커버리지 확대(현재 speed/tlc/lion/silver2)와 임계값
   정교화지, "검증이 아예 없는" 도메인은 없다
 - ~~log-only 이상치의 비율이 평소보다 급격히 늘어났을 때도 지금은
-  critical로 승격되지 않는다~~ → `lion`/`silver2`는 `MAX_SUSPECT_RATIO`
-  게이트, `speed`는 2026-09 `suspect_ratio_ok()`로 해소(비율 초과 시
-  log-only를 critical로 승격 → 이번 사이클 저장 스킵 + Slack). `tlc`만
-  남았다(EMR Spark 잡이라 `is_suspect` 비율을 집계해 청크를 제외하는
-  경로를 `spark_jobs/tlc_pipeline_job.py`에 추가해야 함) — 다음 과제
+  critical로 승격되지 않는다~~ → **네 파이프라인 전부 해소**(2026-09).
+  `lion`/`silver2`는 `MAX_SUSPECT_RATIO` publish 게이트, `speed`는
+  `suspect_ratio_ok()`(비율 초과 시 이번 사이클 저장 스킵 + Slack), `tlc`는
+  `_validate_bronze`가 `suspect_fraction()`으로 파일별 비율을 재서 임계치
+  초과 파일을 critical처럼 제외(`spark_jobs/tlc_pipeline_job.py`).
 - `lion`(`MAX_SUSPECT_RATIO`=0.05)·`silver2`(=0.10, `nearest` 비율)·
-  `speed`(=0.20, 고빈도라 넉넉하게)의 임계값은 전부 **placeholder다** —
+  `speed`(=0.20, 고빈도라 넉넉)·`tlc`(=0.15, 월 단위 파일)의 임계값은
+  전부 **placeholder다** —
   실제 스냅샷/배치로 baseline을 측정할 프로덕션 접근 권한이 없어 실측
   없이 박아둔 값이다. 접근 권한이 생기는 대로 재고 조정해야 한다(코드
   주석에도 명시). `silver2`는 추가로 `nearest`여도 `distance_ft`가 작으면
