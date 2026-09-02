@@ -194,7 +194,28 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 | --- | --- | --- |
 | 8 | **Graceful Degradation** | `05-rds-fallback` — 계층형 폴백 |
 | 9 | **자원 경합/스큐 대응** | `01-skew`(파티션 스큐 105배 실측 진단), `03-spark-tuning`(DAG별 자원 고정 배분), `04-rds-insert`(대안 4개 비교 후 선택) |
-| 10 | **Circuit Breaker** | 미구현 — fallback 비율이 임계치를 넘으면 알림/차단하는 로직은 다음 과제 |
+| 10 | **Fallback 급증 알림** | 🟡 알림 구현(2026-09), "차단"은 의도적 미구현 — 아래 참고 |
+
+#### Circuit Breaker를 "알림"으로 재정의한 이유 — 2026-09
+
+교과서적 circuit breaker는 실패하는 의존성 호출을 임계치 넘으면 **중단**한다.
+근데 이 API의 폴백 체인(rds→global→snapshot→hardcoded)은 **절대 예외를 던지지
+않는다** — 모든 RDS 호출이 try/except로 감싸져 있다. RDS 호출을 "차단"해봤자
+나쁜 응답을 막는 게 아니라 장애 중 빠른 타임아웃 한 번을 아낄 뿐이다. 폴백
+체인이 이미 containment 역할을 한다(#8).
+
+진짜 갭은 `05-rds-fallback`의 93.58% fallback 사태를 **사후에야 발견**했다는
+것 — tier 요약은 로깅·Grafana 대시보드는 되는데 자동 알림이 없었다. 그래서
+`src/common/tier_metrics.py`의 `log_tier_summary`(4개 타입 전부의 단일
+초크포인트)에, 요청의 마지막 계층(`hardcoded`, 코드 상수) 비율이
+`FALLBACK_ALERT_RATIO`를 넘으면 rate-limited Slack 알림을 보내는 로직을 넣었다.
+
+- `hardcoded`만 기준으로 삼는다: `avg`/`snapshot`/`global`은 설계된 중간
+  폴백이라 정상적으로도 높을 수 있지만(예: 새벽엔 type1이 대부분 `avg`),
+  `hardcoded`는 RDS도 스냅샷도 실패했다는 명백한 장애 신호다.
+- rate-limit 상태는 프로세스 로컬(Lambda 웜 인스턴스)이다 - 광범위 장애 시
+  인스턴스당·창당 최대 1건. 침묵보다 낫고 폭주도 아니다.
+- 알림 전송 실패는 `try/except`로 삼켜서 서빙 응답(hot path)을 절대 안 깬다.
 
 ### Tier 4 — 효율/가치
 
@@ -263,6 +284,10 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 - `avg_formula_version`(lineage)이 type1에만 있다 — type3(수요 rolling
   평균, `src/tlc/gold2.py`)도 계산값이라 같은 `formula_version()` 스탬프를
   붙여야 한다. type2(길이)·type4(통행료)는 조회/패스스루라 대상 아님
-- fallback 비율이 임계치를 넘었을 때 자동 알림/circuit breaker로 이어지는
-  경로가 없다
-- Bronze가 실제로 immutable한지 코드 레벨에서 아직 검증하지 않았다
+- ~~fallback 비율이 임계치를 넘었을 때 자동 알림/circuit breaker로 이어지는
+  경로가 없다~~ → 2026-09 `log_tier_summary`에 `hardcoded` 비율 급증
+  Slack 알림 추가(Tier 3 #10 참고). `FALLBACK_ALERT_RATIO`(0.10)는
+  placeholder — baseline 실측 후 조정 필요. rate-limit이 프로세스 로컬이라
+  중앙 집계(예: CloudWatch 알람)로 옮기는 건 후속
+- ~~Bronze가 실제로 immutable한지 코드 레벨에서 아직 검증하지 않았다~~ →
+  2026-09 재현성 감사 완료(Tier 2 #7 참고)
