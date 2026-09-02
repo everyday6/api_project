@@ -267,6 +267,52 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 5. 새 `docs/decisions/*.md`를 쓸 때마다 이 문서의 몇 번 원칙에 해당하는지
    한 줄로 표시해 서사를 계속 연결한다
 
+## 현황 요약 (2026-09)
+
+이 문서의 원칙들은 대부분 코드에 반영됐다. 아래는 최근 작업(4개 PR)으로
+무엇이 닫혔고 무엇을 **의식적으로** 남겼는지의 스냅샷이다. 유예 항목은
+"안 한 게 아니라 지금 할 근거가 부족해서 미룬 것"이며 각각 착수 조건을
+같이 적는다. 세부 맥락은 아래 "열린 질문"과 각 Tier 표에 있다.
+
+### 완료
+
+| 영역 | 무엇 | 위치 |
+| --- | --- | --- |
+| Lineage 3부작 | `avg_formula_version`(type1) + `value_formula_version`(type3) + Bronze 재현성 감사 | Tier 1 #1, Tier 2 #7 |
+| 응답 신뢰도 노출 | `provenance` 2축(`storage_source` + `value_basis`), 옛 `sources`는 파생 | Tier 1 #4 |
+| 이상치 영속화 | 6개 생산 도메인 전부 저장 전 크리티컬 게이트. speed/tlc/lion/silver2는 `is_suspect` + 비율 게이트까지 | Tier 2 #5 |
+| 이상치 비율 급증 승격 | 4개 파이프라인 전부 log-only → critical 승격(도메인별 게이트) | 열린 질문 |
+| LION 중복 정책 | `_profile_duplicates()` + conflict 게이트 + 결정적 dedup, 죽은 `is_unique` assert 제거 | Tier 2 GX 현황 |
+| Fallback 급증 알림 | `log_tier_summary`가 `hardcoded` 비율 초과 시 rate-limited Slack | Tier 3 #10 |
+| 스냅샷 첫 로드 실패 | `LazySnapshot`이 hit만 고정, miss는 backoff 재시도 | 열린 질문 |
+
+### 의식적으로 유예
+
+| 항목 | 왜 지금 안 했는가 | 착수 조건 |
+| --- | --- | --- |
+| Type3(수요) 최신성 축 노출 | Type1의 `fresh`/`avg`에 대응하는 신선도 신호가 type3엔 없음. 추가 여부 자체가 미결(스냅샷 포맷·롤링 윈도 의미 정리 필요) | 수요 드리프트를 실측해 "며칠 지난 집계"가 오차를 유의미하게 키우는지 확인되면 |
+| `storage_source` 기반 스냅샷-폴백 알림 | provenance는 `log_tier_summary`까지 흘려보냈으나 "RDS 광범위 장애" 판정 임계치가 baseline 없이는 placeholder | fallback 비율 baseline 실측 후(아래 "외부 증거"와 같은 조건) |
+| 스냅샷 주기적 refresh(TTL) | 웜 인스턴스가 성공한 스냅샷을 프로세스 수명 내내 고정 — 장수 인스턴스에서 stale 위험 | 스냅샷 갱신 주기 대비 Lambda 인스턴스 평균 수명을 재서 stale 노출 창이 유의미하면 |
+| 스냅샷 envelope (generated_at/checksum/version) | 현재 스냅샷은 스칼라 맵뿐. 메타 추가는 쓰기·읽기 양쪽 포맷 변경이라 별도 계약 작업 | 스냅샷 stale 판정이나 포맷 마이그레이션이 실제로 필요해질 때 |
+| missing ↔ error 스냅샷 세분류 | 현재 `read_snapshot_result`는 hit/miss 2분류. "파일 없음"과 "S3 에러"를 가르면 backoff를 다르게 줄 수 있으나 지금은 과설계 | S3 에러율이 관측되고 두 경우의 대응이 실제로 달라야 할 때 |
+| `is_suspect` reason code | 현재 불리언 하나. 어떤 expectation이 걸렸는지는 로그에만 | 이상치 분류가 다운스트림 의사결정(예: 특정 사유만 제외)에 쓰이게 될 때 |
+| `toll/silver2.py`가 재구축된 lion `dim_segment` 소비 | 지금은 자체 GDB 로드 — 중복 정책이 두 곳에 존재 | lion `dim_segment`가 toll이 필요한 컬럼을 안정적으로 제공한다고 확인되면 |
+| Execution manifest (실행별 입력 파티션 고정 기록) | Bronze 재현성 감사로 "재도출 가능"은 확인. 실행마다 정확히 어떤 파티션을 읽었는지 남기는 manifest는 그 위의 정밀도 | 특정 Gold 값의 입력 집합을 사후 재구성해야 하는 인시던트가 실제로 나면 |
+
+### 외부 증거 필요 (프로덕션 접근 권한 대기)
+
+전부 실제 스냅샷/배치로 baseline을 재야 하는데 프로덕션 접근이 없어 코드에
+placeholder로 박아둔 값들이다. 접근이 생기는 대로 재측정한다(코드 주석에도 명시).
+
+- `MAX_SUSPECT_RATIO`: lion=0.05 / silver2=0.10 / speed=0.20 / tlc=0.15
+- `FALLBACK_ALERT_RATIO`=0.10 (`hardcoded` 비율 급증 기준)
+- `MAX_DUPLICATE_CONFLICT_RATIO` (LION 중복 conflict 게이트)
+- `silver2` `nearest` 매핑의 `distance_ft` 거리 임계값 (현재는 비율만 봄)
+- SLO / 에러 예산 — 아직 정의 없음
+- 비즈니스 임팩트 검증 (Tier 4 #12) — 폴백 값이 실제 라우팅 품질에 주는 영향 미측정
+
+---
+
 ## 아직 원칙화되지 않은 열린 질문
 
 - ~~`tlc` 도메인의 GX log-only 검증 결과가 로그에만 남고 실제 Silver
