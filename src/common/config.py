@@ -188,6 +188,10 @@ SERVING_TABLE_TYPE1_COLUMNS = {
     "value": "NUMERIC NOT NULL",
     "avg": "NUMERIC",
     "count": "INTEGER",
+    # avg를 계산한 공식 버전(src/nav_time/gold2.py의 AVG_FORMULA_VERSION -
+    # "<라벨>+<핵심상수 해시>" 형태). 사후에 avg 공식 버그의 영향 범위를
+    # 특정하기 위한 lineage 컬럼이다 - 이 컬럼 배포 전에 쓰인 레거시 행엔 NULL.
+    "avg_formula_version": "TEXT",
     # 이 슬롯 avg에 마지막으로 반영한 원본 판독값의 시각(observed_at 중
     # 최댓값). 같은 배치가 Airflow 재시도로 다시 들어와도 avg/count를 또
     # 증가시키지 않기 위한 식별자다 - collected_date(날짜 단위)는 같은 날

@@ -305,6 +305,19 @@ def test_to_serving_items_includes_last_sample_at_and_updated_date(spark):
     assert by_key[("1", "1200")]["updated_date"] == "2026-08-21"
 
 
+def test_to_serving_items_stamps_avg_formula_version(spark):
+    # 저장되는 모든 행에 avg를 계산한 공식 버전이 새겨져야 한다(lineage).
+    df = spark.createDataFrame([
+        {"segment_id": "1", "bucket": "1200", "time_seconds": 30.0, "last_observed_at": datetime(2026, 8, 21, 12, 0)},
+    ])
+
+    with patch.object(gold2, "batch_get_items", return_value={}):
+        items = gold2.to_serving_items(df, TABLE_NAME, today=TODAY)
+
+    assert items[0]["avg_formula_version"] == gold2.AVG_FORMULA_VERSION
+    assert gold2.AVG_FORMULA_VERSION.startswith("v1+")
+
+
 def test_write_to_rds_calls_batch_write_and_returns_count():
     items = [{"segment_id": "1", "time": "1200", "value": 30, "avg": 30, "count": 1}]
 
