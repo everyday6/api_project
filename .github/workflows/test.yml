@@ -1,0 +1,65 @@
+# PR마다 전체 pytest 스위트를 리눅스에서 돌린다. build-push-ecr.yml은
+# 이미지 빌드/배포만 하고 테스트를 실행하지 않아서, 회귀가 develop까지
+# 흘러들어간 적이 있다(#20 — type3 테스트가 _copy_type3_partition
+# 시그니처 변경을 따라가지 못한 채 머지됨).
+#
+# 러너에 파이썬/자바/GDAL을 새로 설치하는 대신 레포 Dockerfile을 그대로
+# 재사용한다 — 이미 openjdk-17 + gdal-bin + 고정된 requirements가 풀려
+# 있고, 개발자가 로컬에서 재현할 때도 같은 이미지를 쓸 수 있다.
+name: Tests
+
+on:
+  pull_request:
+  push:
+    branches: [develop]
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tests-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  pytest:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      # 무거운 레이어는 pip install(airflow 베이스 + 40여 개 패키지)이다.
+      # GHA 캐시에 얹어두면 requirements.txt가 안 바뀌는 한 재사용된다.
+      - name: Build test image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: Dockerfile
+          load: true
+          tags: api-project-test:ci
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # 이미지는 의존성만 담고 소스는 안 담는다(app Dockerfile 그대로).
+      # 체크아웃한 워크스페이스를 마운트해서 그 위에서 돌린다. 컨테이너가
+      # airflow 유저(uid 50000)로 실행되므로, 러너가 만든 파일에 쓰려면
+      # (junit 리포트 등) 권한을 열어줘야 한다.
+      - name: Run pytest
+        run: |
+          chmod -R a+rwX "$GITHUB_WORKSPACE"
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE:/work" -w /work \
+            -e SPARK_LOCAL_IP=127.0.0.1 \
+            --entrypoint bash \
+            api-project-test:ci \
+            -lc "python -m pytest tests/ -q -p no:cacheprovider --junitxml=/work/pytest-report.xml"
+
+      - name: Upload test report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: pytest-report
+          path: pytest-report.xml
+          if-no-files-found: warn
