@@ -21,6 +21,7 @@ from src.common.config import TLC_TYPE3_ROLLING_WEEKS
 from src.common.gx import validate_spark_dataframe
 from src.common.logger import get_logger
 from src.common.spark import to_spark_path
+from src.common.suspect import log_quality_gate
 from src.silver2.zone_segment import current_mapping_version
 from src.tlc.expectations import critical_expectations, log_only_expectations
 from src.tlc.gold2 import (
@@ -83,6 +84,16 @@ def _validate_bronze(spark: SparkSession, payload: dict) -> dict:
         # log-only 이상이 개별 행이 아니라 파일 전체에 뭉텅이로 있으면(스키마
         # 드리프트, 원천 포맷 변경 등) critical로 승격해 파일을 제외한다.
         suspect_frac = suspect_fraction(df, taxi_type)
+        log_quality_gate(
+            logger,
+            domain="tlc",
+            metric="suspect_ratio",
+            value=suspect_frac,
+            threshold=MAX_SUSPECT_RATIO,
+            passed=suspect_frac <= MAX_SUSPECT_RATIO,
+            taxi_type=taxi_type,
+            filename=filename,
+        )
         if suspect_frac > MAX_SUSPECT_RATIO:
             reason = (
                 f"의심 행 비율 초과: {suspect_frac:.1%} > {MAX_SUSPECT_RATIO:.1%} "

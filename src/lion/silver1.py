@@ -32,7 +32,7 @@ from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
-from src.common.suspect import flag_suspect_pandas, suspect_ratio
+from src.common.suspect import flag_suspect_pandas, log_quality_gate, suspect_ratio
 from src.common.utils import clean_street, save_parquet
 from src.lion.expectations import SPEED_LIMIT_MAX_MPH, SPEED_LIMIT_MIN_MPH
 
@@ -153,6 +153,16 @@ def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     before = len(df)
     profile = _profile_duplicates(df)
     logger.info("[lion_silver] SegmentID 중복 프로파일: %s", profile)
+    log_quality_gate(
+        logger,
+        domain="lion",
+        metric="conflict_ratio",
+        value=profile["conflict_ratio"],
+        threshold=MAX_DUPLICATE_CONFLICT_RATIO,
+        passed=profile["conflict_ratio"] <= MAX_DUPLICATE_CONFLICT_RATIO,
+        conflict_duplicate_keys=profile["conflict_duplicate_keys"],
+        unique_keys=profile["unique_keys"],
+    )
     if profile["conflict_ratio"] > MAX_DUPLICATE_CONFLICT_RATIO:
         raise ValueError(
             f"SegmentID 충돌 중복 비율이 임계치를 초과했습니다: "
@@ -326,6 +336,16 @@ def validate_dim_segment_base(path: str) -> str:
     )
 
     ratio = suspect_ratio(df)
+    log_quality_gate(
+        logger,
+        domain="lion",
+        metric="suspect_ratio",
+        value=ratio,
+        threshold=MAX_SUSPECT_RATIO,
+        passed=ratio <= MAX_SUSPECT_RATIO,
+        rows=n,
+        path=str(path),
+    )
     assert ratio <= MAX_SUSPECT_RATIO, (
         f"의심 행(is_suspect) 비율이 임계치를 초과했습니다: "
         f"{ratio:.1%} > {MAX_SUSPECT_RATIO:.1%} "
