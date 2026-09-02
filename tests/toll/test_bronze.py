@@ -105,6 +105,42 @@ def test_upload_cbd_geofence_rejects_empty_features(tmp_path):
             upload_cbd_geofence(bronze_root=bronze_root)
 
 
+def test_upload_cbd_geofence_skips_write_when_content_hash_unchanged(tmp_path):
+    bronze_root = tmp_path / "bronze" / "toll"
+    fake_response = Mock(content=_VALID_FEATURE_COLLECTION)
+    fake_response.raise_for_status = Mock()
+
+    with patch("src.toll.bronze.requests.get", return_value=fake_response):
+        upload_cbd_geofence(bronze_root=bronze_root)
+
+    with patch("src.toll.bronze.requests.get", return_value=fake_response), \
+         patch("src.toll.bronze._copy_file_to_bronze") as mock_copy:
+        upload_cbd_geofence(bronze_root=bronze_root)
+
+    # 내용이 그대로면 Bronze 쓰기 자체를 건너뛴다(in-place 덮어쓰기라 무의미).
+    mock_copy.assert_not_called()
+
+
+def test_upload_cbd_geofence_warns_when_content_changes(tmp_path, caplog):
+    bronze_root = tmp_path / "bronze" / "toll"
+
+    first = Mock(content=_VALID_FEATURE_COLLECTION)
+    first.raise_for_status = Mock()
+    with patch("src.toll.bronze.requests.get", return_value=first):
+        upload_cbd_geofence(bronze_root=bronze_root)
+
+    changed = Mock(content=(
+        b'{"type": "FeatureCollection", "features": '
+        b'[{"type": "Feature", "properties": {"NEW": 1}, "geometry": null}]}'
+    ))
+    changed.raise_for_status = Mock()
+    with patch("src.toll.bronze.requests.get", return_value=changed):
+        with caplog.at_level("WARNING"):
+            upload_cbd_geofence(bronze_root=bronze_root)
+
+    assert any("변경 감지" in r.message for r in caplog.records)
+
+
 def test_upload_cbd_geofence_does_not_overwrite_existing_file_on_failure(tmp_path):
     # 핵심 회귀 테스트: 새 응답이 검증에 실패하면, Bronze에 이미 있던
     # 정상 파일이 그대로 보존돼야 한다(운영 경로를 먼저 쓰고 나중에

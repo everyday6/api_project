@@ -14,6 +14,7 @@ Geofence: Beginning June 2024" 데이터셋(srxy-5nxn)에서 받는다. 비슷�
 
 from __future__ import annotations
 
+import hashlib
 import json
 import shutil
 import tempfile
@@ -90,13 +91,30 @@ def _validate_cbd_geofence_content(path: Path) -> None:
         raise ValueError(f"CBD Geofence 응답의 features가 비어 있습니다: {path}")
 
 
+# CBD Geofence는 URL(Socrata) 소스라 config/*.yaml처럼 git 이력이 없다.
+# Bronze는 고정 경로에 in-place로 덮어쓰므로(파티셔닝은 후속 - 법적 경계라
+# 변경이 거의 없음, RELIABILITY_PRINCIPLES.md Tier 2 #7 참고), 최소한
+# "원본이 바뀌었는데 조용히 덮어쓰는" 상황은 감지한다: 내용 해시를 마커에
+# 남겨, 같으면 Bronze 쓰기 자체를 건너뛰고 바뀌었으면 경고를 남긴다.
+_CBD_GEOFENCE_HASH_MARKER = "_cbd_geofence_sha256.txt"
+
+
+def _read_cbd_geofence_hash(bronze_root: Path) -> str | None:
+    marker = bronze_root / _CBD_GEOFENCE_HASH_MARKER
+    return marker.read_text().strip() if marker.exists() else None
+
+
 def upload_cbd_geofence(url: str = CBD_GEOFENCE_URL, bronze_root: Path = BRONZE_ROOT) -> Path:
     """MTA CBD Geofence GeoJSON을 받아서 그대로 Bronze에 저장한다.
 
     로컬 tmp 파일에 먼저 받아서 검증하고, 통과해야만 Bronze(운영 경로)에
     반영한다 - 운영 경로에 먼저 쓰고 검증하면, 잘못된 응답이 이미 있던
     정상 파일을 덮어쓴 뒤에야 실패해서 그 순간부터 하위 파이프라인이
-    깨진 파일을 그대로 쓰게 된다."""
+    깨진 파일을 그대로 쓰게 된다.
+
+    내용 해시가 이전과 같으면 Bronze 쓰기를 건너뛴다(in-place 덮어쓰기라
+    쓰는 것 자체가 무의미). 달라졌으면 이력 없이 덮어쓰는 것이므로 경고를
+    남긴다 - 이 경고가 뜨면 lion/taxi_zone처럼 파티셔닝을 검토할 신호다."""
 
     bronze_root.mkdir(parents=True, exist_ok=True)
     out_path = bronze_root / "cbd_geofence.geojson"
@@ -104,6 +122,13 @@ def upload_cbd_geofence(url: str = CBD_GEOFENCE_URL, bronze_root: Path = BRONZE_
     logger.info(f"[toll_bronze] CBD geofence 다운로드 시작: {url}")
     resp = requests.get(url, timeout=60)
     resp.raise_for_status()
+
+    current_hash = hashlib.sha256(resp.content).hexdigest()
+    previous_hash = _read_cbd_geofence_hash(bronze_root)
+
+    if current_hash == previous_hash and out_path.exists():
+        logger.info("[toll_bronze] CBD geofence 원본 변경 없음(해시 동일) — 저장 스킵")
+        return out_path
 
     TMP_DIR.mkdir(parents=True, exist_ok=True)
     with tempfile.TemporaryDirectory(prefix="toll_cbd_geofence_", dir=TMP_DIR) as tmp:
@@ -118,7 +143,17 @@ def upload_cbd_geofence(url: str = CBD_GEOFENCE_URL, bronze_root: Path = BRONZE_
         validate_json(tmp_path)
         _validate_cbd_geofence_content(tmp_path)
 
+        if previous_hash is not None:
+            logger.warning(
+                "[toll_bronze] CBD geofence 원본 변경 감지(해시 %s -> %s) — "
+                "이력 없이 in-place 덮어씀. 이전 경계로 만든 Silver2를 재구성해야 하면 "
+                "파티셔닝 도입 필요(RELIABILITY_PRINCIPLES.md Tier 2 #7).",
+                previous_hash[:12],
+                current_hash[:12],
+            )
+
         _copy_file_to_bronze(str(tmp_path), out_path)
+        (bronze_root / _CBD_GEOFENCE_HASH_MARKER).write_text(current_hash)
 
     logger.info(f"[toll_bronze] CBD geofence 업로드 완료 -> {out_path}")
     return out_path
