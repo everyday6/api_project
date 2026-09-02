@@ -17,6 +17,7 @@ from src.common.config import SERVING_TABLE_TYPE4
 from src.common.logger import get_logger
 from src.common.tier_metrics import log_tier_summary
 from src.common.utils import unique_in_order
+from src.serving import provenance as prov
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="toll_serving")
 
@@ -36,19 +37,20 @@ def get_toll_value(segment_id: str) -> float:
 
 
 def get_toll_values(segment_ids: list[str]) -> list[float]:
-    """서빙 조회 함수(배치). 값만 반환하는 얇은 래퍼다 — 값의 출처 계층
-    (rds/snapshot/hardcoded)까지 필요하면 get_toll_values_with_tiers를 쓴다.
+    """서빙 조회 함수(배치). 값만 반환하는 얇은 래퍼다 — 값의 출처
+    (provenance)까지 필요하면 get_toll_values_with_tiers를 쓴다.
     기존 호출부(gold.py, 테스트 등) 하위 호환용으로 남겨둔다."""
 
-    values, _tiers = get_toll_values_with_tiers(segment_ids)
+    values, _provenance = get_toll_values_with_tiers(segment_ids)
     return values
 
 
-def get_toll_values_with_tiers(segment_ids: list[str]) -> tuple[list[float], list[str]]:
+def get_toll_values_with_tiers(segment_ids: list[str]) -> tuple[list[float], list[dict]]:
     """서빙 조회 함수(배치). segment_ids 순서/중복을 그대로 유지해서 값과
-    각 값의 출처 계층(rds/snapshot/hardcoded)을 함께 반환한다 - 중복 제거 후
-    한 번에 조회하고 원래 순서로 다시 매핑한다. API 응답에 신뢰도를 노출할
-    때 쓴다(RELIABILITY_PRINCIPLES.md 원칙 0-1).
+    각 값의 출처를 구조화된 provenance(`{storage_source, value_basis}`)로
+    함께 반환한다(src/serving/provenance.py) - 중복 제거 후 한 번에 조회하고
+    원래 순서로 다시 매핑한다. API 응답에 신뢰도를 노출할 때 쓴다
+    (RELIABILITY_PRINCIPLES.md 원칙 0-1).
 
     RDS 호출 자체가 실패하면(커넥션/네트워크 등) S3 스냅샷으로 넘어간다.
     RDS가 정상 응답했는데 특정 segment가 없는 건 "진짜로 통행료 대상이
@@ -58,7 +60,7 @@ def get_toll_values_with_tiers(segment_ids: list[str]) -> tuple[list[float], lis
 
     unique_ids = unique_in_order(segment_ids)
     keys = [{"segment_id": segment_id} for segment_id in unique_ids]
-    tier: dict[str, str] = {}
+    token: dict[str, str] = {}
 
     try:
         found = db.batch_get_items(SERVING_TABLE_TYPE4, keys)
@@ -67,11 +69,13 @@ def get_toll_values_with_tiers(segment_ids: list[str]) -> tuple[list[float], lis
             for segment_id in unique_ids
             if (segment_id,) in found
         }
-        # RDS 호출 자체는 성공했으므로, 이 segment에 통행료가 없는 것도
-        # "진짜 통행료 대상이 아님"이지 폴백이 아니다(위 docstring 참고) -
-        # 전부 rds 계층으로 센다.
+        # RDS 호출 자체는 성공했으므로 전부 storage=rds. 다만 "행을 읽어
+        # 값을 얻음"(segment_value)과 "행이 없어 0으로 추론함"(implicit_zero,
+        # 통행료 대상 아님)은 provenance에서 구분한다 - 예전엔 둘 다 rds로
+        # 뭉개졌다.
         for segment_id in unique_ids:
-            tier[segment_id] = "rds"
+            basis = prov.BASIS_SEGMENT_VALUE if segment_id in values else prov.BASIS_IMPLICIT_ZERO
+            token[segment_id] = prov.token(prov.STORAGE_RDS, basis)
     except Exception:
         logger.exception("[toll_serving] RDS 조회 실패 - S3 스냅샷으로 폴백합니다")
         snapshot = _snapshot.get()
@@ -81,16 +85,21 @@ def get_toll_values_with_tiers(segment_ids: list[str]) -> tuple[list[float], lis
             if segment_id in snapshot
         }
         for segment_id in unique_ids:
-            tier[segment_id] = "snapshot" if segment_id in snapshot else "hardcoded"
+            token[segment_id] = (
+                prov.token(prov.STORAGE_S3_SNAPSHOT, prov.BASIS_SEGMENT_VALUE)
+                if segment_id in snapshot
+                else prov.token(prov.STORAGE_CODE, prov.BASIS_IMPLICIT_ZERO)
+            )
 
+    provenance = prov.to_provenance([token[segment_id] for segment_id in segment_ids])
     # 요청당 한 번만 남긴다 - Grafana의 "Type4 fallback 계층 비율" 패널이
-    # 이 로그를 집계한다.
-    tiers = [tier[segment_id] for segment_id in segment_ids]
+    # 이 로그를 예전 평면 어휘(rds/snapshot/hardcoded)로 집계한다.
     log_tier_summary(
         logger,
         "type4_fallback_tier_summary",
-        tiers,
+        prov.legacy_sources(4, provenance),
         ["rds", "snapshot", "hardcoded"],
+        provenance=provenance,
     )
 
-    return [values.get(segment_id, 0.0) for segment_id in segment_ids], tiers
+    return [values.get(segment_id, 0.0) for segment_id in segment_ids], provenance

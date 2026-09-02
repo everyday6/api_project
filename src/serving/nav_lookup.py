@@ -76,6 +76,7 @@ from src.common.db import batch_get_items, new_connection
 from src.common.logger import get_logger
 from src.common.tier_metrics import log_tier_summary
 from src.common.utils import unique_in_order
+from src.serving import provenance as prov
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="nav_lookup")
 
@@ -259,15 +260,15 @@ def _resolve_from_row(row: dict | None) -> tuple[int | None, str | None]:
     dict)에서 Fresh Exact -> Historical AVG 순서로 값을 뽑는다. 둘 다
     없으면 (None, None)을 돌려줘서 호출부가 다음 단계로 내려가게 한다.
 
-    두 번째 반환값(tier)은 어떤 단계에서 값을 뽑았는지("fresh"/"avg")다 -
-    Grafana 대시보드용 fallback 히트율 집계에 쓴다(_resolve_time_values
-    참고)."""
+    두 번째 반환값(value_basis)은 값을 어떻게 만들었는지다 - 오늘 실측
+    (observed) / 슬롯 과거 평균(historical_average). 저장소(RDS/메모리/
+    스냅샷)는 이 행이 어디서 왔는지를 아는 호출부가 붙인다."""
     if row is None:
         return None, None
     if row.get("value") is not None and _is_fresh(row.get("last_sample_at")):
-        return round(row["value"]), "fresh"
+        return round(row["value"]), prov.BASIS_OBSERVED
     if row.get("avg") is not None:
-        return round(row["avg"]), "avg"
+        return round(row["avg"]), prov.BASIS_HISTORICAL_AVERAGE
     return None, None
 
 
@@ -281,23 +282,30 @@ def _remember_in_memory(segment_id: str, time_slot: str, row: dict) -> None:
 
 def _resolve_from_fallback(segment_id: str, time_slot: str) -> tuple[int, str]:
     """RDS 자체가 응답 불가능할 때: 메모리 캐시 -> S3 스냅샷(최초 미스 때
-    한 번만 로드) -> 코드 상수 순서로 내려간다."""
+    한 번만 로드) -> 코드 상수 순서로 내려간다.
+
+    두 번째 반환값은 `"<storage>:<basis>"` provenance 토큰이다 - 여기서
+    저장소(메모리 캐시 vs S3 스냅샷 vs 코드)를 구분해서 붙인다. 예전엔
+    `_resolve_from_row`가 준 fresh/avg만 올려보내 스냅샷으로 떨어진 사실이
+    응답에서 사라졌다."""
     row = _memory_cache.get((segment_id, time_slot))
+    storage = prov.STORAGE_MEMORY_CACHE
 
     if row is None:
         row = _s3_snapshot.get().get(segment_id, {}).get(time_slot)
         if row is not None:
+            storage = prov.STORAGE_S3_SNAPSHOT
             _remember_in_memory(segment_id, time_slot, row)
 
-    value, tier = _resolve_from_row(row)
+    value, basis = _resolve_from_row(row)
     if value is not None:
-        return value, tier
+        return value, prov.token(storage, basis)
 
     logger.warning(
         f"메모리 캐시/S3 스냅샷에도 값 없음 -> 코드 상수 사용: "
         f"segment_id={segment_id} time={time_slot}"
     )
-    return _HARDCODED_DEFAULTS[1], "hardcoded"
+    return _HARDCODED_DEFAULTS[1], prov.token(prov.STORAGE_CODE, prov.BASIS_STATIC_DEFAULT)
 
 
 def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) -> list[int]:
@@ -305,19 +313,19 @@ def resolve_segment_values(segment_ids: list[str], type_: int, time_str: str) ->
     같은 리스트를 반환한다 — 절대 예외를 던지지 않는다(이 함수가 최후의
     방어선이다 — 상위에 입력 검증 레이어가 없어도 안전해야 한다).
 
-    tier(값의 출처)까지 필요하면 resolve_segment_values_with_tiers를 쓴다.
+    provenance(값의 출처)까지 필요하면 resolve_segment_values_with_tiers를 쓴다.
     이 함수는 기존 호출부와의 호환을 위해 값만 반환하는 얇은 래퍼다."""
-    values, _tiers = resolve_segment_values_with_tiers(segment_ids, type_, time_str)
+    values, _provenance = resolve_segment_values_with_tiers(segment_ids, type_, time_str)
     return values
 
 
 def resolve_segment_values_with_tiers(
     segment_ids: list[str], type_: int, time_str: str
-) -> tuple[list[int], list[str]]:
-    """resolve_segment_values와 동일하되, values[i]가 어느 계층(fresh/avg/
-    rds/global/snapshot/hardcoded)에서 왔는지도 함께 반환한다. API 응답에
-    신뢰도를 노출할 때 쓴다(RELIABILITY_PRINCIPLES.md 원칙 0-1 참고) — 이
-    함수 역시 절대 예외를 던지지 않는다."""
+) -> tuple[list[int], list[dict]]:
+    """resolve_segment_values와 동일하되, values[i]의 출처를 구조화된
+    provenance(`{storage_source, value_basis}`)로 함께 반환한다(src/serving/
+    provenance.py 참고). 기존 평면 `sources` 문자열은 호출부가
+    prov.legacy_sources()로 파생한다. 이 함수 역시 절대 예외를 던지지 않는다."""
     try:
         return _resolve_segment_values_inner(segment_ids, type_, time_str)
     except Exception:
@@ -326,12 +334,16 @@ def resolve_segment_values_with_tiers(
             f"type={type_} time={time_str}"
         )
         fallback_value = _HARDCODED_DEFAULTS.get(type_, _HARDCODED_DEFAULTS[1])
-        return [fallback_value] * len(segment_ids), ["hardcoded"] * len(segment_ids)
+        code_prov = {
+            "storage_source": prov.STORAGE_CODE,
+            "value_basis": prov.BASIS_STATIC_DEFAULT,
+        }
+        return [fallback_value] * len(segment_ids), [dict(code_prov) for _ in segment_ids]
 
 
 def _resolve_segment_values_inner(
     segment_ids: list[str], type_: int, time_str: str
-) -> tuple[list[int], list[str]]:
+) -> tuple[list[int], list[dict]]:
     table_name = table_for_type(type_)
 
     if type_ == 1:
@@ -373,7 +385,7 @@ def _resolve_length_values(
     스냅샷마저 실패하면 최후의 코드 상수로 떨어진다."""
     unique_ids = unique_in_order(segment_ids)
     resolved: dict[str, int] = {}
-    tier: dict[str, str] = {}
+    token: dict[str, str] = {}
 
     started = time.monotonic()
     try:
@@ -385,7 +397,7 @@ def _resolve_length_values(
                 continue
             try:
                 resolved[sid] = round(item["value"])
-                tier[sid] = "rds"
+                token[sid] = prov.token(prov.STORAGE_RDS, prov.BASIS_SEGMENT_VALUE)
             except (KeyError, ValueError, TypeError):
                 logger.exception(
                     f"RDS 항목 형식 오류(다음 fallback 단계로 넘어감): "
@@ -397,35 +409,49 @@ def _resolve_length_values(
             default_value = _lookup_global_default(table_name)
             for sid in remaining:
                 resolved[sid] = default_value
-                tier[sid] = "global"
+                token[sid] = prov.token(prov.STORAGE_RDS, prov.BASIS_GLOBAL_DEFAULT)
     except Exception:
         logger.exception(f"RDS batch_get_items 실패 -> S3 스냅샷으로 폴백: table={table_name}")
         length_snapshot = _length_snapshot.get()
+        snapshot_has_global = GLOBAL_PARTITION_KEY in length_snapshot
         fallback_default = length_snapshot.get(GLOBAL_PARTITION_KEY, _HARDCODED_DEFAULTS[2])
+        # 스냅샷에도 이 세그먼트가 없으면 값은 스냅샷의 GLOBAL(있으면) 또는
+        # 코드 상수 - 그 둘을 provenance에서 구분한다(예전엔 둘 다 hardcoded).
+        missing_token = (
+            prov.token(prov.STORAGE_S3_SNAPSHOT, prov.BASIS_GLOBAL_DEFAULT)
+            if snapshot_has_global
+            else prov.token(prov.STORAGE_CODE, prov.BASIS_STATIC_DEFAULT)
+        )
         for sid in unique_ids:
             if sid not in resolved:
                 resolved[sid] = round(length_snapshot.get(sid, fallback_default))
-                tier[sid] = "snapshot" if sid in length_snapshot else "hardcoded"
+                token[sid] = (
+                    prov.token(prov.STORAGE_S3_SNAPSHOT, prov.BASIS_SEGMENT_VALUE)
+                    if sid in length_snapshot
+                    else missing_token
+                )
     finally:
         logger.info(
             f"[nav_lookup] RDS type2 배치 조회 소요 시간: "
             f"{(time.monotonic() - started) * 1000:.0f}ms"
         )
 
+    result_tokens = [
+        token.get(sid, prov.token(prov.STORAGE_CODE, prov.BASIS_STATIC_DEFAULT))
+        for sid in segment_ids
+    ]
+    provenance = prov.to_provenance(result_tokens)
     # 요청당 한 번만 남긴다 - Grafana의 "Type2 fallback 계층 비율" 패널이
-    # 이 로그를 집계한다. rds=세그먼트 자체 row를 RDS에서 직접 찾음,
-    # global=RDS는 살아있지만 이 세그먼트 값이 없어 GLOBAL 기본값 사용,
-    # snapshot=RDS 자체가 죽어 S3 스냅샷의 세그먼트별 값 사용,
-    # hardcoded=스냅샷에도 없어 코드 상수 사용.
-    result_tiers = [tier.get(sid, "hardcoded") for sid in segment_ids]
+    # 이 로그를 예전 평면 어휘(rds/global/snapshot/hardcoded)로 집계한다.
     log_tier_summary(
         logger,
         "type2_fallback_tier_summary",
-        result_tiers,
+        prov.legacy_sources(2, provenance),
         ["rds", "global", "snapshot", "hardcoded"],
+        provenance=provenance,
     )
 
-    return [resolved[sid] for sid in segment_ids], result_tiers
+    return [resolved[sid] for sid in segment_ids], provenance
 
 
 def _resolve_time_values(
@@ -454,12 +480,10 @@ def _resolve_time_values(
 
     values: list[int] = []
     elapsed_seconds = 0
-    # Grafana 대시보드의 fallback 히트율(fresh/avg/hardcoded 비율) 집계용 -
-    # 세그먼트마다 로그를 남기면 요청당 수백 줄까지 늘어날 수 있어서, 요청
-    # 하나당 요약 한 줄만 마지막에 남긴다(log_tier_summary 호출부 참고).
-    # 같은 segment_id가 경로에 두 번 나와도 누적시각이 달라 tier가 다를 수
-    # 있어(docstring 참고) segment_id별 dict가 아니라 등장 순서대로 쌓는다.
-    tiers: list[str] = []
+    # provenance 토큰("<storage>:<basis>")을 등장 순서대로 쌓는다 - 같은
+    # segment_id가 경로에 두 번 나와도 누적시각이 달라 값/출처가 다를 수
+    # 있어(docstring 참고) segment_id별 dict가 아니라 순서대로 쌓는다.
+    tokens: list[str] = []
 
     for sid in segment_ids:
         lookup_time = _add_seconds(time_str, elapsed_seconds)
@@ -467,21 +491,30 @@ def _resolve_time_values(
 
         if rows_by_segment is None:
             # RDS 자체가 응답 불가능했던 경우 - 메모리/S3 폴백으로 내려간다.
-            value, tier = _resolve_from_fallback(sid, bucket)
+            value, token = _resolve_from_fallback(sid, bucket)
         else:
             row = rows_by_segment.get(sid, {}).get(bucket)
             if row is not None:
                 _remember_in_memory(sid, bucket, row)
-            value, tier = _resolve_from_row(row)
+            value, basis = _resolve_from_row(row)
             if value is None:
                 # RDS는 정상 응답했지만 이 슬롯 자체가 없는 경우 - "RDS가
                 # 죽었을 때의 예전 값"과 성격이 다르므로 메모리/S3로 내려가지
                 # 않고 곧장 코드 상수로 간다.
-                value, tier = _HARDCODED_DEFAULTS[1], "hardcoded"
+                value = _HARDCODED_DEFAULTS[1]
+                token = prov.token(prov.STORAGE_CODE, prov.BASIS_STATIC_DEFAULT)
+            else:
+                token = prov.token(prov.STORAGE_RDS, basis)
 
-        tiers.append(tier)
+        tokens.append(token)
         values.append(value)
         elapsed_seconds += value
 
-    log_tier_summary(logger, "fallback_tier_summary", tiers, ["fresh", "avg", "hardcoded"], extra="type=1")
-    return values, tiers
+    provenance = prov.to_provenance(tokens)
+    # Grafana 대시보드의 fallback 히트율(fresh/avg/hardcoded 비율)은 예전
+    # 평면 어휘 그대로 집계한다 - provenance에서 파생.
+    log_tier_summary(
+        logger, "fallback_tier_summary", prov.legacy_sources(1, provenance),
+        ["fresh", "avg", "hardcoded"], extra="type=1", provenance=provenance,
+    )
+    return values, provenance

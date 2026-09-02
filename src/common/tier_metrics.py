@@ -95,15 +95,19 @@ def log_tier_summary(
     known_tiers: list[str],
     *,
     extra: str = "",
+    provenance: list[dict] | None = None,
 ) -> None:
-    """`tiers`(id 하나당 계층 문자열 하나, 순서/개수는 원래 요청의 id
-    목록과 동일 - 같은 id가 반복돼도 발생 횟수만큼 그대로 넘긴다)를
-    known_tiers 순서대로 집계해 한 줄 로깅하고, 마지막 계층(코드 상수)
-    비율이 임계치를 넘으면 Slack 알림을 보낸다(rate-limited).
+    """`tiers`(id 하나당 평면 계층 문자열 하나, 순서/개수는 원래 요청의 id
+    목록과 동일)를 known_tiers 순서대로 집계해 한 줄 로깅하고, 마지막
+    계층(코드 상수) 비율이 임계치를 넘으면 Slack 알림을 보낸다(rate-limited).
 
-    extra는 type1처럼 태그 뒤에 고정 필드(`type=1`)를 하나 더 박아야 하는
-    경우에만 쓴다 - 그 외 타입은 태그 자체(`type2_fallback_tier_summary`
-    등)에 이미 타입이 들어있어 extra가 필요 없다."""
+    `provenance`는 구조화된 출처(`{storage_source, value_basis}`) 리스트다 -
+    지금은 로깅/경보에 쓰지 않지만, "RDS가 완전히 죽어 전부 s3_snapshot으로
+    처리(응답은 성공하나 운영 장애)"를 잡는 storage_source 기반 경보를 붙일
+    자리를 미리 뚫어둔다(RELIABILITY_PRINCIPLES.md 열린 질문 - 그 경보 정책
+    자체는 roadmap).
+
+    extra는 type1처럼 태그 뒤에 고정 필드(`type=1`)를 박는 경우에만 쓴다."""
     counts = {tier: 0 for tier in known_tiers}
     for tier in tiers:
         counts[tier] += 1

@@ -81,7 +81,7 @@
 | 1 | **Lineage/Reproducibility** | ✅ 계산값 전부 적용(2026-09) | `segment_metrics_type1`에 `avg_formula_version`, `type3`에 `value_formula_version` — `src/common/provenance.py`의 `formula_version("v1", 핵심상수)` = "라벨+해시". 라벨은 로직 구조 변경 시 수동, 해시는 핵심 튜닝값(스무딩 윈도우 / 롤링 주수)이 바뀌면 자동으로 달라져 코드와 조용히 어긋나지 않는다. type2(길이)·type4(통행료)는 조회/패스스루라 대상 아님. type3 S3 스냅샷은 스칼라 맵이라 이 컬럼을 안 담고 RDS가 lineage 단일 소스 |
 | 2 | **Contract** | 🟡 README 표만 존재 | `docs/contracts.md`로 분리, null 허용/필수 여부 명시 |
 | 3 | **Observability (데이터 상태)** | ✅ 강함 — 유지·어필 | RDS 쓰기중 읽기지연을 실측으로 잡아낸 사례를 계속 근거로 사용 |
-| 4 | **응답의 신뢰도 노출** | ✅ `/segments/values`·`/api/navigation/values` 둘 다 적용 완료(2026-09) | `sources` 필드로 값의 출처 계층을 노출 — **원칙 0-1을 지키는 핵심 조치**. type별 tier 어휘는 `docs/contracts.md` 참고 |
+| 4 | **응답의 신뢰도 노출** | ✅ 두 엔드포인트 + 축 분리 완료(2026-09) | `provenance`(`storage_source` + `value_basis` 2축)를 노출하고, 옛 평면 `sources`는 여기서 파생(하위 호환). 예전엔 한 문자열에 저장소·값 성격·대체 전략이 섞여 type1 스냅샷 fallback의 저장소가 사라지고 type4의 "읽은 0"과 "추론한 0"이 안 갈렸다. `docs/contracts.md` 참고 |
 
 ### Tier 2 — Containment: 격리할 수 있는가
 
@@ -292,6 +292,17 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 - Type3(수요)의 tier 어휘가 최신성 축을 노출하지 않는다 — Type1처럼
   `fresh`/`avg` 구분을 추가할지, 아니면 정말 노출할 필요가 없는지 판단이
   필요하다(`docs/contracts.md` 참고)
+- ~~API 응답의 `sources`가 한 문자열에 저장소·값 성격·대체 전략을 뭉쳐
+  놓아 type1이 S3 스냅샷으로 떨어져도 `fresh`/`avg`만 보여 저장소가
+  사라지고, type4의 "RDS에서 읽은 0"과 "행이 없어 추론한 0"이 똑같이
+  `rds`로 보였다~~ → 2026-09 `provenance`(`storage_source` +
+  `value_basis` 2축)로 분리(`src/serving/provenance.py`). resolver가
+  provenance를 단일 진실로 반환하고 `sources`는 거기서 파생하는 하위
+  호환 필드로만 남는다(`docs/contracts.md` 참고). 남은 것:
+  `storage_source` 기반 스냅샷-폴백 비율 알림 — `log_tier_summary`에
+  `provenance`는 이미 흘려보내지만(메트릭이 `s3_snapshot` 비율을 읽을
+  수 있게), "RDS 광범위 장애" 판정 임계치·정책은 baseline 실측 후 결정
+  (아래 roadmap)
 - ~~`avg_formula_version`(lineage)이 type1에만 있다~~ → 2026-09 type3에
   `value_formula_version` 추가(`src/tlc/gold2.py`). type2·type4는 대상 아님.
   type3 S3 스냅샷 포맷상 이 컬럼을 못 담는 것만 남음(RDS가 단일 소스)

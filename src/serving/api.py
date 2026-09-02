@@ -33,6 +33,7 @@ from src.common.config import (
 from src.common.logger import get_logger
 from src.common.tier_metrics import log_tier_summary
 from src.common.utils import unique_in_order
+from src.serving import provenance as prov
 
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="navigation_api")
@@ -132,13 +133,13 @@ def _resolve_from_zone_snapshot(segment_id: str, dow: str, bucket: str) -> float
 
 
 def _fallback_value(segment_id: str, dow: str, bucket: str) -> tuple[float, str]:
-    """두 번째 반환값(tier)은 어떤 단계에서 값을 뽑았는지("snapshot"/
-    "hardcoded") - Grafana 대시보드용 fallback 히트율 집계에 쓴다
-    (get_type3_values 참고)."""
+    """두 번째 반환값은 `"<storage>:<basis>"` provenance 토큰이다 - S3
+    스냅샷의 rolling 평균이면 s3_snapshot:modeled_aggregate, 그마저 없으면
+    code:static_default(get_type3_values_with_tiers 참고)."""
     value = _resolve_from_zone_snapshot(segment_id, dow, bucket)
     if value is not None:
-        return value, "snapshot"
-    return MISSING_VALUE, "hardcoded"
+        return value, prov.token(prov.STORAGE_S3_SNAPSHOT, prov.BASIS_MODELED_AGGREGATE)
+    return MISSING_VALUE, prov.token(prov.STORAGE_CODE, prov.BASIS_STATIC_DEFAULT)
 
 
 _TABLE_NAME_PATTERN = re.compile(r"^[a-zA-Z_][a-zA-Z0-9_-]*$")
@@ -178,10 +179,10 @@ def get_type3_values(
     table_name: str | None = None,
 ) -> list[float]:
     """RDS를 조회하고 입력 segment 순서대로 숫자 값을 반환한다. 값만 반환하는
-    얇은 래퍼다 — 값의 출처 계층(rds/snapshot/hardcoded)까지 필요하면
+    얇은 래퍼다 — 값의 출처(provenance)까지 필요하면
     get_type3_values_with_tiers를 쓴다. 기존 호출부/테스트 하위 호환용."""
 
-    values, _tiers = get_type3_values_with_tiers(
+    values, _provenance = get_type3_values_with_tiers(
         segment_ids, requested_at, conn=conn, table_name=table_name
     )
     return values
@@ -193,10 +194,10 @@ def get_type3_values_with_tiers(
     *,
     conn=None,
     table_name: str | None = None,
-) -> tuple[list[float], list[str]]:
-    """get_type3_values와 동일하되 values[i]가 어느 계층(rds/snapshot/hardcoded)
-    에서 왔는지도 함께 반환한다. API 응답에 신뢰도를 노출할 때 쓴다
-    (RELIABILITY_PRINCIPLES.md 원칙 0-1).
+) -> tuple[list[float], list[dict]]:
+    """get_type3_values와 동일하되 values[i]의 출처를 구조화된 provenance
+    (`{storage_source, value_basis}`)로 함께 반환한다(src/serving/provenance.py).
+    API 응답에 신뢰도를 노출할 때 쓴다(RELIABILITY_PRINCIPLES.md 원칙 0-1).
 
     Type3 테이블은 (segment_id, dow, time)이 복합키인 flat 테이블이라,
     요청 시각 하나로 정해지는 dow/time 조건과 segment_id 목록으로 바로
@@ -239,20 +240,24 @@ def get_type3_values_with_tiers(
     if missing:
         logger.warning("Type 3 조회 누락: %s/%s", missing, len(segment_ids))
 
-    tiers: list[str] = []
+    tokens: list[str] = []
     values = []
     for segment_id in segment_ids:
         if segment_id in found:
-            tiers.append("rds")
+            tokens.append(prov.token(prov.STORAGE_RDS, prov.BASIS_MODELED_AGGREGATE))
             values.append(found[segment_id])
         else:
-            value, tier = _fallback_value(segment_id, dow, bucket)
-            tiers.append(tier)
+            value, token = _fallback_value(segment_id, dow, bucket)
+            tokens.append(token)
             values.append(value)
 
-    # 요청당 한 번만 남긴다(세그먼트별로 남기면 요청 하나에 수백 줄이 될 수
-    # 있음) - CloudWatch Logs Insights가 이 로그를 집계해서 Grafana의
-    # "Type3 fallback 계층 비율" 패널을 그린다.
-    log_tier_summary(logger, "type3_fallback_tier_summary", tiers, ["rds", "snapshot", "hardcoded"])
+    provenance = prov.to_provenance(tokens)
+    # 요청당 한 번만 남긴다 - Grafana의 "Type3 fallback 계층 비율" 패널이
+    # 이 로그를 예전 평면 어휘(rds/snapshot/hardcoded)로 집계한다.
+    log_tier_summary(
+        logger, "type3_fallback_tier_summary",
+        prov.legacy_sources(3, provenance), ["rds", "snapshot", "hardcoded"],
+        provenance=provenance,
+    )
 
-    return values, tiers
+    return values, provenance
