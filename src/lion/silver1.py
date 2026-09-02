@@ -65,6 +65,23 @@ MAX_EXPECTED_ROWS = 300_000
 # 아직 실측 근거가 없다.
 MAX_SUSPECT_RATIO = 0.05
 
+# 같은 SegmentID의 중복 행 중 핵심 필드(geometry/length/node/borough)가 서로
+# 다른 "충돌 중복"의 비율이 이 값을 넘으면 _clean_lion_dataframe이 build를
+# 실패시킨다. LION 원천은 같은 SegmentID가 여러 행으로 정상적으로 존재하지만
+# (실측 ≈24만행 / ≈21.8만 고유) 그 행들은 보통 완전히 동일하다. 핵심 필드가
+# 다른 중복은 "어느 게 맞는 값인지" 알 수 없다는 뜻이라 조용히 첫 행을 고르면
+# 안 된다.
+#
+# NOTE: placeholder. 실제 원천으로 conflict 비율 baseline을 측정한 뒤 조정해야
+# 한다 - 아직 실측 근거가 없다(정상값은 0에 가까울 것으로 기대).
+MAX_DUPLICATE_CONFLICT_RATIO = 0.01
+
+# _profile_duplicates / deterministic dedup이 "이 SegmentID 그룹 안에서 값이
+# 갈리면 충돌"으로 보는 컬럼(dedup 시점의 raw 컬럼명). geometry(SHAPE), 길이,
+# 양 끝 노드, borough - 전부 downstream(zone 매핑, 길이 서빙, 노드 그래프)이
+# 실제로 쓰는 값이다.
+_DUP_CONFLICT_COLUMNS = ["SHAPE", "SHAPE_Length", "NodeIDFrom", "NodeIDTo", "LBoro"]
+
 
 def _as_path(value):
     if isinstance(value, (Path, S3Path)):
@@ -79,9 +96,44 @@ def _staging_run_path(run_id: str, staging_root=DIM_SEGMENT_STAGING_ROOT):
     return staging_root / f"run_id={run_id}"
 
 
+def _profile_duplicates(df: pd.DataFrame) -> dict:
+    """dedup 전 df에서 SegmentID 중복을 프로파일링한다.
+
+    - exact 중복: 같은 SegmentID의 행들이 `_DUP_CONFLICT_COLUMNS`까지 전부 동일
+    - conflict 중복: 그 핵심 필드가 서로 다름 → "어느 행이 맞는지" 알 수 없음
+
+    반환한 dict는 로그(run metadata)로 남기고, `conflict_ratio`가 임계치를
+    넘으면 호출부가 build를 실패시킨다."""
+    total = len(df)
+    unique_keys = int(df["SegmentID"].nunique())
+    dup_mask = df["SegmentID"].duplicated(keep=False)
+    dup_keys = int(df.loc[dup_mask, "SegmentID"].nunique())
+
+    conflict_keys = 0
+    if dup_keys:
+        cols = [c for c in _DUP_CONFLICT_COLUMNS if c in df.columns]
+        # 그룹 안에서 어떤 핵심 컬럼이든 서로 다른 값이 2개 이상이면 conflict.
+        # dropna=False - NaN 대 실제값도 불일치로 센다.
+        per_key = df.loc[dup_mask].groupby("SegmentID")[cols].nunique(dropna=False)
+        conflict_keys = int((per_key > 1).any(axis=1).sum())
+
+    return {
+        "total_rows": total,
+        "unique_keys": unique_keys,
+        "duplicate_keys": dup_keys,
+        "exact_duplicate_keys": dup_keys - conflict_keys,
+        "conflict_duplicate_keys": conflict_keys,
+        "conflict_ratio": (conflict_keys / unique_keys) if unique_keys else 0.0,
+    }
+
+
 def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     """ogr2ogr가 뽑은 평탄 DataFrame을 정제한다. ogr2ogr 의존이 없어 단독으로
-    단위 테스트할 수 있다."""
+    단위 테스트할 수 있다.
+
+    SegmentID 중복은 원천의 정상 특성이라 제거하되(≈24만행 → ≈21.8만),
+    (1) 핵심 필드가 갈리는 "충돌 중복"이 임계치를 넘으면 실패시키고,
+    (2) 남길 행은 정렬 후 첫 행으로 골라 파일/행 순서와 무관하게 재현되게 한다."""
 
     df = df.copy()
 
@@ -99,7 +151,23 @@ def _clean_lion_dataframe(df: pd.DataFrame) -> pd.DataFrame:
     df["Street"] = df["Street"].apply(clean_street)
 
     before = len(df)
-    df = df.drop_duplicates(subset="SegmentID", keep="first")
+    profile = _profile_duplicates(df)
+    logger.info("[lion_silver] SegmentID 중복 프로파일: %s", profile)
+    if profile["conflict_ratio"] > MAX_DUPLICATE_CONFLICT_RATIO:
+        raise ValueError(
+            f"SegmentID 충돌 중복 비율이 임계치를 초과했습니다: "
+            f"{profile['conflict_ratio']:.2%} > {MAX_DUPLICATE_CONFLICT_RATIO:.2%} "
+            f"(핵심 필드가 다른 중복 {profile['conflict_duplicate_keys']}건 / "
+            f"고유 {profile['unique_keys']}개 - 원천 데이터 확인 필요)"
+        )
+    # 파일/행 순서와 무관하게 재현 가능하도록 정렬 후 첫 행을 남긴다.
+    # 충돌 중복은 위에서 이미 차단됐으므로, 여기서 고르는 건 사실상 동일한
+    # 행들 중 하나다(tiebreaker 자체는 임의지만 결정적이면 충분).
+    sort_cols = ["SegmentID"] + [c for c in _DUP_CONFLICT_COLUMNS if c in df.columns]
+    df = (
+        df.sort_values(sort_cols, kind="stable")
+        .drop_duplicates(subset="SegmentID", keep="first")
+    )
     logger.info(f"[lion_silver] dedupe: {before}행 -> {len(df)}행")
 
     dim_segment = df.rename(
@@ -244,7 +312,10 @@ def build_dim_segment_staged(
 def validate_dim_segment_base(path: str) -> str:
     df = pd.read_parquet(path)
 
-    assert df["segment_id"].is_unique, "segment_id 중복 발견 (dedupe 로직 확인 필요)"
+    # segment_id 유일성은 _clean_lion_dataframe의 deterministic dedup이 보장하고,
+    # 충돌 중복(핵심 필드가 갈리는 경우)은 거기서 이미 차단된다 - 여기서
+    # is_unique를 다시 검사하는 건 항상 통과하는 죽은 assert였다(dedup 이후라
+    # 당연히 유일). 그래서 뺐다.
     assert df["borough_code"].isin(VALID_BOROUGH_CODES + [""]).all(), (
         f"알 수 없는 borough_code 값: {sorted(set(df['borough_code']) - set(VALID_BOROUGH_CODES) - {''})}"
     )

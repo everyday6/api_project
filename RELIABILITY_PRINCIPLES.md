@@ -131,6 +131,17 @@ GX 객체는 지우고, 다음 판단으로 대체했다:
   알림 체계에 구멍이 생기지 않는다.
 - `SPEED_LIMIT_MIN_MPH`/`MAX_MPH` 같은 임계값 상수만 `expectations.py`에
   남겨 `mark_suspect_rows()`와 (향후 필요하면) 다른 검증이 공유한다.
+- (2026-09) `SegmentID` 중복 처리를 명시적 정책으로 바꿨다. LION 원천은
+  같은 `SegmentID`가 여러 행으로 정상적으로 존재하는데(≈24만행 / ≈21.8만
+  고유), 예전엔 `drop_duplicates(keep="first")`로 조용히 첫 행을 남기고
+  `validate_dim_segment_base`가 `is_unique`를 assert했다 - dedup 이후라
+  **항상 통과하는 죽은 assert**였다. 이제 `_profile_duplicates()`가 exact
+  중복(핵심 필드까지 동일)과 conflict 중복(geometry/length/node/borough가
+  갈림)을 구분해 로그로 남기고, conflict 비율이 `MAX_DUPLICATE_CONFLICT_RATIO`
+  (placeholder)를 넘으면 build를 실패시킨다. 남길 행은 핵심 필드로 정렬한 뒤
+  첫 행 - 파일/행 순서와 무관하게 재현된다. `toll/silver2.py`의 직접 GDB
+  로드도 같은 결정적 선택을 쓰되(충돌 게이트는 없음 - 얇은 경로), 근본
+  해결은 그 파일이 재구축된 lion `dim_segment`를 소비하는 것(아래 열린 질문).
 
 `silver2`(zone_segment)도 같은 판단이다 — 이미 `validate_map_zone_segment()`가
 raw assert로 크리티컬 게이트를 하고 있어서, 여기에 `nearest`(중점이 어떤 zone에도
@@ -291,6 +302,12 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
   중앙 집계(예: CloudWatch 알람)로 옮기는 건 후속
 - ~~Bronze가 실제로 immutable한지 코드 레벨에서 아직 검증하지 않았다~~ →
   2026-09 재현성 감사 완료(Tier 2 #7 참고)
+- ~~LION `SegmentID` 중복을 `keep="first"`로 조용히 처리하고, 사후
+  `is_unique` assert는 항상 통과한다~~ → 2026-09 `_profile_duplicates()` +
+  conflict 게이트 + deterministic 정렬로 명시적 정책화(Tier 2 GX 적용 현황
+  참고). 남은 것: `MAX_DUPLICATE_CONFLICT_RATIO` baseline 실측, `toll/silver2.py`가
+  자체 GDB 로드 대신 재구축된 lion `dim_segment`를 소비하도록 전환(중복
+  정책이 한 곳에만 존재하게)
 - ~~`LazySnapshot`이 최초 S3 읽기가 일시 장애로 `{}`를 반환하면 그 빈
   결과를 프로세스 수명 내내 캐시한다(RDS 장애와 겹치면 폴백이 통째로
   무의미해짐)~~ → 2026-09 `read_snapshot_result()`가 hit/miss를 구분,

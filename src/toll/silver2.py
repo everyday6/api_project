@@ -47,7 +47,15 @@ def load_lion_segments(gdb_path: Path) -> gpd.GeoDataFrame:
     logger.info(f"[toll_silver2] LION GDB 읽기 완료: {len(gdf)}행")
 
     gdf = gdf.rename(columns={"SegmentID": "segment_id", "Street": "street"})
-    gdf = gdf.drop_duplicates(subset="segment_id", keep="first")
+    # lion/silver1.py와 같은 이유로 순서 무관하게 결정적으로 첫 행을 고른다 -
+    # street를 tiebreaker로 쓴다(geopandas geometry는 직접 정렬이 까다로워
+    # 대체). 여기엔 lion Silver1의 "충돌 중복 게이트"가 없다: staged→validate→
+    # publish 패턴이 아닌 얇은 경로라서다. 근본 해결은 lion Silver1이 재구축된
+    # 뒤 이 파일이 dim_segment를 그대로 소비하는 것(RELIABILITY_PRINCIPLES.md
+    # 참고).
+    gdf = gdf.sort_values(["segment_id", "street"], kind="stable").drop_duplicates(
+        subset="segment_id", keep="first"
+    )
     logger.info(f"[toll_silver2] segment_id 중복 제거 완료: {len(gdf)}행")
 
     return gdf[["segment_id", "street", "geometry"]]
