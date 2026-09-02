@@ -291,3 +291,9 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
   중앙 집계(예: CloudWatch 알람)로 옮기는 건 후속
 - ~~Bronze가 실제로 immutable한지 코드 레벨에서 아직 검증하지 않았다~~ →
   2026-09 재현성 감사 완료(Tier 2 #7 참고)
+- ~~`LazySnapshot`이 최초 S3 읽기가 일시 장애로 `{}`를 반환하면 그 빈
+  결과를 프로세스 수명 내내 캐시한다(RDS 장애와 겹치면 폴백이 통째로
+  무의미해짐)~~ → 2026-09 `read_snapshot_result()`가 hit/miss를 구분,
+  `LazySnapshot`은 hit만 프로세스 수명 동안 고정하고 miss는 backoff 후
+  재시도. 성공 후 주기적 refresh(TTL), 스냅샷 envelope(generated_at/
+  checksum/version), missing↔error 세분류는 후속(아래 roadmap)
