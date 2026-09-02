@@ -79,7 +79,7 @@
 | # | 원칙 | 지금 상태 | 최소 조치 |
 | --- | --- | --- | --- |
 | 1 | **Lineage/Reproducibility** | ✅ 계산값 전부 적용(2026-09) | `segment_metrics_type1`에 `avg_formula_version`, `type3`에 `value_formula_version` — `src/common/provenance.py`의 `formula_version("v1", 핵심상수)` = "라벨+해시". 라벨은 로직 구조 변경 시 수동, 해시는 핵심 튜닝값(스무딩 윈도우 / 롤링 주수)이 바뀌면 자동으로 달라져 코드와 조용히 어긋나지 않는다. type2(길이)·type4(통행료)는 조회/패스스루라 대상 아님. type3 S3 스냅샷은 스칼라 맵이라 이 컬럼을 안 담고 RDS가 lineage 단일 소스 |
-| 2 | **Contract** | 🟡 README 표만 존재 | `docs/contracts.md`로 분리, null 허용/필수 여부 명시 |
+| 2 | **Contract** | ✅ `docs/contracts.md` 분리 완료(2026-09) | 서빙 테이블 4종의 컬럼별 필수/Null 허용 여부, `provenance`(2축) + 파생 `sources` 어휘, 계약을 코드보다 먼저 고친다는 갱신 규칙까지 명시. README 스키마 표와 어긋나면 이 문서가 단일 진실 |
 | 3 | **Observability (데이터 상태)** | ✅ 강함 — 유지·어필 | RDS 쓰기중 읽기지연을 실측으로 잡아낸 사례를 계속 근거로 사용 |
 | 4 | **응답의 신뢰도 노출** | ✅ 두 엔드포인트 + 축 분리 완료(2026-09) | `provenance`(`storage_source` + `value_basis` 2축)를 노출하고, 옛 평면 `sources`는 여기서 파생(하위 호환). 예전엔 한 문자열에 저장소·값 성격·대체 전략이 섞여 type1 스냅샷 fallback의 저장소가 사라지고 type4의 "읽은 0"과 "추론한 0"이 안 갈렸다. `docs/contracts.md` 참고 |
 
