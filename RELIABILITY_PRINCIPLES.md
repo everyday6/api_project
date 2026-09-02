@@ -80,7 +80,7 @@
 | --- | --- | --- | --- |
 | 1 | **Lineage/Reproducibility** | ✅ 계산값 전부 적용(2026-09) | `segment_metrics_type1`에 `avg_formula_version`, `type3`에 `value_formula_version` — `src/common/provenance.py`의 `formula_version("v1", 핵심상수)` = "라벨+해시". 라벨은 로직 구조 변경 시 수동, 해시는 핵심 튜닝값(스무딩 윈도우 / 롤링 주수)이 바뀌면 자동으로 달라져 코드와 조용히 어긋나지 않는다. type2(길이)·type4(통행료)는 조회/패스스루라 대상 아님. type3 S3 스냅샷은 스칼라 맵이라 이 컬럼을 안 담고 RDS가 lineage 단일 소스 |
 | 2 | **Contract** | ✅ `docs/contracts.md` 분리 완료(2026-09) | 서빙 테이블 4종의 컬럼별 필수/Null 허용 여부, `provenance`(2축) + 파생 `sources` 어휘, 계약을 코드보다 먼저 고친다는 갱신 규칙까지 명시. README 스키마 표와 어긋나면 이 문서가 단일 진실 |
-| 3 | **Observability (데이터 상태)** | ✅ 강함 — 유지·어필 | RDS 쓰기중 읽기지연을 실측으로 잡아낸 사례를 계속 근거로 사용 |
+| 3 | **Observability (데이터 상태)** | ✅ 강함 — 유지·어필 | RDS 쓰기중 읽기지연을 실측으로 잡아낸 사례를 계속 근거로 사용. (2026-09) 품질 게이트 5곳(speed/tlc/lion suspect·conflict/silver2)이 이제 통과·차단 상관없이 `{"event":"data_quality_gate", ...}` 한 줄을 남긴다(`src/common/suspect.py`의 `log_quality_gate`) — 예전엔 차단할 때만 비율을 남겨서 "평소 분포"를 알 수 없었다 |
 | 4 | **응답의 신뢰도 노출** | ✅ 두 엔드포인트 + 축 분리 완료(2026-09) | `provenance`(`storage_source` + `value_basis` 2축)를 노출하고, 옛 평면 `sources`는 여기서 파생(하위 호환). 예전엔 한 문자열에 저장소·값 성격·대체 전략이 섞여 type1 스냅샷 fallback의 저장소가 사라지고 type4의 "읽은 0"과 "추론한 0"이 안 갈렸다. `docs/contracts.md` 참고 |
 
 ### Tier 2 — Containment: 격리할 수 있는가
@@ -269,10 +269,16 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 
 ## 현황 요약 (2026-09)
 
-이 문서의 원칙들은 대부분 코드에 반영됐다. 아래는 최근 작업(4개 PR)으로
+이 문서의 원칙들은 대부분 코드에 반영됐다. 아래는 최근 일련의 PR로
 무엇이 닫혔고 무엇을 **의식적으로** 남겼는지의 스냅샷이다. 유예 항목은
 "안 한 게 아니라 지금 할 근거가 부족해서 미룬 것"이며 각각 착수 조건을
 같이 적는다. 세부 맥락은 아래 "열린 질문"과 각 Tier 표에 있다.
+
+> 한 번 "4개 PR로 닫는다"고 scope-lock을 했다가, 외부 리뷰에서 "게이트
+> 발동 횟수만으로는 평소 1%가 30%로 튄 것과 평소 19%가 21%로 튄 것을
+> 구분 못 한다"는 지적을 받고 **품질 게이트 관측 로그**(아래 완료 표
+> 마지막 줄)를 하나 더 열었다. 근거가 있으면 scope-lock도 다시 연다는
+> 뜻이지, 무한정 늘린다는 뜻은 아니다.
 
 ### 완료
 
@@ -285,6 +291,7 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 | LION 중복 정책 | `_profile_duplicates()` + conflict 게이트 + 결정적 dedup, 죽은 `is_unique` assert 제거 | Tier 2 GX 현황 |
 | Fallback 급증 알림 | `log_tier_summary`가 `hardcoded` 비율 초과 시 rate-limited Slack | Tier 3 #10 |
 | 스냅샷 첫 로드 실패 | `LazySnapshot`이 hit만 고정, miss는 backoff 재시도 | 열린 질문 |
+| 품질 게이트 관측 로그 | 게이트 5곳(speed/tlc/lion suspect·conflict/silver2)이 통과·차단 무관 매 판정마다 `{"event":"data_quality_gate", ...}` 한 줄 — 임계값 baseline을 실측할 raw 분포가 쌓이기 시작 | Tier 1 #3 |
 
 ### 의식적으로 유예
 
@@ -303,6 +310,9 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 
 전부 실제 스냅샷/배치로 baseline을 재야 하는데 프로덕션 접근이 없어 코드에
 placeholder로 박아둔 값들이다. 접근이 생기는 대로 재측정한다(코드 주석에도 명시).
+`MAX_SUSPECT_RATIO`·`MAX_DUPLICATE_CONFLICT_RATIO`는 이제 `log_quality_gate`가
+매 판정 비율을 남기므로, 파이프라인이 실제로 도는 환경만 있으면 그 로그를
+집계해 분포를 잡을 수 있다(Tier 1 #3).
 
 - `MAX_SUSPECT_RATIO`: lion=0.05 / silver2=0.10 / speed=0.20 / tlc=0.15
 - `FALLBACK_ALERT_RATIO`=0.10 (`hardcoded` 비율 급증 기준)

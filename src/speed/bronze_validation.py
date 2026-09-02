@@ -18,7 +18,7 @@ import pandas as pd
 from src.common.alerts import notify_slack_message
 from src.common.gx import validate_pandas_dataframe
 from src.common.logger import get_logger
-from src.common.suspect import flag_suspect_pandas, suspect_ratio
+from src.common.suspect import flag_suspect_pandas, log_quality_gate, suspect_ratio
 from src.speed.expectations import (
     _DATA_AS_OF_MIN,
     _REQUIRED_COLUMNS,
@@ -131,6 +131,15 @@ def suspect_ratio_ok(df: pd.DataFrame, context: str) -> bool:
     보장된다.
     """
     ratio = suspect_ratio(df)
+    log_quality_gate(
+        logger,
+        domain="speed",
+        metric="suspect_ratio",
+        value=ratio,
+        threshold=MAX_SUSPECT_RATIO,
+        passed=ratio <= MAX_SUSPECT_RATIO,
+        context=context,
+    )
     if ratio > MAX_SUSPECT_RATIO:
         logger.error(
             f"speed Bronze 의심 행 비율 초과: {ratio:.1%} > {MAX_SUSPECT_RATIO:.1%}"

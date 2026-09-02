@@ -14,6 +14,9 @@ RELIABILITY_PRINCIPLES.md "처음 잡을 때 할 일" 3번 - "검증 실행과 �
 
 from __future__ import annotations
 
+import json
+import logging
+
 import pandas as pd
 
 # 저장되는 데이터에 붙는 표준 컬럼명. speed/tlc/lion과 그 테스트가 모두
@@ -59,3 +62,37 @@ def suspect_ratio(df: pd.DataFrame) -> float:
     if len(df) == 0:
         return 0.0
     return float(df[IS_SUSPECT_COLUMN].mean())
+
+
+def log_quality_gate(
+    logger: logging.Logger,
+    *,
+    domain: str,
+    metric: str,
+    value: float,
+    threshold: float,
+    passed: bool,
+    **extra: object,
+) -> None:
+    """데이터 품질 게이트의 판정을 통과/차단 상관없이 한 줄 구조화 로그로 남긴다.
+
+    지금까지 게이트는 **차단할 때만** 비율을 로그에 남겼다. 그러면 사후에
+    "평소 1%인데 30%로 튄 것"과 "평소 19%인데 21%로 튄 것"을 구분할 수
+    없다 - 정상 판정의 분포 자체가 baseline이라, 매 판정을 남겨야 임계값
+    (MAX_SUSPECT_RATIO 등)을 실측으로 조정할 근거가 쌓인다
+    (RELIABILITY_PRINCIPLES.md Tier 1 #3, 열린 질문의 "임계값 baseline" 항목).
+
+    차단 경로의 사람용 error/raise/Slack은 각 호출부에 그대로 둔다 - 이건
+    그 위에 얹는 기계 판독용(Grafana/Loki 집계) 한 줄이다. `event` 키가
+    고정 토큰이라 로그에서 바로 필터할 수 있다.
+    """
+    payload = {
+        "event": "data_quality_gate",
+        "domain": domain,
+        "metric": metric,
+        "value": round(float(value), 6),
+        "threshold": threshold,
+        "decision": "pass" if passed else "block",
+        **extra,
+    }
+    logger.info("data_quality_gate %s", json.dumps(payload, sort_keys=True, ensure_ascii=False))

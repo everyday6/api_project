@@ -17,7 +17,7 @@ from shapely.strtree import STRtree
 
 from src.common.config import SILVER1_DIR, SILVER2_DIR, TMP_DIR
 from src.common.logger import get_logger
-from src.common.suspect import flag_suspect_pandas, suspect_ratio
+from src.common.suspect import flag_suspect_pandas, log_quality_gate, suspect_ratio
 from src.common.utils import save_parquet
 
 logger = get_logger(__name__, log_to_file=True, log_file_stem="map_zone_segment")
@@ -275,6 +275,15 @@ def validate_map_zone_segment(path, lion_segment_path=LION_SEGMENT_PATH) -> str:
         raise ValueError("알 수 없는 mapping_method 발견")
 
     ratio = suspect_ratio(mapping)
+    log_quality_gate(
+        logger,
+        domain="silver2_zone_segment",
+        metric="suspect_ratio",
+        value=ratio,
+        threshold=MAX_SUSPECT_RATIO,
+        passed=ratio <= MAX_SUSPECT_RATIO,
+        rows=len(mapping),
+    )
     if ratio > MAX_SUSPECT_RATIO:
         raise ValueError(
             f"nearest(저신뢰) 매핑 비율이 임계치를 초과했습니다: "
