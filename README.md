@@ -71,6 +71,7 @@
 | last_sample_at | value가 관측된 시각 — 신선도 판정용 | 2026-08-27T08:31:02Z |
 | avg | 과거 평균 통과시간(초) | 44 |
 | count | avg 증분 갱신 계산용 누적 횟수 | 312 |
+| avg_formula_version | avg를 계산한 공식 버전("라벨+해시") — 사후에 avg 버그의 영향 범위를 특정하는 lineage 컬럼 | "v1#a1b2c3" |
 | updated_date | 이 행이 마지막으로 갱신된 날짜 | 2026-08-27 |
 
 ### **segment_metrics_type2: 길이**
@@ -88,6 +89,7 @@
 | dow | 요일 | "MON" |
 | time | 30분 단위 시간 버킷 | "0900" |
 | value | 평균 승차 수 | 12 |
+| value_formula_version | value(rolling 평균)를 계산한 공식 버전("라벨+해시") — type1 `avg_formula_version`과 같은 목적의 lineage 컬럼 | "v1#d4e5f6" |
 
 ### **segment_metrics_type4: 통행료**
 
@@ -100,10 +102,12 @@
 
 | type | 예시 요청 | 예시 응답 | 소스 |
 | :---: | --- | --- | --- |
-| 1 (통행 소요시간) | `{"segment_ids": ["1000", "1001", "1002"], "type": 1, "date": "2026-08-27", "time": "09:00"}` | `{"value": [38, 23, 24]}` — 초 | [도로 속도 관측 데이터(5분 주기)](https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds-NBE/i4gi-tjb9) |
-| 2 (길이) | `{"segment_ids": ["1000", "1001", "1002"], "type": 2, "date": "2026-08-27", "time": "09:00"}` | `{"value": [25, 32, 20]}` — m | [NYC 도로망(LION) 원본](https://data.cityofnewyork.us/City-Government/LION/2v4z-66xt) |
-| 3 (택시 승차 승객 수) | `{"segment_ids": ["1000", "1001", "1002"], "type": 3, "date": "2026-08-27", "time": "09:00"}` | `{"value": [12, 20, 12]}` — 승객 수 | [NYC TLC 택시 운행 기록](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) |
-| 4 (통행료) | `{"segment_ids": ["1000", "1001", "1002"], "type": 4, "date": "2026-08-27", "time": "09:00"}` | `{"value": [0.75, 0, 0]}` — 달러 | [MTA·Port Authority 통행료 데이터](https://www.mta.info/fares-tolls/tolls/vehicle-types) |
+| 1 (통행 소요시간) | `{"segment_ids": ["1000", "1001", "1002"], "type": 1, "date": "2026-08-27", "time": "09:00"}` | `{"value": [38, 23, 24], "sources": ["fresh", "fresh", "avg"]}` — 초 | [도로 속도 관측 데이터(5분 주기)](https://data.cityofnewyork.us/Transportation/DOT-Traffic-Speeds-NBE/i4gi-tjb9) |
+| 2 (길이) | `{"segment_ids": ["1000", "1001", "1002"], "type": 2, "date": "2026-08-27", "time": "09:00"}` | `{"value": [25, 32, 20], "sources": ["rds", "rds", "global"]}` — m | [NYC 도로망(LION) 원본](https://data.cityofnewyork.us/City-Government/LION/2v4z-66xt) |
+| 3 (택시 승차 승객 수) | `{"segment_ids": ["1000", "1001", "1002"], "type": 3, "date": "2026-08-27", "time": "09:00"}` | `{"value": [12, 20, 12], "sources": ["rds", "rds", "snapshot"]}` — 승객 수 | [NYC TLC 택시 운행 기록](https://www.nyc.gov/site/tlc/about/tlc-trip-record-data.page) |
+| 4 (통행료) | `{"segment_ids": ["1000", "1001", "1002"], "type": 4, "date": "2026-08-27", "time": "09:00"}` | `{"value": [0.75, 0, 0], "sources": ["rds", "rds", "rds"]}` — 달러 | [MTA·Port Authority 통행료 데이터](https://www.mta.info/fares-tolls/tolls/vehicle-types) |
+
+> 각 응답은 값마다 **출처**를 함께 줍니다 — `provenance`(`storage_source` + `value_basis` 2축)와, 거기서 파생한 하위 호환용 평면 `sources`입니다. "최신 실측(`fresh`)인지 과거 평균(`avg`)인지", "RDS 직접 조회인지 S3 스냅샷 폴백(`snapshot`)인지"를 클라이언트가 구분할 수 있습니다(낮은 신뢰도 값을 표시 없이 내보내지 않는다는 원칙). 컬럼별 null 허용 여부와 tier 어휘의 정확한 계약은 [`docs/contracts.md`](docs/contracts.md)를 단일 진실 공급원으로 둡니다.
 
 라우팅 엔지니어링팀은 API로 받은 세그먼트별 데이터를 자체 라우팅 알고리즘에 결합해, 최종 고객에게 아래 4가지 종류의 경로를 제공할 수 있습니다.
 
@@ -353,6 +357,16 @@ LION은 거의 모든 지표가 기준으로 삼는 데이터라, `lion_pipeline
 
 구현: [`src/silver2/zone_segment.py`](src/silver2/zone_segment.py), [`src/tlc/type3_pipeline.py`](src/tlc/type3_pipeline.py)
 
+### 행 단위 품질 — 표시(`is_suspect`)와 비율 게이트
+
+스키마(컬럼 존재·타입)를 넘는 값 수준 이상치는 로그로만 남기지 않고 **저장되는 데이터에 표시**합니다. 검증 실행과 결과의 영속화를 분리하면 검증이 사실상 무의미해지기 때문입니다.
+
+- `mark_suspect_rows()`가 도메인별 이상 조건을 그대로 재현해 `is_suspect` 컬럼을 붙이고(speed/tlc/lion/silver2), 공통 기계 부분은 [`src/common/suspect.py`](src/common/suspect.py)로 모읍니다.
+- 이상치가 개별 행이 아니라 뭉텅이로 있으면(스키마 드리프트, 원천 포맷 변경) `is_suspect` 비율이 임계치를 넘고, 그때 저장 전 게이트가 배치를 제외하거나 publish를 차단합니다.
+- 게이트는 통과·차단 상관없이 매 판정을 `{"event": "data_quality_gate", ...}` 한 줄로 남겨(`log_quality_gate`), 임계치를 나중에 실측 분포로 조정할 근거를 쌓습니다.
+
+전체를 관통하는 신뢰성 원칙(Tier 0~4: Detectability → Containment → Resilience)과 현재 이행 현황·의식적으로 유예한 항목은 [`RELIABILITY_PRINCIPLES.md`](RELIABILITY_PRINCIPLES.md)에 정리돼 있습니다. PR마다 전체 테스트 스위트가 GitHub Actions에서 이 저장소의 `Dockerfile` 이미지(리눅스)로 실행됩니다([`.github/workflows/test.yml`](.github/workflows/test.yml)).
+
 ## 7. 모니터링
 
 ### 1. Grafana
@@ -414,7 +428,7 @@ API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같
 
 ## 8. 기술적 고민과 결정
 
-각 결정의 배경(관측된 사실, 고려한 대안, 기각 사유, 검증 방법)은 링크한 문서에서 자세히 볼 수 있습니다.
+각 결정의 배경(관측된 사실, 고려한 대안, 기각 사유, 검증 방법)은 링크한 문서에서 자세히 볼 수 있습니다. 이 결정들을 하나의 공리("이 값이 틀렸다는 걸 누군가 발견했을 때, 알 수 있고·추적할 수 있고·격리할 수 있는가")에서 도출한 우선순위 체계로 묶은 것이 [`RELIABILITY_PRINCIPLES.md`](RELIABILITY_PRINCIPLES.md)입니다.
 
 | # | 고민 | 결정 | 링크 |
 | :---: | --- | --- | --- |
@@ -451,6 +465,8 @@ API는 완성된 테이블만 읽으므로 배치 쓰기와 서빙 읽기가 같
 | 3 | 속도 데이터 결측·수집 주기 불안정 (외부 API 의존 한계) | 도로 스펙(길이÷제한속도) 추정치로 백필 | 유사 도로 실측 통계 반영해 추정 정확도 개선 |
 | 4 | 세그먼트 순차 누적 조회라 경로 길어질수록 오차 누적 | 보정 없이 누적 시각 그대로 순차 조회 | 재보정 체크포인트 또는 오차 범위 함께 반환 |
 | 5 | 비용 고려 부족 — DynamoDB 과금, EMR 리소스 과다 사용 | 접근 패턴 검증 없이 DynamoDB 채택 → RDS로 전환 | 배치/즉시 작업 구분, 사전 비용 산정, Budget Alert 도입 |
+
+> 이 표는 프로덕트 관점의 큰 한계만 추립니다. 신뢰성 측면에서 **의식적으로 유예한 항목**(각각 "왜 지금 안 했는가 + 착수 조건")과 **프로덕션 접근 권한이 있어야 실측 가능한 임계값들**은 [`RELIABILITY_PRINCIPLES.md`](RELIABILITY_PRINCIPLES.md)의 "현황 요약 / 열린 질문"에서 계속 갱신합니다.
 
 ## 11. 팀원 소개
 
