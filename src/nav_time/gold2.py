@@ -46,6 +46,7 @@ from src.common.config import (
     NAV_TIME_AVG_SMOOTHING_WINDOW,
     SERVING_TABLE_TYPE1_KEY_COLUMNS,
 )
+from src.common.provenance import formula_version
 from src.common.db import batch_get_items, batch_write_items, get_shared_connection
 from src.common.logger import get_logger
 
@@ -62,6 +63,16 @@ _SECONDS_PER_HOUR = 3600.0
 # 거의 반응하지 않게 된다. 정성적 초안이라 재조정할 수 있게
 # config.py(환경변수)에서 가져온다.
 AVG_SMOOTHING_WINDOW = NAV_TIME_AVG_SMOOTHING_WINDOW
+
+# 저장되는 avg가 어떤 공식으로 계산됐는지 표시하는 lineage 스탬프
+# (RELIABILITY_PRINCIPLES.md Tier 1 #1). "<라벨>+<AVG_SMOOTHING_WINDOW 해시>"
+# 형태 - 스무딩 윈도우를 바꾸면 해시가 자동으로 달라지고, 로직 구조(가중치
+# 방식, 재시도 판별, 레거시 리셋 등)를 바꿀 땐 라벨을 올리고 아래에 한 줄 남긴다.
+#   v1 (2026-09): 시간순 1:2:..:n 가중평균 속도 -> length_ft로 나눠 초 환산,
+#                 슬롯별 avg를 old_avg + (new-old)/min(count, WINDOW)로 증분,
+#                 재시도는 last_sample_at 동일 여부로 판별, count 없는 레거시
+#                 행은 리셋(new_avg=new_value, new_count=1)
+AVG_FORMULA_VERSION = formula_version("v1", AVG_SMOOTHING_WINDOW)
 
 
 def _bucket_column():
@@ -219,6 +230,7 @@ def to_serving_items(bucket_df: DataFrame, table_name: str, *, today: date | Non
             **item,
             "avg": round(new_avg),
             "count": new_count,
+            "avg_formula_version": AVG_FORMULA_VERSION,
             "updated_date": today,
         })
 
@@ -235,20 +247,25 @@ def _export_snapshot(table_name: str) -> dict[str, dict[str, dict]]:
     conn = get_shared_connection()
     with conn.cursor() as cur:
         cur.execute(
-            sql.SQL("SELECT segment_id, time, value, avg, last_sample_at FROM {table}").format(
-                table=sql.Identifier(table_name)
-            )
+            sql.SQL(
+                "SELECT segment_id, time, value, avg, avg_formula_version, last_sample_at "
+                "FROM {table}"
+            ).format(table=sql.Identifier(table_name))
         )
         rows = cur.fetchall()
 
     snapshot: dict[str, dict[str, dict]] = {}
-    for segment_id, time_slot, value, avg, last_sample_at in rows:
+    for segment_id, time_slot, value, avg, avg_formula_version, last_sample_at in rows:
         entry = {}
         if value is not None and last_sample_at is not None:
             entry["value"] = float(value)
             entry["last_sample_at"] = last_sample_at.isoformat()
         if avg is not None:
             entry["avg"] = float(avg)
+            # 스냅샷 ≡ RDS 불변식: RDS 장애 시 서빙되는 avg도 어느 공식으로
+            # 만들어졌는지 추적할 수 있어야 한다.
+            if avg_formula_version is not None:
+                entry["avg_formula_version"] = avg_formula_version
         if entry:
             snapshot.setdefault(segment_id, {})[time_slot] = entry
     return snapshot

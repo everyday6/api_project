@@ -20,6 +20,7 @@ PK: `(segment_id, time)`
 | last_sample_at | timestamp | ✅ | ❌ | value 관측 시각 — 신선도 판정에 씀 |
 | avg | int (초) | ✅ | ❌ | 과거 평균 통과시간 |
 | count | int | ✅ | ❌ | avg 증분 갱신용 누적 횟수 |
+| avg_formula_version | string ("라벨+해시") | ❌ | ✅ | avg를 계산한 공식 버전 — 사후에 avg 버그의 영향 범위를 특정하는 lineage 컬럼. 이 컬럼 배포 전 레거시 행은 null |
 | updated_date | date | ✅ | ❌ | 이 행이 마지막으로 갱신된 날짜 |
 
 ## segment_metrics_type2 (길이)
