@@ -1,6 +1,8 @@
 import json
+from unittest.mock import patch
 
 from src.common import gold_snapshot
+from src.common.gold_snapshot import LazySnapshot
 
 
 def test_write_then_read_round_trip(monkeypatch, tmp_path):
@@ -56,3 +58,66 @@ def test_write_snapshot_serializes_as_json(monkeypatch, tmp_path):
 
     raw = gold_snapshot.snapshot_path("type1").read_text()
     assert json.loads(raw) == {"1": {"avg": 40.0}}
+
+
+# --- read_snapshot_result: hit / miss 분류 ---
+
+def test_read_snapshot_result_hit(monkeypatch, tmp_path):
+    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
+    gold_snapshot.write_snapshot("type1", {"1": {"avg": 40.0}})
+
+    assert gold_snapshot.read_snapshot_result("type1") == ({"1": {"avg": 40.0}}, "hit")
+
+
+def test_read_snapshot_result_missing_is_miss(monkeypatch, tmp_path):
+    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
+
+    assert gold_snapshot.read_snapshot_result("type1") == ({}, "miss")
+
+
+def test_read_snapshot_result_corrupted_is_miss(monkeypatch, tmp_path):
+    monkeypatch.setattr(gold_snapshot, "GOLD_CACHE_DIR", tmp_path)
+    path = gold_snapshot.snapshot_path("type1")
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text("not valid json {{{")
+
+    assert gold_snapshot.read_snapshot_result("type1") == ({}, "miss")
+
+
+# --- LazySnapshot: 실패를 프로세스 수명 내내 고정하지 않는다 ---
+
+def test_lazy_snapshot_caches_hit_and_does_not_reread():
+    snap = LazySnapshot("type1")
+    with patch.object(gold_snapshot, "read_snapshot_result", return_value=({"1": {"avg": 1.0}}, "hit")) as mock_read:
+        assert snap.get() == {"1": {"avg": 1.0}}
+        assert snap.get() == {"1": {"avg": 1.0}}
+        assert snap.get() == {"1": {"avg": 1.0}}
+
+    mock_read.assert_called_once()
+
+
+def test_lazy_snapshot_retries_after_transient_failure(monkeypatch):
+    # 예전엔 첫 로드가 {}면 그 빈 결과를 프로세스 수명 내내 고정했다 -
+    # 이제는 miss면 backoff 뒤 다시 시도한다. backoff를 0으로 만들어 확인.
+    monkeypatch.setattr(gold_snapshot, "_RETRY_BACKOFF_SECONDS", 0)
+    snap = LazySnapshot("type1")
+
+    with patch.object(
+        gold_snapshot, "read_snapshot_result",
+        side_effect=[({}, "miss"), ({"1": {"avg": 2.0}}, "hit")],
+    ) as mock_read:
+        assert snap.get() == {}                    # 첫 시도 miss -> 빈 dict
+        assert snap.get() == {"1": {"avg": 2.0}}   # 재시도 hit
+
+    assert mock_read.call_count == 2
+
+
+def test_lazy_snapshot_backoff_avoids_rereading_after_miss():
+    # backoff 창(기본 30초) 안에서는 S3를 다시 두드리지 않고 현재 캐시({})를 준다.
+    snap = LazySnapshot("type1")
+    with patch.object(gold_snapshot, "read_snapshot_result", return_value=({}, "miss")) as mock_read:
+        assert snap.get() == {}
+        assert snap.get() == {}
+        assert snap.get() == {}
+
+    mock_read.assert_called_once()

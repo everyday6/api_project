@@ -301,6 +301,13 @@ GOLD_SNAPSHOT_S3_CONNECT_TIMEOUT_SECONDS = int(
 GOLD_SNAPSHOT_S3_READ_TIMEOUT_SECONDS = int(
     os.getenv("GOLD_SNAPSHOT_S3_READ_TIMEOUT_SECONDS", "1")
 )
+# LazySnapshot이 최초 로드에 실패(missing/error)했을 때, 다음 요청마다 S3를
+# 다시 두드리지 않고 이만큼 기다린다 - "실패 의존성 반복 호출"(요청당
+# 타임아웃, S3 장애 중 호출 폭주)을 막는다. 성공(hit)하면 프로세스 수명
+# 동안 캐시하므로 이 값은 실패 상황에만 쓰인다.
+GOLD_SNAPSHOT_RETRY_BACKOFF_SECONDS = int(
+    os.getenv("GOLD_SNAPSHOT_RETRY_BACKOFF_SECONDS", "30")
+)
 
 # type1 세그먼트 평균(avg) 증분 갱신 시 새 값의 최대 반영 비중을
 # 1/NAV_TIME_AVG_SMOOTHING_WINDOW로 제한한다(nav_time/gold2.py 참고).
