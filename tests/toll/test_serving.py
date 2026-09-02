@@ -30,26 +30,32 @@ def test_get_toll_values_returns_values_in_order():
     mock_batch.assert_called_once()
 
 
-def test_get_toll_values_with_tiers_reports_rds_when_rds_up():
+def test_get_toll_values_with_tiers_distinguishes_read_value_from_inferred_zero():
     with patch(
         "src.toll.serving.db.batch_get_items",
         return_value={("1",): {"segment_id": "1", "value": 2.75}},
     ):
-        values, tiers = get_toll_values_with_tiers(["1", "2"])
+        values, provenance = get_toll_values_with_tiers(["1", "2"])
 
-    # RDS 호출이 성공하면, 값이 없는 segment도 "통행료 대상 아님"이지 폴백이
-    # 아니므로 전부 rds 계층이다(0.0으로 응답).
+    # 둘 다 storage=rds지만, "1"은 행을 읽어 값을 얻었고("segment_value")
+    # "2"는 행이 없어 0으로 추론했다("implicit_zero") - 예전엔 둘 다 rds로 뭉개졌다.
     assert values == [2.75, 0.0]
-    assert tiers == ["rds", "rds"]
+    assert provenance == [
+        {"storage_source": "rds", "value_basis": "segment_value"},
+        {"storage_source": "rds", "value_basis": "implicit_zero"},
+    ]
 
 
-def test_get_toll_values_with_tiers_reports_snapshot_and_hardcoded_when_rds_down():
+def test_get_toll_values_with_tiers_reports_snapshot_and_code_when_rds_down():
     with patch("src.toll.serving.db.batch_get_items", side_effect=RuntimeError("down")), \
          patch("src.common.gold_snapshot.read_snapshot", return_value={"1": 2.75}):
-        values, tiers = get_toll_values_with_tiers(["1", "2"])
+        values, provenance = get_toll_values_with_tiers(["1", "2"])
 
     assert values == [2.75, 0.0]
-    assert tiers == ["snapshot", "hardcoded"]
+    assert provenance == [
+        {"storage_source": "s3_snapshot", "value_basis": "segment_value"},
+        {"storage_source": "code", "value_basis": "implicit_zero"},
+    ]
 
 
 def test_get_toll_values_is_thin_wrapper_over_with_tiers():

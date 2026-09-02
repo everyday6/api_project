@@ -59,10 +59,29 @@ PK: `segment_id`
 
 ---
 
-## API 응답 — `sources` / tier 어휘
+## API 응답 — `provenance` (2축) + `sources` (파생, 하위 호환)
 
-> **중요**: 아래 4개 세트는 서로 다른 어휘다. 한 응답 안에 섞이지 않는다 —
-> 어떤 세트가 나올지는 요청의 `type` 하나로 결정된다.
+응답은 값 리스트마다 **`provenance`** 리스트를 함께 준다 - 값 하나의 출처를
+두 축으로 나눈 것이다(`src/serving/provenance.py`):
+
+| 축 | 가능한 값 | 뜻 |
+| --- | --- | --- |
+| `storage_source` | `rds` / `memory_cache` / `s3_snapshot` / `code` | 값이 **물리적으로 어디서** 왔나 |
+| `value_basis` | `observed` / `historical_average` / `segment_value` / `global_default` / `modeled_aggregate` / `implicit_zero` / `static_default` | 그 값이 **어떻게 만들어졌나** |
+
+`storage_source`(가용성 축)와 `value_basis`(값 성격 축)는 직교한다. 예전
+평면 `sources`는 이 둘이 섞여 있었다 - 특히 type1이 S3 스냅샷으로 떨어져도
+`fresh`/`avg`만 보여 저장소 provenance가 사라졌고, type4는 "RDS에서 0을
+읽음"(`rds`+`segment_value`)과 "행이 없어 0으로 추론함"(`rds`+`implicit_zero`)이
+똑같이 `rds`로 보였다.
+
+**`sources`**(아래 표의 옛 평면 어휘)는 `provenance`에서 **파생한 하위 호환
+필드**로 계속 내려준다 - 새 클라이언트는 `provenance`를 쓴다.
+
+### 파생되는 `sources` 어휘 (하위 호환)
+
+> 아래 4개 세트는 서로 다른 어휘다. 한 응답 안에 섞이지 않는다 — 어떤
+> 세트가 나올지는 요청의 `type` 하나로 결정된다.
 
 | type | 지표 | 가능한 tier 값 | 의미 |
 | --- | --- | --- | --- |
@@ -110,12 +129,12 @@ tier 어휘를 다시 보면, 4개 type이 실제로는 성격이 다른 3개 �
 
 ## `/segments/values` (type 1, 2) vs `/api/navigation/values` (type 1~4)
 
-- 둘 다 `sources` 필드로 tier를 노출한다 (2026-09 기준 적용됨).
-- 응답 필드 이름만 다르다: `/segments/values`는 `values`, `/api/navigation/values`는
-  `value`(단수, 기존 계약 유지). tier는 둘 다 `sources`.
-- `/api/navigation/values`의 tier 어휘는 `type`에 따라 다르다 (위 표):
-  type1 = `fresh`/`avg`/`hardcoded`, type2 = `rds`/`global`/`snapshot`/`hardcoded`,
-  type3·type4 = `rds`/`snapshot`/`hardcoded`. 한 응답 안에 한 세트만 나온다.
+- 둘 다 `provenance`(2축) + `sources`(파생) 를 노출한다 (2026-09 기준).
+- 응답 필드 이름만 다르다: `/segments/values`는 `values`,
+  `/api/navigation/values`는 `value`(단수, 기존 계약 유지). `provenance`·
+  `sources`는 둘 다 같은 이름.
+- `sources`의 어휘는 `type`에 따라 다르다 (위 표). `provenance`의 어휘는
+  type 무관하게 동일한 두 축이다.
 
 ---
 

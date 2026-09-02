@@ -7,10 +7,16 @@ from src.serving.nav_api import app
 client = TestClient(app)
 
 
-def test_get_segment_values_returns_values_in_order():
+_T1_PROV = [
+    {"storage_source": "rds", "value_basis": "observed"},
+    {"storage_source": "s3_snapshot", "value_basis": "historical_average"},
+]
+
+
+def test_get_segment_values_returns_values_provenance_and_derived_sources():
     with patch(
         "src.serving.nav_api.resolve_segment_values_with_tiers",
-        return_value=([30, 50], ["fresh", "avg"]),
+        return_value=([30, 50], _T1_PROV),
     ) as mock_resolve:
         response = client.post(
             "/segments/values",
@@ -18,7 +24,12 @@ def test_get_segment_values_returns_values_in_order():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"values": [30, 50], "sources": ["fresh", "avg"]}
+    assert response.json() == {
+        "values": [30, 50],
+        # sources는 provenance에서 파생 - type1 어휘로 fresh/avg
+        "sources": ["fresh", "avg"],
+        "provenance": _T1_PROV,
+    }
     mock_resolve.assert_called_once_with(["1", "2"], 1, "12:00")
 
 
@@ -68,7 +79,7 @@ def test_health_returns_ok():
 def test_navigation_values_type1_dispatches_to_resolve_segment_values():
     with patch(
         "src.serving.nav_api.resolve_segment_values_with_tiers",
-        return_value=([30, 50], ["fresh", "avg"]),
+        return_value=([30, 50], _T1_PROV),
     ) as mock_resolve:
         response = client.post(
             "/api/navigation/values",
@@ -76,14 +87,17 @@ def test_navigation_values_type1_dispatches_to_resolve_segment_values():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [30.0, 50.0], "sources": ["fresh", "avg"]}
+    assert response.json() == {
+        "value": [30.0, 50.0], "sources": ["fresh", "avg"], "provenance": _T1_PROV,
+    }
     mock_resolve.assert_called_once_with(["1", "2"], 1, "12:00")
 
 
 def test_navigation_values_type2_dispatches_to_resolve_segment_values():
+    prov2 = [{"storage_source": "rds", "value_basis": "segment_value"}]
     with patch(
         "src.serving.nav_api.resolve_segment_values_with_tiers",
-        return_value=([100], ["rds"]),
+        return_value=([100], prov2),
     ) as mock_resolve:
         response = client.post(
             "/api/navigation/values",
@@ -91,16 +105,20 @@ def test_navigation_values_type2_dispatches_to_resolve_segment_values():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [100.0], "sources": ["rds"]}
+    assert response.json() == {"value": [100.0], "sources": ["rds"], "provenance": prov2}
     mock_resolve.assert_called_once_with(["1"], 2, "12:00")
 
 
 def test_navigation_values_type3_combines_date_and_time_into_datetime():
     from datetime import datetime
 
+    prov3 = [
+        {"storage_source": "rds", "value_basis": "modeled_aggregate"},
+        {"storage_source": "s3_snapshot", "value_basis": "modeled_aggregate"},
+    ]
     with patch(
         "src.serving.nav_api.get_type3_values_with_tiers",
-        return_value=([12.5, 7.0], ["rds", "snapshot"]),
+        return_value=([12.5, 7.0], prov3),
     ) as mock_type3:
         response = client.post(
             "/api/navigation/values",
@@ -108,14 +126,20 @@ def test_navigation_values_type3_combines_date_and_time_into_datetime():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [12.5, 7.0], "sources": ["rds", "snapshot"]}
+    assert response.json() == {
+        "value": [12.5, 7.0], "sources": ["rds", "snapshot"], "provenance": prov3,
+    }
     mock_type3.assert_called_once_with(["1", "2"], datetime(2026, 8, 23, 14, 30))
 
 
 def test_navigation_values_type4_dispatches_to_get_toll_values_as_batch():
+    prov4 = [
+        {"storage_source": "rds", "value_basis": "segment_value"},
+        {"storage_source": "code", "value_basis": "implicit_zero"},
+    ]
     with patch(
         "src.serving.nav_api.get_toll_values_with_tiers",
-        return_value=([2.75, 0.0], ["rds", "hardcoded"]),
+        return_value=([2.75, 0.0], prov4),
     ) as mock_toll:
         response = client.post(
             "/api/navigation/values",
@@ -123,7 +147,9 @@ def test_navigation_values_type4_dispatches_to_get_toll_values_as_batch():
         )
 
     assert response.status_code == 200
-    assert response.json() == {"value": [2.75, 0.0], "sources": ["rds", "hardcoded"]}
+    assert response.json() == {
+        "value": [2.75, 0.0], "sources": ["rds", "hardcoded"], "provenance": prov4,
+    }
     mock_toll.assert_called_once_with(["1", "2"])
 
 
@@ -178,7 +204,7 @@ def test_cors_preflight_request_succeeds():
 def test_cors_actual_response_includes_allow_origin_header():
     with patch(
         "src.serving.nav_api.resolve_segment_values_with_tiers",
-        return_value=([30], ["fresh"]),
+        return_value=([30], [{"storage_source": "rds", "value_basis": "observed"}]),
     ):
         response = client.post(
             "/api/navigation/values",

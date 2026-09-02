@@ -89,12 +89,12 @@ def test_is_fresh_converts_timezone_aware_value_to_new_york_date():
 
 def test_resolve_from_row_prefers_fresh_exact():
     row = {"value": 30, "avg": 40, "last_sample_at": TODAY}
-    assert nav_lookup._resolve_from_row(row) == (30, "fresh")
+    assert nav_lookup._resolve_from_row(row) == (30, "observed")
 
 
 def test_resolve_from_row_falls_back_to_avg_when_value_is_stale():
     row = {"value": 30, "avg": 40, "last_sample_at": YESTERDAY}
-    assert nav_lookup._resolve_from_row(row) == (40, "avg")
+    assert nav_lookup._resolve_from_row(row) == (40, "historical_average")
 
 
 
@@ -178,6 +178,18 @@ def test_resolve_uses_s3_snapshot_avg_when_rds_unreachable():
         result = nav_lookup.resolve_segment_values(["1"], 1, "12:00")
 
     assert result == [55]
+
+
+def test_type1_provenance_keeps_storage_source_when_falling_to_s3_snapshot():
+    # 회귀: 예전엔 type1이 S3 스냅샷으로 떨어져도 응답이 fresh/avg만 보여
+    # 저장소 provenance가 사라졌다. 이제 storage_source가 s3_snapshot으로 남는다.
+    snapshot = {"1": {"1200": {"value": 77, "last_sample_at": TODAY.isoformat()}}}
+    with patch.object(nav_lookup, "_batch_fetch_type1_rows", side_effect=RuntimeError("down")), \
+         patch("src.common.gold_snapshot.read_snapshot", return_value=snapshot):
+        values, provenance = nav_lookup.resolve_segment_values_with_tiers(["1"], 1, "12:00")
+
+    assert values == [77]
+    assert provenance == [{"storage_source": "s3_snapshot", "value_basis": "observed"}]
 
 
 def test_resolve_uses_memory_cache_before_reloading_s3_snapshot():
