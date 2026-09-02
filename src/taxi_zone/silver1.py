@@ -9,6 +9,7 @@ import tempfile
 from pathlib import Path
 
 from airflow.exceptions import AirflowSkipException
+from cloudpathlib import S3Path
 
 from src.common.config import BRONZE_DIR, SILVER1_DIR, TMP_DIR
 from src.common.logger import get_logger
@@ -17,6 +18,30 @@ logger = get_logger(__name__, log_to_file=True, log_file_stem="taxi_zone_silver1
 
 BRONZE_ROOT = BRONZE_DIR / "taxi_zone"
 SILVER1_ROOT = SILVER1_DIR / "taxi_zone"
+
+
+def _as_path(value):
+    if isinstance(value, (Path, S3Path)):
+        return value
+    text = str(value)
+    return S3Path(text) if text.startswith("s3://") else Path(text)
+
+
+def _latest_bronze_shapefile(bronze_root):
+    """`version_date=*` 파티션 중 가장 최근 것의 `shapefile/` 디렉터리.
+
+    보통은 ingest_taxi_zone_shapefile의 반환값(shapefile_result["path"])을
+    그대로 쓰지만, 그게 없을 때(standalone 재실행 등)의 폴백이다.
+    """
+    partitions = sorted(
+        p for p in bronze_root.glob("version_date=*")
+        if (p / "shapefile" / "taxi_zones" / "taxi_zones.shp").exists()
+    )
+    if not partitions:
+        raise FileNotFoundError(
+            f"{bronze_root}에 완료된 Taxi Zone Bronze 파티션이 없습니다"
+        )
+    return partitions[-1] / "shapefile"
 
 
 def _stage_shapefile_locally(shapefile_path, work_dir: Path) -> Path:
@@ -78,7 +103,10 @@ def build(shapefile_result: dict, bronze_root=BRONZE_ROOT, silver1_root=SILVER1_
             "Taxi Zone 원본이 안 바뀌어 Silver1 재생성을 건너뜁니다"
         )
 
-    shapefile_dir = bronze_root / "shapefile"
+    # ingest가 이번에 저장한 파티션(version_date=.../shapefile). XCom에 없으면
+    # 가장 최근 파티션으로 폴백한다.
+    path_hint = shapefile_result.get("path")
+    shapefile_dir = _as_path(path_hint) if path_hint else _latest_bronze_shapefile(bronze_root)
     validate_taxi_zone_shapefile(shapefile_dir)
 
     silver1_root.mkdir(parents=True, exist_ok=True)

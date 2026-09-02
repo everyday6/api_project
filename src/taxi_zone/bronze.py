@@ -68,7 +68,7 @@ def _write_latest_etag(bronze_root: Path, etag: str) -> None:
     )
 
 
-def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
+def ingest_taxi_zone_shapefile(version_date: str | None = None, bronze_root=BRONZE_ROOT) -> dict:
     """Taxi Zone Shapefile ZIP을 받아 원본 묶음 그대로 저장한다.
 
     Wayback Machine 스냅샷으로 실측한 결과 원본이 바뀌는 주기는 1~2년에
@@ -78,22 +78,29 @@ def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
     "changed"는 build_taxi_zone_silver1이 실제로 바뀐 경우에만 Silver1
     재생성 + Asset emit을 하도록 판단하는 데 쓰인다(원본이 그대로인데도
     매번 downstream인 zone_segment_pipeline까지 깨우는 걸 막기 위함).
+
+    변경이 감지되면 `version_date=<YYYY-MM-DD>/shapefile/`이라는 새 파티션에
+    저장한다 - 예전엔 `shapefile/` 고정 경로를 in-place로 덮어써서 이전
+    경계 스냅샷이 사라졌다(src/lion/bronze.py와 같은 파티션 스킴으로 통일,
+    RELIABILITY_PRINCIPLES.md Tier 2 #7 참고). ETag 가드가 진짜 변경일 때만
+    새 파티션을 만드므로 스냅샷이 무한정 쌓이지 않는다.
     """
+
+    if version_date is None:
+        version_date = datetime.now(timezone.utc).strftime("%Y-%m-%d")
 
     head_response = requests.head(SHAPEFILE_URL, timeout=30)
     head_response.raise_for_status()
     current_etag = head_response.headers.get("ETag", "").strip('"')
 
-    destination = bronze_root / "shapefile"
+    destination = bronze_root / f"version_date={version_date}" / "shapefile"
     previous_etag = _read_previous_etag(bronze_root)
 
     if current_etag and current_etag == previous_etag:
         logger.info(
-            "Taxi Zone Shapefile 변경 없음(ETag %s 동일) — 다운로드 스킵: %s",
-            current_etag,
-            destination,
+            "Taxi Zone Shapefile 변경 없음(ETag %s 동일) — 다운로드 스킵", current_etag
         )
-        return {"path": str(destination), "changed": False, "etag": current_etag}
+        return {"path": None, "changed": False, "etag": current_etag}
 
     if previous_etag:
         logger.info(
@@ -126,10 +133,10 @@ def ingest_taxi_zone_shapefile(bronze_root=BRONZE_ROOT) -> dict:
             raise RuntimeError(f"Taxi Zone Shapefile 저장 검증 실패: {remote_shapefile}")
 
         # _metadata.txt는 이번 Bronze 저장이 언제/무엇으로 이뤄졌는지
-        # 남기는 정보성 기록일 뿐이다 - 재처리 여부를 가르는 ETag 마커는
-        # 더 이상 이 파일이 아니라 mark_taxi_zone_etag()가 Silver1 build
-        # 성공 후에 별도로 쓴다(아래 함수 docstring 참고).
-        (destination / "_metadata.txt").write_text(
+        # 남기는 정보성 기록일 뿐이다(파티션 루트에 둔다) - 재처리 여부를
+        # 가르는 ETag 마커는 더 이상 이 파일이 아니라 mark_taxi_zone_etag()가
+        # Silver1 build 성공 후에 별도로 쓴다(아래 함수 docstring 참고).
+        (destination.parent / "_metadata.txt").write_text(
             f"_ingested_at={datetime.now(timezone.utc).isoformat()}\n"
             "_source=nyc_tlc_taxi_zone_shapefile\n"
             f"_etag={current_etag}\n"

@@ -91,7 +91,7 @@
 | --- | --- | --- | --- |
 | 5 | **Quarantine** | 🟡 **도메인마다 다름** (아래 "GX 적용 현황" 참고) | 6개 데이터 생산 도메인 전부 저장 전 크리티컬 게이트 확보. `speed`/`tlc`/`lion`/`silver2`는 `is_suspect` 표시까지, `taxi_zone`/`toll`은 크리티컬 게이트만 |
 | 6 | **Idempotency** | ✅ 강함 | `06-etag-marker`, `04-rds-insert` 유지 |
-| 7 | **Immutable Bronze** | 🟡 미확인 | Bronze 계층에 실제로 UPDATE/DELETE가 없는지 코드 감사 |
+| 7 | **재현성 (Reproducibility)** | 🟡 감사 완료(2026-09) — 아래 참고 | "Bronze가 immutable한가"(체크박스)가 아니라 **"고정된 Bronze 상태에서 Gold를 재도출할 수 있는가"**로 재정의. DELETE는 전무. 시계열 소스(tlc/speed)는 append-only. 갭이던 `taxi_zone` shapefile을 `lion`과 같은 `version_date=` 파티션으로 통일 |
 
 #### GX(품질 검증) 적용 현황 — 2026-09 코드 감사 결과
 
@@ -156,6 +156,34 @@ Gold 요금 계산이 조용히 틀리므로 저장 전에 막는다. 특히 빈
 `toll`)이 모두 최소한 저장 전 크리티컬 게이트를 갖췄다. 남은 정교화는
 아래 "열린 질문"에 정리했다(임계값 baseline 실측, `nearest` 거리 임계,
 Type3 최신성 축 등).
+
+#### Bronze 재현성 감사 — 2026-09
+
+원래 원칙은 "Bronze 계층에 UPDATE/DELETE가 없는지 감사"였는데, immutability는
+목적이 아니라 수단이다. 실제로 원하는 속성은 **"고정된 Bronze 상태로부터
+모든 Gold 값을 재도출할 수 있는가"**이고, 이 기준으로 다시 감사했다.
+
+**DELETE**: 코드 전체에 Bronze 데이터를 지우는 경로 없음. `rmtree`는 Silver
+`_staging` run 디렉터리만, 다운로드 실패 시 `unlink`는 `TMP_DIR`의 미완성
+파일만(Bronze로 승격되기 전).
+
+**UPDATE(in-place overwrite)** — 소스별 판정:
+
+| 소스 | Bronze 경로 | 재현 가능? | 판정 |
+| --- | --- | --- | --- |
+| `tlc` | `<원본 파일명>`, 있으면 스킵 | ✅ | 그대로 — 재작성 자체가 없음 |
+| `speed` | `batch_end=<ts>.parquet` | ✅ | 그대로 — 배치당 새 파일. 재시도는 같은 배치=같은 데이터로 덮음(내용 불변) |
+| `lion` | `version_date=<날짜>/` 파티션, ETag 가드 | ✅ | 그대로 — 같은 UTC 날 원본이 두 번 바뀌면 그날 파티션을 덮는 이론적 충돌이 있으나, LION 릴리즈는 분기 1회라 운영상 불가능 + 발생 시 로그로 인지됨. 필요해지면 date 대신 etag로 파티션 |
+| `taxi_zone` | ~~`shapefile/` 고정~~ → `version_date=<날짜>/shapefile/` | ✅ | **고침** — `map_zone_segment`(기준 데이터)의 입력인데 이전 경계 스냅샷이 사라졌다. `lion`과 같은 파티션 스킴으로 통일(ETag 가드는 이미 있었고, 변경 보존만 빠져 있었다) |
+| `toll` `toll_rates.yaml` / `toll_facilities.yaml` | 고정 경로, 무조건 덮어씀 | ✅ | 그대로 — 원본이 `config/*.yaml`(git 추적)이라 버전 이력이 곧 git 이력. Bronze는 그 materialized copy일 뿐 |
+| `toll` `cbd_geofence.geojson` | 고정 경로, 무조건 덮어씀 | 🟡 | **조건부 유예** — URL(Socrata) 소스라 git 이력 없음. 다만 법적 경계라 변경이 거의 없어 파티셔닝은 유예하되, **내용 해시 마커**를 추가해 원본이 바뀌면 감지·경고한다(그 경고가 뜨면 파티셔닝 도입 신호) |
+
+**마커/제어 파일**(`_latest_etag.txt`, `_metadata.txt`, speed marker, cbd 해시
+마커)은 데이터가 아니라 파이프라인 상태라 덮어쓰는 게 정상이다.
+
+이 감사는 lineage 3부작의 마지막 조각이다 — `sources`(어느 서빙 경로),
+`avg_formula_version`(어느 계산 공식), Bronze 재현성(어느 입력) → 서빙된
+어떤 값이든 출처를 답할 수 있다.
 
 ### Tier 3 — Resilience: 버틸 수 있는가 (여기서부터 엔지니어링 판단력을 적극 어필)
 

@@ -27,19 +27,42 @@ def _mock_get(content: bytes):
     return resp
 
 
-def test_ingest_taxi_zone_downloads_when_no_previous_etag(tmp_path):
+def test_ingest_taxi_zone_downloads_into_version_date_partition(tmp_path):
     bronze_root = tmp_path / "bronze" / "taxi_zone"
 
     with patch("src.taxi_zone.bronze.requests.head", return_value=_mock_head("abc123")), \
          patch("src.taxi_zone.bronze.requests.get", return_value=_mock_get(_fake_shapefile_zip_bytes())) as mock_get:
-        result = ingest_taxi_zone_shapefile(bronze_root=bronze_root)
+        result = ingest_taxi_zone_shapefile(version_date="2026-09-15", bronze_root=bronze_root)
 
     mock_get.assert_called_once()
     assert result["changed"] is True
     assert result["etag"] == "abc123"
+    # 고정 경로가 아니라 version_date= 파티션에 저장된다(이전 스냅샷 보존).
+    partition_shapefile = bronze_root / "version_date=2026-09-15" / "shapefile"
+    assert result["path"] == str(partition_shapefile)
+    assert (partition_shapefile / "taxi_zones" / "taxi_zones.shp").exists()
+    assert (bronze_root / "version_date=2026-09-15" / "_metadata.txt").exists()
     # ingest 자체는 ETag 마커를 안 쓴다 - Silver1 build까지 성공한 뒤에
     # mark_taxi_zone_etag가 별도로 쓴다.
     assert not (bronze_root / "_latest_etag.txt").exists()
+
+
+def test_ingest_taxi_zone_change_creates_new_partition_without_touching_old(tmp_path):
+    bronze_root = tmp_path / "bronze" / "taxi_zone"
+
+    with patch("src.taxi_zone.bronze.requests.head", return_value=_mock_head("etag-v1")), \
+         patch("src.taxi_zone.bronze.requests.get", return_value=_mock_get(_fake_shapefile_zip_bytes())):
+        ingest_taxi_zone_shapefile(version_date="2026-01-01", bronze_root=bronze_root)
+
+    (bronze_root / "_latest_etag.txt").write_text("_etag=etag-v1\n")
+
+    with patch("src.taxi_zone.bronze.requests.head", return_value=_mock_head("etag-v2")), \
+         patch("src.taxi_zone.bronze.requests.get", return_value=_mock_get(_fake_shapefile_zip_bytes())):
+        ingest_taxi_zone_shapefile(version_date="2026-06-01", bronze_root=bronze_root)
+
+    # 두 스냅샷이 나란히 남아 있어야 한다.
+    assert (bronze_root / "version_date=2026-01-01" / "shapefile" / "taxi_zones" / "taxi_zones.shp").exists()
+    assert (bronze_root / "version_date=2026-06-01" / "shapefile" / "taxi_zones" / "taxi_zones.shp").exists()
 
 
 def test_ingest_taxi_zone_skips_download_when_etag_unchanged(tmp_path):
@@ -54,6 +77,7 @@ def test_ingest_taxi_zone_skips_download_when_etag_unchanged(tmp_path):
     mock_get.assert_not_called()
     assert result["changed"] is False
     assert result["etag"] == "abc123"
+    assert result["path"] is None
 
 
 def test_ingest_taxi_zone_retries_automatically_after_downstream_failure(tmp_path):
