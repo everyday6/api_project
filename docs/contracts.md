@@ -41,7 +41,12 @@ PK: `(segment_id, dow, time)`
 | segment_id | string | ✅ | ❌ | 세그먼트 식별자 |
 | dow | string ("MON"~"SUN") | ✅ | ❌ | 요일 |
 | time | string ("HHMM") | ✅ | ❌ | 30분 단위 시간 버킷 |
-| value | float | ✅ | ❌ | 평균 승차 수 |
+| value | float | ✅ | ❌ | 최근 N주 요일×시간 슬롯 rolling 평균 승차 수 |
+| value_formula_version | string ("라벨+해시") | ❌ | ✅ | value(rolling 평균)를 계산한 공식 버전 — 사후 lineage용. 이 컬럼 배포 전 레거시 행은 null. type1 `avg_formula_version`과 같은 목적 |
+
+> RDS 장애 시 쓰는 S3 스냅샷(`type3_zone`)은 `{zone#dow#time: value}` 형태의
+> 스칼라 맵이라 `value_formula_version`을 담지 않는다 — lineage의 단일 진실
+> 공급원은 RDS다. (type1 스냅샷은 중첩 dict라 `avg_formula_version`을 같이 담는다)
 
 ## segment_metrics_type4 (통행료)
 

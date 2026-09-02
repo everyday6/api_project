@@ -33,11 +33,24 @@ from src.common.config import (
     SERVING_TABLE_TYPE3_KEY_COLUMNS,
     TLC_TYPE3_DOW_NAMES,
     TLC_TYPE3_ID,
+    TLC_TYPE3_ROLLING_WEEKS,
 )
+from src.common.provenance import formula_version
 from src.common.spark import to_spark_path
 
 
 TYPE_ID = TLC_TYPE3_ID
+
+# 저장되는 value(요일×시간 슬롯 rolling 평균)가 어떤 공식으로 계산됐는지
+# 표시하는 lineage 스탬프(RELIABILITY_PRINCIPLES.md Tier 1 #1).
+# "<라벨>+<TLC_TYPE3_ROLLING_WEEKS 해시>" 형태 - 롤링 주수를 바꾸면 해시가
+# 자동으로 달라지고, 로직 구조(요일 버켓팅, avg 방식, zone→segment 확장 등)를
+# 바꿀 땐 라벨을 올리고 아래에 한 줄 남긴다. type1의 AVG_FORMULA_VERSION과 같은 목적.
+#   v1 (2026-09): build_weekday_rolling_frame이 최근 TLC_TYPE3_ROLLING_WEEKS주를
+#                 (zone_id, type, dow, time)별로 avg("value"), 그 뒤
+#                 expand_zone_values_to_segments가 zone_id 조인으로 값 그대로 복사
+VALUE_FORMULA_VERSION = formula_version("v1", TLC_TYPE3_ROLLING_WEEKS)
+
 TIME_SLOT_MINUTES = 30
 TIME_SLOTS = tuple(
     f"{hour_value:02d}{minute_value:02d}"
@@ -471,7 +484,21 @@ def validate_segment_values(
     return {"segments": actual_segments, "rows": actual_rows}
 
 
-def _copy_type3_partition(staging_prefix: str, collected_date: date):
+def _type3_csv_row(row, collected_date: date, value_formula_version: str) -> list:
+    """COPY로 흘려넣을 CSV 한 줄. 컬럼 순서는 _copy_type3_partition의 COPY
+    문·write_type3_rolling_to_rds의 value_columns와 정확히 맞아야 한다."""
+    return [
+        str(row["segment_id"]),
+        row["dow"],
+        str(row["time"]).zfill(4),
+        float(row["value"]),
+        collected_date.isoformat(),
+        date.today().isoformat(),
+        value_formula_version,
+    ]
+
+
+def _copy_type3_partition(staging_prefix: str, collected_date: date, value_formula_version: str):
     """executor 파티션 하나를 자기 전용 스테이징 테이블로 COPY한다.
 
     처음엔 파티션 전부가 스테이징 테이블 하나를 공유했는데, 실제로 돌려
@@ -501,14 +528,7 @@ def _copy_type3_partition(staging_prefix: str, collected_date: date):
         buffer = io.StringIO()
         writer = csv.writer(buffer)
         for row in rows:
-            writer.writerow([
-                str(row["segment_id"]),
-                row["dow"],
-                str(row["time"]).zfill(4),
-                float(row["value"]),
-                collected_date.isoformat(),
-                date.today().isoformat(),
-            ])
+            writer.writerow(_type3_csv_row(row, collected_date, value_formula_version))
         buffer.seek(0)
 
         conn = db.new_connection()
@@ -517,7 +537,8 @@ def _copy_type3_partition(staging_prefix: str, collected_date: date):
                 cur.copy_expert(
                     sql.SQL(
                         "COPY {table} (segment_id, dow, time, value, "
-                        "collected_date, updated_date) FROM STDIN WITH (FORMAT csv)"
+                        "collected_date, updated_date, value_formula_version) "
+                        "FROM STDIN WITH (FORMAT csv)"
                     ).format(table=sql.Identifier(staging_table)),
                     buffer,
                 )
@@ -622,7 +643,7 @@ def write_type3_rolling_to_rds(
     combined_table = f"{table_name}_staging_{uuid4().hex[:8]}"
     old_table = f"{table_name}_old_{uuid4().hex[:8]}"
     key_columns = SERVING_TABLE_TYPE3_KEY_COLUMNS
-    value_columns = ("value", "collected_date", "updated_date")
+    value_columns = ("value", "collected_date", "updated_date", "value_formula_version")
     all_columns = key_columns + value_columns
 
     conn = db.new_connection()
@@ -641,7 +662,9 @@ def write_type3_rolling_to_rds(
                     )
                 )
 
-        to_write.foreachPartition(_copy_type3_partition(staging_prefix, window_end))
+        to_write.foreachPartition(
+            _copy_type3_partition(staging_prefix, window_end, VALUE_FORMULA_VERSION)
+        )
 
         with conn.cursor() as cur:
             # 파티션별 스테이징들을 라이브 테이블과 완전히 같은 구조(인덱스/

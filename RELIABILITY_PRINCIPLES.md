@@ -78,7 +78,7 @@
 
 | # | 원칙 | 지금 상태 | 최소 조치 |
 | --- | --- | --- | --- |
-| 1 | **Lineage/Reproducibility** | 🟡 type1은 적용(2026-09), type3는 후속 | `segment_metrics_type1`에 `avg_formula_version` 추가 — `src/common/provenance.py`의 `formula_version("v1", 핵심상수)` = "라벨+해시". 라벨은 로직 구조 변경 시 수동, 해시는 스무딩 윈도우가 바뀌면 자동으로 달라져 코드와 조용히 어긋나지 않는다. type3 rolling 평균도 같은 스탬프 예정 |
+| 1 | **Lineage/Reproducibility** | ✅ 계산값 전부 적용(2026-09) | `segment_metrics_type1`에 `avg_formula_version`, `type3`에 `value_formula_version` — `src/common/provenance.py`의 `formula_version("v1", 핵심상수)` = "라벨+해시". 라벨은 로직 구조 변경 시 수동, 해시는 핵심 튜닝값(스무딩 윈도우 / 롤링 주수)이 바뀌면 자동으로 달라져 코드와 조용히 어긋나지 않는다. type2(길이)·type4(통행료)는 조회/패스스루라 대상 아님. type3 S3 스냅샷은 스칼라 맵이라 이 컬럼을 안 담고 RDS가 lineage 단일 소스 |
 | 2 | **Contract** | 🟡 README 표만 존재 | `docs/contracts.md`로 분리, null 허용/필수 여부 명시 |
 | 3 | **Observability (데이터 상태)** | ✅ 강함 — 유지·어필 | RDS 쓰기중 읽기지연을 실측으로 잡아낸 사례를 계속 근거로 사용 |
 | 4 | **응답의 신뢰도 노출** | ✅ `/segments/values`·`/api/navigation/values` 둘 다 적용 완료(2026-09) | `sources` 필드로 값의 출처 계층을 노출 — **원칙 0-1을 지키는 핵심 조치**. type별 tier 어휘는 `docs/contracts.md` 참고 |
@@ -281,9 +281,9 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 - Type3(수요)의 tier 어휘가 최신성 축을 노출하지 않는다 — Type1처럼
   `fresh`/`avg` 구분을 추가할지, 아니면 정말 노출할 필요가 없는지 판단이
   필요하다(`docs/contracts.md` 참고)
-- `avg_formula_version`(lineage)이 type1에만 있다 — type3(수요 rolling
-  평균, `src/tlc/gold2.py`)도 계산값이라 같은 `formula_version()` 스탬프를
-  붙여야 한다. type2(길이)·type4(통행료)는 조회/패스스루라 대상 아님
+- ~~`avg_formula_version`(lineage)이 type1에만 있다~~ → 2026-09 type3에
+  `value_formula_version` 추가(`src/tlc/gold2.py`). type2·type4는 대상 아님.
+  type3 S3 스냅샷 포맷상 이 컬럼을 못 담는 것만 남음(RDS가 단일 소스)
 - ~~fallback 비율이 임계치를 넘었을 때 자동 알림/circuit breaker로 이어지는
   경로가 없다~~ → 2026-09 `log_tier_summary`에 `hardcoded` 비율 급증
   Slack 알림 추가(Tier 3 #10 참고). `FALLBACK_ALERT_RATIO`(0.10)는

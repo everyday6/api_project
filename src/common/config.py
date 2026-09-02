@@ -227,6 +227,11 @@ SERVING_TABLE_TYPE3_COLUMNS = {
     "value": "NUMERIC NOT NULL",
     "collected_date": "DATE",
     "updated_date": "DATE",
+    # value(요일×시간 슬롯 rolling 평균)를 계산한 공식 버전
+    # (src/tlc/gold2.py의 VALUE_FORMULA_VERSION - "<라벨>+<핵심상수 해시>").
+    # 사후에 rolling 공식 버그의 영향 범위를 특정하기 위한 lineage 컬럼 -
+    # 이 컬럼 배포 전 레거시 행엔 NULL. type1의 avg_formula_version과 같은 목적.
+    "value_formula_version": "TEXT",
 }
 SERVING_TABLE_TYPE3_KEY_COLUMNS = ("segment_id", "dow", "time")
 
