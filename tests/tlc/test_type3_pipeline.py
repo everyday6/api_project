@@ -9,6 +9,7 @@ from src.common.config import TAXI_TYPES
 from src.tlc.gold2 import (
     DOW_NAMES,
     TIME_SLOTS,
+    VALUE_FORMULA_VERSION,
     _copy_type3_partition,
     build_daily_zone_frame,
     build_weekday_rolling_frame,
@@ -266,7 +267,9 @@ def test_copy_type3_partition_streams_csv_rows_to_own_staging_table(monkeypatch)
 
     with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
          patch("src.tlc.gold2.TaskContext.get", return_value=_fake_task_context(5)):
-        write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
+        write_partition = _copy_type3_partition(
+            "segment_metrics_type3_staging_abc", date(2026, 8, 20), "v1#testhash"
+        )
         write_partition([
             {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
             {"segment_id": "0000002", "dow": "MON", "time": "1230", "value": 2.5},
@@ -276,8 +279,8 @@ def test_copy_type3_partition_streams_csv_rows_to_own_staging_table(monkeypatch)
     copy_sql, buffer = cur.copy_expert.call_args[0]
     assert "segment_metrics_type3_staging_abc_p5" in str(copy_sql)
     assert buffer.read() == (
-        "0000001,FRI,1200,1.5,2026-08-20,2026-08-24\r\n"
-        "0000002,MON,1230,2.5,2026-08-20,2026-08-24\r\n"
+        "0000001,FRI,1200,1.5,2026-08-20,2026-08-24,v1#testhash\r\n"
+        "0000002,MON,1230,2.5,2026-08-20,2026-08-24,v1#testhash\r\n"
     )
     conn.close.assert_called_once()
 
@@ -289,7 +292,9 @@ def test_copy_type3_partition_skips_empty_partition():
     conn, cur = _fake_connection()
 
     with patch("src.tlc.gold2.db.new_connection", return_value=conn):
-        write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
+        write_partition = _copy_type3_partition(
+            "segment_metrics_type3_staging_abc", date(2026, 8, 20), "v1#testhash"
+        )
         write_partition([])
 
     cur.copy_expert.assert_not_called()
@@ -302,7 +307,9 @@ def test_copy_type3_partition_propagates_copy_failure():
 
     with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
          patch("src.tlc.gold2.TaskContext.get", return_value=_fake_task_context(0)):
-        write_partition = _copy_type3_partition("segment_metrics_type3_staging_abc", date(2026, 8, 20))
+        write_partition = _copy_type3_partition(
+            "segment_metrics_type3_staging_abc", date(2026, 8, 20), "v1#testhash"
+        )
         with pytest.raises(RuntimeError, match="COPY failure"):
             write_partition([
                 {"segment_id": "0000001", "dow": "FRI", "time": "1200", "value": 1.5},
@@ -330,8 +337,8 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
     conn, cur = _fake_connection()
     copy_calls = []
 
-    def _fake_copy(staging_prefix, collected_date):
-        copy_calls.append((staging_prefix, collected_date))
+    def _fake_copy(staging_prefix, collected_date, value_formula_version):
+        copy_calls.append((staging_prefix, collected_date, value_formula_version))
         return lambda rows: None
 
     with patch("src.tlc.gold2.db.new_connection", return_value=conn), \
@@ -380,9 +387,10 @@ def test_write_type3_rolling_to_rds_returns_segment_count(spark, monkeypatch):
     # 전부 등장하는지 확인한다(공유 테이블이 아니라 파티션마다 다른
     # 테이블이라는 것의 증거).
     assert len(copy_calls) == 1
-    staging_prefix, collected_date = copy_calls[0]
+    staging_prefix, collected_date, value_formula_version = copy_calls[0]
     assert staging_prefix.startswith("tmp_type3_")
     assert collected_date == date(2026, 8, 20)
+    assert value_formula_version == VALUE_FORMULA_VERSION
     for i in range(3):
         table_name = f"{staging_prefix}_p{i}"
         assert table_name in executed_sql[i * 2]
@@ -429,7 +437,7 @@ def test_write_type3_rolling_to_rds_cleans_up_staging_tables_on_partition_failur
     ])
     conn, cur = _fake_connection()
 
-    def _always_fail(_staging_prefix, _collected_date):
+    def _always_fail(_staging_prefix, _collected_date, _value_formula_version):
         def _write(_rows):
             raise RuntimeError("COPY failure")
         return _write
