@@ -112,6 +112,21 @@ def test_lazy_snapshot_retries_after_transient_failure(monkeypatch):
     assert mock_read.call_count == 2
 
 
+def test_lazy_snapshot_first_read_happens_even_when_monotonic_clock_is_small():
+    # time.monotonic()은 부팅 후 경과 초 - 갓 뜬 Lambda에서는 backoff 창(30초)
+    # 보다 작을 수 있다. "아직 실패 안 함"을 0.0으로 취급하면 첫 get()이
+    # backoff에 걸려 S3를 아예 안 읽는다(RDS도 죽어있으면 스냅샷 폴백 계층이
+    # 통째로 스킵). 첫 읽기는 monotonic 값과 무관하게 일어나야 한다.
+    snap = LazySnapshot("type1")
+    with patch.object(gold_snapshot.time, "monotonic", return_value=5.0):
+        with patch.object(
+            gold_snapshot, "read_snapshot_result", return_value=({"1": {"avg": 1.0}}, "hit")
+        ) as mock_read:
+            assert snap.get() == {"1": {"avg": 1.0}}
+
+    mock_read.assert_called_once()
+
+
 def test_lazy_snapshot_backoff_avoids_rereading_after_miss():
     # backoff 창(기본 30초) 안에서는 S3를 다시 두드리지 않고 현재 캐시({})를 준다.
     snap = LazySnapshot("type1")

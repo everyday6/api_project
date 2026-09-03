@@ -123,7 +123,11 @@ class LazySnapshot:
         self._loaded = False
         self._data: dict[str, dict] = {}
         # 마지막 miss(파일 없음/읽기 실패) 시각(monotonic). backoff 계산용.
-        self._last_failed_at = 0.0
+        # None이면 아직 한 번도 시도 안 함 - 첫 get()은 무조건 읽는다. 0.0을
+        # 센티넬로 쓰면 안 된다: time.monotonic()은 부팅 후 경과 초라, 갓 뜬
+        # Lambda(monotonic ≈ 0)에서 now - 0.0 < backoff가 참이 되어 첫 시도가
+        # backoff 창에 걸리고 S3를 아예 안 읽는다.
+        self._last_failed_at: float | None = None
 
     def get(self) -> dict[str, dict]:
         if self._loaded:
@@ -132,7 +136,7 @@ class LazySnapshot:
         # 최초 로드가 실패(missing/error)한 뒤엔 요청마다 S3를 다시 두드리지
         # 않고 backoff만큼 기다린다 - 그동안은 현재 캐시(보통 {})를 준다.
         now = time.monotonic()
-        if now - self._last_failed_at < _RETRY_BACKOFF_SECONDS:
+        if self._last_failed_at is not None and now - self._last_failed_at < _RETRY_BACKOFF_SECONDS:
             return self._data
 
         data, status = read_snapshot_result(self._type_name)
