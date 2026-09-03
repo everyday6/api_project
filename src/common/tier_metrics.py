@@ -70,7 +70,13 @@ def _maybe_alert_fallback_spike(
         return
 
     now = time.monotonic()
-    if now - _last_alert_at.get(tag, 0.0) < _ALERT_COOLDOWN_SECONDS:
+    # "한 번도 안 보냄"을 0.0으로 대신하면 안 된다 - time.monotonic()은 부팅
+    # 후 경과 초라, 갓 뜬 런너/Lambda 콜드 스타트에서는 now 자체가 쿨다운
+    # (_ALERT_COOLDOWN_SECONDS)보다 작을 수 있고, 그러면 그 tag의 첫 알림이
+    # 조용히 삼켜진다(하필 콜드 스타트 = 장애 상황일 때). 그래서 미기록은
+    # None으로 구분해 쿨다운 검사를 건너뛴다.
+    last = _last_alert_at.get(tag)
+    if last is not None and now - last < _ALERT_COOLDOWN_SECONDS:
         return
     _last_alert_at[tag] = now
 

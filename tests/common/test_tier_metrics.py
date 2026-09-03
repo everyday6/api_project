@@ -83,6 +83,19 @@ def test_terminal_tier_is_last_of_known_tiers_not_avg():
     mock_notify.assert_not_called()
 
 
+def test_first_alert_fires_even_when_monotonic_clock_is_small():
+    # time.monotonic()은 부팅 후 경과 초 - 갓 뜬 런너/Lambda에서는 쿨다운
+    # (600s)보다 작을 수 있다. "한 번도 안 보냄"을 0.0으로 취급하면 그 창
+    # 동안 첫 알림이 삼켜지므로(콜드 스타트 = 장애 상황일 때 특히 나쁨),
+    # 미기록 tag의 첫 알림은 monotonic 값과 무관하게 발화해야 한다.
+    logger = logging.getLogger("t")
+    with patch.object(tier_metrics.time, "monotonic", return_value=5.0):
+        with patch.object(tier_metrics, "notify_slack_message") as mock_notify:
+            log_tier_summary(logger, "type2_fallback_tier_summary", _tiers(20, 0), _KNOWN)
+
+    mock_notify.assert_called_once()
+
+
 def test_alert_send_failure_does_not_propagate(caplog):
     logger = logging.getLogger("t")
     with patch.object(tier_metrics, "notify_slack_message", side_effect=RuntimeError("slack down")):
