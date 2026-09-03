@@ -24,8 +24,10 @@
 
 ## 결정
 
-- `requirements-lambda.txt`를 배치용 `requirements.txt`와 분리한다. Lambda 이미지엔 `fastapi`, `mangum`, `python-dotenv`, `cloudpathlib[s3]`, `s3fs`, `psycopg2-binary`만 담는다
-- pandas·pyspark·geopandas·great_expectations 등 배치 전용 라이브러리는 Lambda 이미지에서 **의도적으로 제외**한다 — 서빙 임포트 체인(`nav_api.py` → `nav_lookup.py` → `common/{config,db,logger}.py`)이 요구하지 않는다
+- `requirements-lambda.txt`를 배치용 `requirements.txt`와 분리한다. Lambda 이미지엔 `fastapi`, `mangum`, `python-dotenv`, `boto3`, `cloudpathlib`, `psycopg2-binary`만 담는다
+- pandas·pyspark·geopandas·great_expectations 등 배치 전용 라이브러리는 Lambda 이미지에서 **의도적으로 제외**한다 — 서빙 임포트 체인(`lambda_handler.py` → `nav_api.py` → `nav_lookup.py`/`serving/api.py`/`toll/serving.py` → `common/{config,db,logger,gold_snapshot,tier_metrics,utils}.py`)이 요구하지 않는다
+- `boto3`는 **명시 선언**한다 — `common/gold_snapshot.py`가 S3 스냅샷을 boto3 클라이언트로 직접 읽는데(커스텀 타임아웃 때문에 cloudpathlib을 안 씀), `cloudpathlib[s3]`의 전이 의존으로만 두면 그쪽이 boto3 의존을 빼거나 갈아치우는 순간 콜드 스타트 import가 깨진다. boto3가 명시됐으므로 `cloudpathlib`는 `[s3]` extra 없이 받는다(extra는 boto3만 당김)
+- `s3fs`는 **제외**한다 — `pandas.read_parquet("s3://…")` 전용 fsspec 백엔드인데, 서빙 임포트 체인 어디에도 pandas가 없다(스냅샷은 JSON을 `json.loads`로 파싱). `s3fs`를 빼면 `aiobotocore`·`aiohttp`(+ `multidict`/`yarl`/`frozenlist` C 확장) async 스택이 통째로 이미지에서 빠져 콜드 스타트가 가벼워진다
 - `psycopg2-binary==2.9.11`로 고정한다. 2.9.11까지는 `manylinux2014`(glibc ≥ 2.17) wheel이 있어 이 베이스 이미지에서 prebuilt를 그대로 받는다
 - 버전을 올리려면 먼저 로컬에서 `docker build --platform linux/arm64 -f docker/lambda/Dockerfile .`로 빌드해 실제 `import psycopg2`가 되는지 확인한다
 - 비용으로 두 의존성 목록의 수동 동기화를 감수한다 — 서빙 임포트 체인에 새 패키지가 필요해지면 `requirements-lambda.txt`에도 반영해야 한다
