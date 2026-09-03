@@ -206,6 +206,7 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 | 8 | **Graceful Degradation** | `05-rds-fallback` — 계층형 폴백 |
 | 9 | **자원 경합/스큐 대응** | `01-skew`(파티션 스큐 105배 실측 진단), `03-spark-tuning`(DAG별 자원 고정 배분), `04-rds-insert`(대안 4개 비교 후 선택) |
 | 10 | **Fallback 급증 알림** | 🟡 알림 구현(2026-09), "차단"은 의도적 미구현 — 아래 참고 |
+| 11 | **감시자 self-liveness** | 🟡 dead-man heartbeat 구현·테스트(2026-09), 외부 서비스 연결은 운영 활성화 대기 — 아래 참고 |
 
 #### Circuit Breaker를 "알림"으로 재정의한 이유 — 2026-09
 
@@ -227,6 +228,44 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 - rate-limit 상태는 프로세스 로컬(Lambda 웜 인스턴스)이다 - 광범위 장애 시
   인스턴스당·창당 최대 1건. 침묵보다 낫고 폭주도 아니다.
 - 알림 전송 실패는 `try/except`로 삼켜서 서빙 응답(hot path)을 절대 안 깬다.
+
+#### 감시자 dead-man heartbeat — 2026-09
+
+`scripts/docker_crash_monitor.sh`는 컨테이너 재시작을 Slack으로 알리지만,
+자신도 파이프라인과 같은 호스트의 컨테이너라 **호스트가 통째로 죽으면 이
+알림도 같이 죽는다**(스크립트 주석은 "scheduler가 죽으면 그 안의 콜백도
+멈춘다"는 더 좁은 경우만 인정했었다). 이를 메우려고, 매 폴링에서 전 감시
+대상이 **기대 상태**(`docker inspect` 성공 + `.State.Status == running` +
+헬스체크가 있으면 `unhealthy` 아님)일 때만 외부 `HEARTBEAT_URL`로 ping을
+보낸다. ping이 grace를 넘겨 끊기면 외부 dead-man 서비스(healthchecks.io 등)가
+"호스트·Docker·감시자 중 하나가 죽었다"고 판단해 알린다 — 정상일 때만
+보내므로 대상 하나가 죽어도 같은 경로로 드러난다.
+
+- `HEARTBEAT_URL`이 비면 heartbeat만 꺼지고 재시작 감지 Slack은 그대로 —
+  로컬 개발을 안 깬다.
+- `curl`은 `--max-time` + `--retry`로 감싸, heartbeat 서버 일시 장애가
+  감시 루프를 멈추게 두지 않는다.
+- `WATCH_CONTAINERS`가 비면 ping을 보내지 않는다 — "감시할 게 없음"을
+  "정상"으로 위장하지 않는다.
+- 오프라인 테스트(`tests/scripts/test_docker_crash_monitor.py`)가 가짜
+  `docker`/`curl`로 "전 대상 running → 송신 / inspect 실패·exited·unhealthy·
+  빈 목록·URL 미설정 → 미송신 / HTTP 실패 → 루프 생존"을 검증한다.
+
+**운영 활성화 대기** (프로덕션 접근 권한 필요) — 체크리스트:
+
+1. 외부 dead-man 서비스에 check 생성. period는 폴링 주기(30s)에 맞추고,
+   grace는 **실제 배포 소요 시간보다 길게** — 배포 중 컨테이너가 잠깐
+   내려가는 창을 흡수해야 오탐이 안 난다.
+2. check URL을 GitHub/EC2 Secret `HEARTBEAT_URL`로 주입(값 자체가 비밀).
+3. 알림 채널(Slack/이메일) 연결.
+4. 배포 후 수동 검증: (a) `crash-monitor` 컨테이너를 멈춤 → grace 경과 후
+   dead-man 알림이 오는가, (b) 감시 대상 하나를 멈춤 → ping이 끊기고
+   알림이 오는가 → 복구하면 ping이 재개되는가.
+
+`noDataState`/`TreatMissingData` 등 중앙 집계로 확장할 때의 설계 노트는
+아래 "열린 질문"에 있다. 더 무거운 대안(전용 모니터링 인스턴스 +
+Prometheus/Grafana)은 IaC 도입 이후 과제로, "인스턴스 1대 상시 과금 vs
+파이프라인 장애로부터의 격리" 트레이드오프를 표로 명시한 외부 사례가 있다.
 
 ### Tier 4 — 효율/가치
 
@@ -292,6 +331,7 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 | Fallback 급증 알림 | `log_tier_summary`가 `hardcoded` 비율 초과 시 rate-limited Slack | Tier 3 #10 |
 | 스냅샷 첫 로드 실패 | `LazySnapshot`이 hit만 고정, miss는 backoff 재시도 | 열린 질문 |
 | 품질 게이트 관측 로그 | 게이트 5곳(speed/tlc/lion suspect·conflict/silver2)이 통과·차단 무관 매 판정마다 `{"event":"data_quality_gate", ...}` 한 줄 — 임계값 baseline을 실측할 raw 분포가 쌓이기 시작 | Tier 1 #3 |
+| 감시자 dead-man heartbeat | `docker_crash_monitor.sh`가 전 감시 대상이 기대 상태일 때만 `HEARTBEAT_URL`로 ping — 끊기면 외부 서비스가 호스트·Docker·감시자 동반 사망까지 탐지. 오프라인 테스트 포함. 외부 서비스 연결은 운영 활성화 대기 | Tier 3 #11 |
 
 ### 의식적으로 유예
 
@@ -305,6 +345,8 @@ Tier 1·2가 갖춰진 뒤에 얘기해야, "숨기는 시스템"이 아니라 "
 | `is_suspect` reason code | 현재 불리언 하나. 어떤 expectation이 걸렸는지는 로그에만 | 이상치 분류가 다운스트림 의사결정(예: 특정 사유만 제외)에 쓰이게 될 때 |
 | `toll/silver2.py`가 재구축된 lion `dim_segment` 소비 | 지금은 자체 GDB 로드 — 중복 정책이 두 곳에 존재 | lion `dim_segment`가 toll이 필요한 컬럼을 안정적으로 제공한다고 확인되면 |
 | Execution manifest (실행별 입력 파티션 고정 기록) | Bronze 재현성 감사로 "재도출 가능"은 확인. 실행마다 정확히 어떤 파티션을 읽었는지 남기는 manifest는 그 위의 정밀도 | 특정 Gold 값의 입력 집합을 사후 재구성해야 하는 인시던트가 실제로 나면 |
+| dead-man heartbeat 외부 서비스 연결 | `docker_crash_monitor.sh`는 정상일 때만 `HEARTBEAT_URL`로 ping을 보내게 구현·테스트 완료. 끊김을 받아 알림 줄 외부 check 생성·grace 설정·채널 연결은 프로덕션 접근 권한이 필요 | 운영 접근 권한이 생기면(활성화 체크리스트는 Tier 3 "감시자 dead-man heartbeat" 절) |
+| 중앙 집계 알람(CloudWatch) | dead-man heartbeat는 "죽음"만 잡음. CPU/디스크/`hardcoded` 비율 급증 같은 연속값 임계 알람을 SNS로 묶는 건 별개 | 알람/SNS 생성 권한이 생기고, 프로세스 로컬 rate-limit(Tier 3 #10)의 한계가 실제로 문제될 때 |
 
 ### 외부 증거 필요 (프로덕션 접근 권한 대기)
 
@@ -366,7 +408,22 @@ placeholder로 박아둔 값들이다. 접근이 생기는 대로 재측정한�
   경로가 없다~~ → 2026-09 `log_tier_summary`에 `hardcoded` 비율 급증
   Slack 알림 추가(Tier 3 #10 참고). `FALLBACK_ALERT_RATIO`(0.10)는
   placeholder — baseline 실측 후 조정 필요. rate-limit이 프로세스 로컬이라
-  중앙 집계(예: CloudWatch 알람)로 옮기는 건 후속
+  중앙 집계(예: CloudWatch 알람)로 옮기는 건 후속 — 착수 시 설계 노트:
+  (1) **"데이터 없음"의 의미는 규칙마다 다르고, 그걸 표현하는 필드명도
+  스택마다 다르다.** dead-man/heartbeat류(Grafana 등)는 `noDataState:
+  Alerting` — ping이 끊긴 것 자체가 장애 신호. EC2 상태 알람은
+  `TreatMissingData: missing`(AWS 권장) — `StatusCheckFailed`는
+  agentless·1분·무료라 CloudWatch Agent(`install_cloudwatch_agent.sh`의
+  CPU/메모리/디스크용 `PutMetricData` 권한)와 무관하나, 알람·SNS 생성
+  권한은 별도로 필요. 반대로 특정 Lambda의 실패 지표 부재는 "그 창에 안
+  불렸을 뿐"이라 알리지 않는다. (2) CloudWatch 메트릭에 알림을 걸 때
+  차원을 부분만 지정하면(`matchExact: false`) AWS가 함께 발행하는 다른
+  차원 조합까지 매칭돼 같은 실패가 중복 발화한다(관측 사례: 14 → 28
+  시계열). (3) 더 가벼운 임시 대안 — `.github/workflows/host-watchdog.yml`
+  스케줄 cron이 기존 SSH 배포 경로로 호스트·핵심 컨테이너를 점검하면
+  EC2 밖에서 도는 감시가 되어 단일 호스트 장애점을 완화한다. 다만
+  GitHub 스케줄은 지연될 수 있어 dead-man heartbeat의 보완재이지
+  대체재는 아니다(이번 heartbeat PR 범위에는 넣지 않음)
 - ~~Bronze가 실제로 immutable한지 코드 레벨에서 아직 검증하지 않았다~~ →
   2026-09 재현성 감사 완료(Tier 2 #7 참고)
 - ~~LION `SegmentID` 중복을 `keep="first"`로 조용히 처리하고, 사후

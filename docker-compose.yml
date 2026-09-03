@@ -472,6 +472,9 @@ services:
 
     environment:
       SLACK_WEBHOOK_URL: ${SLACK_WEBHOOK_URL}
+      # 외부 dead-man heartbeat. 비우면 heartbeat만 꺼지고 재시작 감지
+      # Slack 알림은 그대로 동작한다. 운영에서는 Secret으로 주입한다.
+      HEARTBEAT_URL: ${HEARTBEAT_URL}
       WATCH_CONTAINERS: navigation-postgres,navigation-redis,navigation-airflow-apiserver,navigation-airflow-scheduler,navigation-airflow-dag-processor,navigation-airflow-worker,navigation-spark-master,navigation-grafana
       POLL_INTERVAL_SECONDS: 30
 
