@@ -1,8 +1,15 @@
 fastapi
 mangum
 python-dotenv
-cloudpathlib[s3]
-s3fs
+
+# 서빙(src/common/gold_snapshot.py)이 S3 스냅샷을 boto3로 직접 읽는다.
+# cloudpathlib[s3]의 전이 의존으로만 두면 그쪽이 boto3를 빼는 순간 콜드
+# 스타트 import가 깨지므로 직접 선언한다. S3Path는 경로 구성/타입 판별용이라
+# boto3가 명시된 지금 [s3] extra는 불필요하다. s3fs는 넣지 않는다 - pandas의
+# S3 parquet I/O 전용인데 서빙은 pandas를 안 쓴다(docs/decisions/09-lambda-deps.md 참고).
+boto3
+cloudpathlib
+
 # 2.9.12+는 arm64 wheel이 manylinux_2_27/2_28(glibc>=2.27)만 나와서, 이
 # Lambda 베이스 이미지(Amazon Linux 2, glibc 2.26)에서 prebuilt wheel을
 # 못 찾고 소스 빌드로 폴백한다 - 빌드는 되지만(pg_config만 있으면) 그
